@@ -49,6 +49,19 @@ Coverage (model google/siglip2-base-patch16-224):
   [`videre dedupe`](/commands/dedupe/)'s job, and deleting anything is always
   yours.
 
+## Dates
+
+```
+Dates: 10,953 from EXIF or video, 3,518 from Takeout sidecars, 0 from file times only
+```
+
+Where the library's capture dates come from (see
+[where a file's date comes from](/commands/scan/#where-a-files-date-comes-from)).
+A large "from file times only" count means many dates are when a file was
+copied, not when it was taken. A library scanned by an older videre lists its
+not-yet-resolved files under **Next actions** as `run 'videre scan'`. `--json`
+reports the counts under `report.dates`.
+
 ## Pipeline status
 
 The last run of every tracked command, with its outcome:

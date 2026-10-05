@@ -3,8 +3,10 @@ title: videre fix-dates
 description: Set each file's modification time from the date the camera recorded.
 ---
 
-Sets each file's modification time from its EXIF date, so photos sort by when
-they were taken rather than when they were last copied.
+Sets each file's modification time from its capture date: the EXIF date the
+camera recorded, a video's own date, or the date in its Google Takeout sidecar.
+Photos then sort by when they were taken rather than when they were last
+copied, in any tool.
 
 :::danger[This is the only command that changes your files]
 There is no undo. Once a file's original modification time is overwritten, it is
@@ -55,20 +57,21 @@ resolution. A file whose mtime was `10:31:07.482` becomes `10:31:07.000`.
 
 ## Which files are affected
 
-Only files that actually have an EXIF date. In practice that means camera
-photos: `jpg`, `jpeg`, `tiff`, `heic` and `dng`.
+Files whose capture time something recorded (see
+[where a file's date comes from](/commands/scan/#where-a-files-date-comes-from)):
+camera photos with an EXIF date, videos with their own creation date, and, in a
+Google Takeout export, photos with no EXIF date whose sidecar says when they
+were taken. A file dated only by its own modification time is left alone, since
+there is nothing better to set.
 
-Screenshots, PNGs, memes, and most videos have no EXIF date and are left alone
-entirely.
-
-A file whose modification time already equals its EXIF date is left alone too,
+A file whose modification time already equals its capture date is left alone too,
 so running this a second time changes nothing. The count in the prompt is the
 number of files whose time will actually change, the same number
 [`videre status`](/commands/status/) suggests, and the summary reports the rest
 as already correct:
 
 ```
-876 file(s) with exif_date, 8 updated, 868 already correct, 0 error(s).
+876 file(s) with a capture date, 8 updated, 868 already correct, 0 error(s).
 ```
 
 Both KEEP and REMOVE candidates are included, since duplicates you are about to
@@ -149,6 +152,11 @@ summary as skipped. When there are any, fix-dates says so and points at
 
 **Exits nonzero if any file could not be updated**, for example on a read-only
 volume or a permissions error. Missing files do not count.
+
+**It is the only command that writes file times.** `videre import` used to set
+Takeout dates itself, in UTC, while this command used local time, and the two
+undid each other by hours. Now scan reads the sidecar and this command writes
+every date, one way.
 
 **It trusts the EXIF date.** A camera with a wrong clock produced wrong EXIF, and
 this faithfully copies that wrong date onto the file. Dates of `0000-00-00`,
