@@ -48,3 +48,54 @@ test("a cluster whose photo has two identical copies is assigned, and a rejectio
     db.close();
   }
 });
+
+// A library with thousands of unclustered faces used to request every crop
+// at once; the browser queued them, and an assignment waited behind the
+// queue (tens of seconds when crops had to be cut from photos on a slow
+// drive). Only the crops near the screen are requested now.
+test("people pages request only the face crops near the screen", async ({
+  page,
+  isolatedGallery: gallery
+}) => {
+  const { DatabaseSync } = await import("node:sqlite").catch(() => ({ DatabaseSync: undefined }));
+  test.skip(!DatabaseSync, "node:sqlite is unavailable on this Node");
+  const db = new DatabaseSync!(`${gallery.libraryRoot}/.videre/hashes.db`);
+  db.exec("PRAGMA busy_timeout = 5000");
+  const { hash } = db
+    .prepare("SELECT hash FROM file_hashes WHERE lower(ext) IN ('jpg','jpeg') ORDER BY path LIMIT 1")
+    .get() as { hash: string };
+  db.prepare("INSERT OR IGNORE INTO people (name, full_name) VALUES ('ayse', 'Ayşe')").run();
+  const single = db.prepare("INSERT INTO faces (hash, bbox, embedding, blur) VALUES (?, ?, ?, 500.0)");
+  const named = db.prepare(
+    "INSERT INTO faces (hash, bbox, embedding, person_label, confirmed, blur) VALUES (?, ?, ?, 'ayse', 1, 500.0)"
+  );
+  for (let i = 0; i < 300; i++) {
+    single.run(hash, `${i % 20},0,10,10`, embedding(i % 512));
+    named.run(hash, `0,${i % 20},10,10`, embedding(i % 512));
+  }
+  db.close();
+
+  const crops = (path: string) =>
+    new Promise<number>(async (resolve) => {
+      let count = 0;
+      const seen = (r: { url(): string }) => {
+        if (/\/api\/faces\/\d+\/image$/.test(r.url())) count++;
+      };
+      page.on("request", seen);
+      await page.goto(`${gallery.baseURL}${path}`);
+      await page.waitForLoadState("networkidle");
+      page.off("request", seen);
+      resolve(count);
+    });
+
+  const onPeople = await crops("/people");
+  await expect(page.locator("img.face-img")).not.toHaveCount(0);
+  // The one face a learning question shows is on screen; it loads at once.
+  expect(await page.locator("img.face-img:not([loading=lazy]):not(.q-face)").count()).toBe(0);
+  expect(onPeople, "the 300 unclustered faces are not all requested").toBeLessThan(200);
+
+  const onPerson = await crops("/people/person/ayse");
+  await expect(page.locator("#face-count")).toHaveText("300 face(s)");
+  expect(await page.locator("img.face-img:not([loading=lazy])").count()).toBe(0);
+  expect(onPerson, "the person's 300 faces are not all requested").toBeLessThan(200);
+});

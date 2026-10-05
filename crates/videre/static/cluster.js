@@ -70,7 +70,7 @@ const clusterId = window.CLUSTER_ID;
       grid.innerHTML = facesData.map(f => `
         <div class="card" id="card-${f.face_id}">
           <a href="/api/faces/${f.face_id}/original" target="_blank" title="Open original image">
-            <img class="face-img" src="/api/faces/${f.face_id}/image" width="180" height="180"
+            <img class="face-img" loading="lazy" decoding="async" src="/api/faces/${f.face_id}/image" width="180" height="180"
                  onerror="this.removeAttribute('src');this.style.background='#ddd'">
           </a>
           <div class="path" title="${escHtml(f.path)}">${escHtml(basename(f.path))}</div>
