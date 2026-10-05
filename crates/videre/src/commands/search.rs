@@ -72,8 +72,8 @@ pub struct SearchArgs {
     )]
     pub(crate) people: Option<String>,
 
-    /// Only files classified as this category: photo/screenshot/document/
-    /// meme/unknown (requires a prior 'videre classify' run)
+    /// Only files classified as this category: photo, screenshot, document,
+    /// meme or unknown (requires a prior 'videre classify' run)
     #[arg(
         long,
         add = clap_complete::engine::ArgValueCompleter::new(

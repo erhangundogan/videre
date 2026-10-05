@@ -1,6 +1,6 @@
 ---
 title: videre completion
-description: Print a shell completion script for bash, zsh, or fish.
+description: Print a shell completion script for bash, zsh, fish, elvish or powershell.
 ---
 
 Prints a shell completion script, generated from the same command definition
@@ -14,6 +14,9 @@ videre completion bash > ~/.local/share/bash-completion/completions/videre.bash
 videre completion zsh > ~/.oh-my-zsh/completions/_videre   # then rehash
 videre completion fish > ~/.config/fish/completions/videre.fish
 ```
+
+`elvish` and `powershell` are accepted too, and print clap's script for that
+shell.
 
 The fish script also completes `videre config set`: its keys, then the
 choices for the key you typed (the three provided models for `model`, `db`,

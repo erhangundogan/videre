@@ -47,7 +47,7 @@ pub struct EmbedArgs {
     #[arg(long)]
     reprocess: bool,
 
-    /// Inference batch size (clamped to videre_ml::model::MAX_SAFE_BATCH)
+    /// Inference batch size (capped at 96; larger batches corrupt embeddings)
     #[arg(long, default_value_t = 32)]
     batch: usize,
 

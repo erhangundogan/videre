@@ -67,10 +67,13 @@ pub struct FacesArgs {
     /// value the gallery's Recluster saved, else its default
     #[arg(long)]
     recluster: bool,
+    /// Images per face-embedding batch
     #[arg(long, default_value = "8")]
     batch: usize,
+    /// Detect, but write nothing. With --reset, show what would be deleted
     #[arg(long)]
     dry_run: bool,
+    /// Suppress progress output on stderr (errors always shown)
     #[arg(long)]
     silent: bool,
     /// Average-linkage cosine-distance radius (0 = identical, 2 = opposite). Default 0.6.
