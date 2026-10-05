@@ -21,26 +21,32 @@ pub struct DedupeArgs {
     html: Option<Option<std::path::PathBuf>>,
 
     /// Move the duplicate copies to the system trash (recoverable), instead of
-    /// only listing them. videre deletes them itself, so no shell pipeline and
+    /// only listing them. videre moves them itself, so no shell pipeline and
     /// no word-splitting on paths that contain spaces.
-    #[arg(long)]
-    remove: bool,
+    #[arg(long, conflicts_with = "delete")]
+    trash: bool,
 
-    /// With --remove, list what would be removed and delete nothing.
+    /// Delete the duplicate copies permanently. Faster than --trash, and
+    /// cannot be undone.
+    #[arg(long)]
+    delete: bool,
+
+    /// With --trash or --delete, list what would be removed and remove nothing.
     #[arg(long)]
     dry_run: bool,
 
-    /// With --remove, skip the confirmation prompt.
+    /// With --trash or --delete, skip the confirmation prompt.
     #[arg(long)]
     yes: bool,
 
-    /// With --remove, proceed even when the count trips the bulk-deletion guard.
+    /// With --trash or --delete, proceed even when the count trips the
+    /// bulk-deletion guard.
     #[arg(long)]
     force: bool,
 
     /// Also pair Google Takeout edits with their originals (`a-edited.jpg`
-    /// beside `a.jpg` in one folder). With --remove, the edits go to the
-    /// trash and the originals stay.
+    /// beside `a.jpg` in one folder). With --trash or --delete, the edits go
+    /// and the originals stay.
     #[arg(long)]
     edited: bool,
 
@@ -50,24 +56,47 @@ pub struct DedupeArgs {
     print0: bool,
 }
 
+impl DedupeArgs {
+    /// How copies leave, when this run removes them at all.
+    fn method(&self) -> Option<crate::removal::Method> {
+        match (self.trash, self.delete) {
+            (true, _) => Some(crate::removal::Method::Trash),
+            (_, true) => Some(crate::removal::Method::Delete),
+            _ => None,
+        }
+    }
+
+    /// `--trash` or `--delete`, for messages.
+    fn method_flag(&self) -> &'static str {
+        if self.delete {
+            "--delete"
+        } else {
+            "--trash"
+        }
+    }
+}
+
 pub fn run(args: DedupeArgs, ctx: &CommandContext) -> anyhow::Result<()> {
-    // --remove is the human deletion path; --json and --similar are report
-    // surfaces. Combining them is ambiguous (delete the JSON? delete the
-    // review-only near-duplicates?), so reject rather than guess.
-    if args.remove && args.json {
-        anyhow::bail!("--remove cannot be combined with --json; --json only reports");
-    }
-    if args.remove && args.similar {
-        anyhow::bail!(
-            "--remove only removes exact duplicates; --similar groups are review-only \
-             (use 'videre dedupe --similar --html' to review them)"
-        );
-    }
-    if args.remove && args.html.is_some() {
-        anyhow::bail!(
-            "--remove cannot be combined with --html; --html writes a review page. \
-             Review first, then run 'videre dedupe --remove'"
-        );
+    // --trash and --delete are the human removal paths; --json and --similar
+    // are report surfaces. Combining them is ambiguous (remove the JSON?
+    // remove the review-only near-duplicates?), so reject rather than guess.
+    if args.method().is_some() {
+        let flag = args.method_flag();
+        if args.json {
+            anyhow::bail!("{flag} cannot be combined with --json; --json only reports");
+        }
+        if args.similar {
+            anyhow::bail!(
+                "{flag} only removes exact duplicates; --similar groups are review-only \
+                 (use 'videre dedupe --similar --html' to review them)"
+            );
+        }
+        if args.html.is_some() {
+            anyhow::bail!(
+                "{flag} cannot be combined with --html; --html writes a review page. \
+                 Review first, then run 'videre dedupe {flag}'"
+            );
+        }
     }
     if args.json {
         match run_json(&args, ctx) {
@@ -129,22 +158,21 @@ fn run_text(args: DedupeArgs, ctx: &CommandContext) -> anyhow::Result<()> {
     let guard = videre_core::library_locks::try_command(&ctx.library, "dedupe")?;
 
     let moved =
-        videre_core::pipeline_runs::track_in(&conn, &ctx.library, &guard, "dedupe", || {
-            if args.remove {
-                run_remove(&args, ctx, &conn)
-            } else {
-                run_dedupe_text(&args, &conn).map(|_| 0usize)
-            }
+        videre_core::pipeline_runs::track_in(&conn, &ctx.library, &guard, "dedupe", || match args
+            .method()
+        {
+            Some(method) => run_remove(&args, method, ctx, &conn),
+            None => run_dedupe_text(&args, &conn).map(|_| 0usize),
         })?;
 
-    // `--remove` trashed duplicate copies, and their database rows now
-    // describe files that no longer exist: run the same cleanup `videre
-    // prune` would, so the library never shows a ghost. The prune pass needs
-    // the exclusive activity lease, which conflicts with the shared one this
-    // command holds, so the shared lease is released first. Best effort: the
-    // removal itself already succeeded, and a user can always run
-    // `videre prune` by hand.
-    if args.remove && !args.dry_run && moved > 0 {
+    // Each removed copy's row was forgotten as it went. What hung off those
+    // rows by hash (marks, tags, faces, embeddings of content no copy holds
+    // any more) is `videre prune`'s cleanup, run here so the library never
+    // shows a ghost. The prune pass needs the exclusive activity lease, which
+    // conflicts with the shared one this command holds, so the shared lease is
+    // released first. Best effort: the removal itself already succeeded, and a
+    // user can always run `videre prune` by hand.
+    if args.method().is_some() && !args.dry_run && moved > 0 {
         drop(activity);
         let prune_args = super::prune::PruneArgs::for_watch_stage(args.silent);
         match crate::command_context::with_tracked_command(
@@ -243,17 +271,25 @@ impl Removals {
     }
 }
 
-/// `--remove`: videre moves the duplicate copies to the system trash itself.
-/// Safe by default: refuses on a missing library volume, refuses an implausibly
-/// large deletion without --force, confirms unless --yes, and `--dry-run` only
-/// previews. Operates only on what `Removals` computes, which is also what
-/// the report prints: an exact group's kept copy is never removed, and an edit
-/// goes only while its original is on disk.
+/// `--trash` / `--delete`: videre removes the duplicate copies itself, to the
+/// system trash or permanently. Safe by default: refuses on a missing library
+/// volume, refuses an implausibly large removal without --force, confirms
+/// unless --yes, and `--dry-run` only previews. Operates only on what
+/// `Removals` computes, which is also what the report prints: an exact
+/// group's kept copy is never removed, and an edit goes only while its
+/// original is on disk. Returns how many copies left, removed now or found
+/// already gone.
 fn run_remove(
     args: &DedupeArgs,
+    method: crate::removal::Method,
     ctx: &CommandContext,
     conn: &rusqlite::Connection,
 ) -> anyhow::Result<usize> {
+    use crate::removal::{Method, Outcome};
+    let fate = match method {
+        Method::Trash => "moved to the trash",
+        Method::Delete => "permanently deleted",
+    };
     let records = videre::sqlite_output::load_records_from(conn)
         .map_err(|e| anyhow::anyhow!("reading the library database: {e}"))?;
     let total = records.len();
@@ -308,7 +344,7 @@ fn run_remove(
     if args.dry_run {
         print_paths_delimited(&losers, args.print0);
         if !args.silent {
-            tracing::info!("{} would be moved to the trash.", removals.describe());
+            tracing::info!("{} would be {fate}.", removals.describe());
             // Stdout stays the media paths alone, for `--print0 | xargs -0`.
             let sidecars = crate::removal::sidecars_of(&losers);
             if !sidecars.is_empty() {
@@ -326,37 +362,60 @@ fn run_remove(
         return Ok(0);
     }
 
-    if !args.yes
-        && !super::confirm(&format!(
+    let question = match method {
+        Method::Trash => format!(
             "This will move {} to the trash. Continue?",
             removals.describe()
-        ))?
-    {
+        ),
+        Method::Delete => format!(
+            "This will permanently delete {}. This cannot be undone. Continue?",
+            removals.describe()
+        ),
+    };
+    if !args.yes && !super::confirm(&question)? {
         tracing::info!("Aborted; nothing was removed.");
         return Ok(0);
     }
 
-    let results = crate::removal::trash_paths(&losers);
-    let moved = results.iter().filter(|(_, r)| r.is_ok()).count();
-    let skipped = results.len() - moved;
-    for (path, r) in &results {
-        if let Err(e) = r {
-            tracing::warn!("could not trash {path:?}: {e}");
-        }
-    }
-    if moved == 0 && skipped > 0 {
-        anyhow::bail!(
-            "could not move any of the {skipped} file(s) to the trash (is the drive connected?)"
-        );
+    // A bar on a terminal, a line every half minute otherwise, and each
+    // failure as it happens: a run over thousands of files never looks hung.
+    // Rows go as each file does, so a run stopped halfway leaves the library
+    // listing exactly what is still on disk.
+    let progress =
+        videre_core::progress::Progress::new_counting(losers.len() as u64, args.silent, "files");
+    let results = crate::removal::remove_and_forget(Some(conn), &losers, method, &progress);
+    progress.finish();
+    let removed = results
+        .iter()
+        .filter(|(_, o)| *o == Outcome::Removed)
+        .count();
+    let gone = results
+        .iter()
+        .filter(|(_, o)| *o == Outcome::AlreadyGone)
+        .count();
+    let failed = results.len() - removed - gone;
+    if removed == 0 && gone == 0 && failed > 0 {
+        anyhow::bail!("could not remove any of the {failed} file(s) (is the drive connected?)");
     }
     if !args.silent {
-        if skipped > 0 {
-            tracing::info!("Moved {moved} file(s) to the trash ({skipped} skipped).");
+        let done = match method {
+            Method::Trash => format!("Moved {removed} file(s) to the trash"),
+            Method::Delete => format!("Deleted {removed} file(s)"),
+        };
+        let mut notes = Vec::new();
+        if gone > 0 {
+            notes.push(format!("{gone} already gone"));
+        }
+        if failed > 0 {
+            notes.push(format!("{failed} could not be removed"));
+        }
+        if notes.is_empty() {
+            tracing::info!("{done}.");
         } else {
-            tracing::info!("Moved {moved} file(s) to the trash.");
+            tracing::info!("{done} ({}).", notes.join(", "));
         }
     }
-    Ok(moved)
+    Ok(removed + gone)
 }
 
 /// The actual dedupe-reporting work, wrapped by `track_in()` above.

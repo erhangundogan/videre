@@ -199,7 +199,7 @@ pub(crate) struct DeleteBody {
 /// POST /api/files/delete: move every file of the selected items to the
 /// system Trash (all copies of a hash: leaving one would bring the item
 /// straight back) and forget their rows. `dry_run` only counts, for the
-/// confirmation dialog. Needs the library to itself, like `dedupe --remove`.
+/// confirmation dialog. Needs the library to itself, like `dedupe --trash`.
 pub(crate) async fn handle_delete(
     State(state): State<Arc<AppState>>,
     Json(body): Json<DeleteBody>,
@@ -253,7 +253,18 @@ pub(crate) async fn handle_delete(
         }
         let paths: Vec<std::path::PathBuf> =
             files.iter().map(|(p, _, _)| std::path::PathBuf::from(p)).collect();
-        let results = crate::removal::trash_and_forget(&conn, &paths).map_err(failed)?;
+        // Silent: the page shows its own count; failures come back below.
+        let progress = videre_core::progress::Progress::new_counting(paths.len() as u64, true, "files");
+        let results: Vec<(std::path::PathBuf, Result<(), String>)> =
+            crate::removal::remove_and_forget(
+                Some(&conn),
+                &paths,
+                crate::removal::Method::Trash,
+                &progress,
+            )
+            .into_iter()
+            .map(|(path, outcome)| (path, outcome.as_result()))
+            .collect();
         let failed_paths: Vec<Value> = results
             .iter()
             .filter_map(|(path, r)| {
