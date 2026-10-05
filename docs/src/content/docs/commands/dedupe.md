@@ -13,6 +13,9 @@ videre dedupe --trash --dry-run        # show what --trash would move
 videre dedupe --trash                  # move the copies to the trash (asks first)
 videre dedupe --trash --yes            # ...without the confirmation prompt
 videre dedupe --delete                 # delete the copies permanently (asks first)
+videre dedupe --undo --dry-run         # show what the last --trash run would put back
+videre dedupe --undo                   # put back the last --trash run (asks first)
+videre dedupe --undo                   # again: the run before that
 videre dedupe --similar                # also report look-alike groups (review only)
 videre dedupe --edited --trash         # Google Takeout: trash the -edited copies, keep the originals
 videre --library ~/Photos dedupe       # select a different library
@@ -31,7 +34,9 @@ review-only. A copy's XMP sidecar (`<file>.<ext>.xmp`) goes with it, and
 
 :::danger
 `--trash` and `--delete` (without `--dry-run`) remove copies immediately once
-you confirm, and `--delete` cannot be undone. Review first with
+you confirm. A `--trash` run can be put back with
+[`videre dedupe --undo`](#undoing---trash) until the trash is emptied;
+`--delete` cannot be undone. Review first with
 [`videre dedupe --html`](/commands/dedupe/) or `--trash --dry-run`.
 :::
 
@@ -44,21 +49,23 @@ on a large set, and is the one to use where a volume has no trash at all.
 - **macOS:** the Trash of the copy's volume, through the system's file
   manager service rather than by scripting Finder, so no Finder permission
   prompt appears and thousands of files take seconds. Finder's **Put Back**
-  may not be offered for them; drag a copy out of the Trash instead.
+  may not be offered for them; use [`videre dedupe --undo`](#undoing---trash),
+  or drag a copy out of the Trash.
 - **Linux:** the freedesktop.org trash. The file moves to a trash folder on
   the same volume when one can be created, otherwise to your home trash, so
   Restore still works. If no trash is available (a read-only volume, say),
   `--trash` refuses that file rather than falling back to a hard delete; use
   `--delete` if deleting is what you want.
 
-Recovering a copy is the same as recovering anything else from the trash: put
-it back where it was and run `videre scan` (or let `watch` pick it up).
+To put a whole run back, use [`videre dedupe --undo`](#undoing---trash). To
+recover a single copy by hand, put it back where it was and run `videre scan`
+(or let `watch` pick it up).
 
 ### `--trash` or `--delete`
 
 | | `--trash` | `--delete` |
 |---|---|---|
-| Undo | Yes: drag the copy out of the Trash | No: the copy is gone |
+| Undo | Yes: `videre dedupe --undo`, or drag the copy out of the Trash | No: the copy is gone |
 | Speed | About 400 files a second on macOS | Thousands of files a second |
 | Disk space | Freed only once you empty the Trash | Freed at once |
 | Needs | A trash on the copy's volume, and permission to move files into it | Permission to delete files in the folder |
@@ -96,6 +103,54 @@ the gallery never shows a ghost of a deleted copy. The pass appears as its own
 `prune` entry in [`videre status`](/commands/status/); if it cannot start
 (a `watch` cycle holding the library, say), videre says so and you can run
 `videre prune` by hand.
+
+## Undoing `--trash`
+
+`videre dedupe --undo` puts back what the most recent `--trash` run moved to
+the trash. Run it again to put back the run before that, and so on: the newest
+run comes back first, one run per call.
+
+```bash
+videre dedupe --undo --dry-run   # list what would come back, change nothing
+videre dedupe --undo             # put it back (asks first; --yes skips the prompt)
+videre dedupe --undo --json      # one JSON object with each file's outcome
+```
+
+**What is recorded.** Every `--trash` run, and every Delete in
+[`videre gallery`](/commands/gallery/), writes a small record of what it moved
+to `.videre/trash/` in the library, a line per file as each one goes. So a run
+you stopped halfway can be undone too, exactly as far as it got. `--undo` puts
+back whichever run was most recent, from either. `--delete` records nothing:
+there is nothing to put back.
+
+**How a file is found.** Each record holds where the file landed in the trash,
+which is not always its own name: a trash that already holds a file of that
+name gives the newcomer another one. A file is put back only if its content
+still matches what was trashed, so a different file of the same name is never
+taken. No extra permission is needed, Full Disk Access included.
+
+**It never overwrites.** If something already sits at a file's original path,
+that file is skipped and reported, and the run stays undoable: move the other
+file away and run `--undo` again.
+
+**Back in the library.** Restored files are scanned back in before `--undo`
+returns. Their embeddings and faces, dropped by the cleanup after the
+removal, are rebuilt by the next [`embed`](/commands/embed/),
+[`faces`](/commands/faces/) or [`pipeline`](/commands/pipeline/), or by a
+running [`watch`](/commands/watch/); [`videre status`](/commands/status/) lists
+them as outstanding until then.
+
+```
+Restored 412 file(s) from the run of 2026-10-05 10:04 UTC (3 not in the trash). 1 earlier run(s) can still be undone.
+```
+
+**Limits.**
+
+- A file emptied from the trash cannot come back. It is reported as
+  `not in the trash`, and the run is dropped from the record.
+- `--delete` runs cannot be undone.
+- Runs made with videre 0.52 or older have no record. Those went through
+  Finder, so Finder's **Put Back** works for them.
 
 ## The safe way to do it
 

@@ -261,6 +261,7 @@ pub(crate) async fn handle_delete(
                 &paths,
                 crate::removal::Method::Trash,
                 &progress,
+                Some(&mut crate::trash_stack::Writer::new(&library.paths.state, "gallery")),
             )
             .into_iter()
             .map(|(path, outcome)| (path, outcome.as_result()))

@@ -114,7 +114,8 @@ so removing them loses nothing at all.
 
 :::caution
 `videre dedupe --trash` deletes immediately once you confirm. Run `videre
-dedupe --html` first to review, or preview with `--trash --dry-run`. Prefer
+dedupe --html` first to review, or preview with `--trash --dry-run`.
+Changed your mind? `videre dedupe --undo` puts the last run back. Prefer
 `--trash` over a `| xargs trash` pipe, which splits Takeout paths on their
 spaces. See [cautions](/reference/cautions/).
 :::
@@ -127,6 +128,7 @@ above leaves them. `videre import` counts them and says so; remove them with:
 ```bash
 videre dedupe --edited --html         # each original beside its edit
 videre dedupe --edited --trash        # keep the originals, trash the edits
+videre dedupe --undo                  # changed your mind? put the edits back
 ```
 
 The original is kept because it is the file the camera wrote; the edit is

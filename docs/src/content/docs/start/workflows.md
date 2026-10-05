@@ -137,6 +137,7 @@ point it at the library and it works out the rest. See
 videre --library ~/Photos scan
 videre dedupe --html                  # review groups with KEEP/REMOVE badges
 videre dedupe --trash                 # move the copies to the trash, once you agree
+videre dedupe --undo                  # changed your mind? put the last run back
 videre prune                          # reclaim database rows and derived data
 ```
 

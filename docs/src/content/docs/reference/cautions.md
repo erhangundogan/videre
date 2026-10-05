@@ -18,8 +18,12 @@ must pipe).
 Look before you delete: run [`videre dedupe --html`](/commands/dedupe/) first and review
 the KEEP/REMOVE badges, or use `--trash --dry-run`.
 
+Changed your mind? [`videre dedupe --undo`](/commands/dedupe/#undoing---trash)
+puts back the most recent `--trash` run, newest first, one run per call, until
+the trash is emptied.
+
 `videre dedupe --delete` removes the same copies **permanently**: nothing goes
-to the trash, and it cannot be undone. It asks with that wording before it
+to the trash, and it cannot be undone, not even by `--undo`. It asks with that wording before it
 starts; use it only once a `--trash --dry-run` lists what you expect.
 
 Near-duplicate groups from `--similar` are deliberately kept out of this output,

@@ -51,7 +51,7 @@ what actually deletes, moving the copies to the system trash after asking. Add
 :::caution
 `videre dedupe --trash` deletes immediately once you confirm (or with `--yes`).
 Preview with `--trash --dry-run`, or review in a browser with `--html` first.
-Prefer `--trash` over `| xargs trash`, which splits paths on spaces. See
+Changed your mind? `videre dedupe --undo` puts the last run back. Prefer `--trash` over `| xargs trash`, which splits paths on spaces. See
 [cautions](/reference/cautions/).
 :::
 
