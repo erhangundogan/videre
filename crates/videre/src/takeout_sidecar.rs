@@ -247,6 +247,17 @@ pub fn match_sidecar_detailed(index: &SidecarIndex, file_name: &str) -> SidecarM
         attempt!(try_forms(index, &edited));
     }
 
+    // Google appended an extension to a title that already looked like one
+    // (`X.jpg-large` became `X.jpg-large.jpg`); the sidecar keeps the title.
+    // Exact names only, and only while a dot remains, so `a.jpg` and `a.png`
+    // never share an `a.` sidecar.
+    let (stem, ext) = split_extension(file_name);
+    if ext.is_some() && stem.contains('.') {
+        if let Some(p) = index.exact(&format!("{stem}{CANONICAL_SUFFIX}")) {
+            return SidecarMatch::Found(p);
+        }
+    }
+
     SidecarMatch::Missing
 }
 
@@ -338,6 +349,35 @@ mod tests {
 
     fn name_of(p: Option<std::path::PathBuf>) -> Option<String> {
         p.map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+    }
+
+    /// Google appended an extension to a name that already looked like one
+    /// (`X.jpg-large` exported as `X.jpg-large.jpg`); the sidecar keeps the
+    /// original title. Seen once in a 14,471-file Takeout library.
+    #[test]
+    fn matches_a_sidecar_named_before_the_export_added_an_extension() {
+        let (_d, index) = indexed(&[
+            "CYxf00wWwAAg6aA.jpg-large.jpg",
+            "CYxf00wWwAAg6aA.jpg-large.supplemental-metadata.json",
+        ]);
+        assert_eq!(
+            name_of(match_sidecar(&index, "CYxf00wWwAAg6aA.jpg-large.jpg")).as_deref(),
+            Some("CYxf00wWwAAg6aA.jpg-large.supplemental-metadata.json")
+        );
+    }
+
+    /// The rule above is only for names that still hold a dot once the last
+    /// extension is gone. Otherwise `İzmir.jpg` and `İzmir.png` would both
+    /// take a sidecar named `İzmir.supplemental-metadata.json`.
+    #[test]
+    fn a_plain_name_does_not_take_a_sidecar_without_its_extension() {
+        let (_d, index) = indexed(&[
+            "İzmir.jpg",
+            "İzmir.png",
+            "İzmir.supplemental-metadata.json",
+        ]);
+        assert_eq!(match_sidecar(&index, "İzmir.jpg"), None);
+        assert_eq!(match_sidecar(&index, "İzmir.png"), None);
     }
 
     #[test]
