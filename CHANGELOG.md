@@ -16,6 +16,48 @@ version number and are released together.
 ## [Unreleased]
 
 
+## [0.53.0] - 2026-10-05
+
+### Added
+
+- **`videre dedupe --undo`** puts back what the most recent `--trash` run
+  moved to the trash; run it again for the run before, newest first. Every
+  `--trash` run and every gallery **Delete** records what it moved, file by
+  file, in `.videre/trash/`, so a run stopped halfway can be undone exactly
+  as far as it got. A file comes back only if its content still matches,
+  never over a file already at its path, and is scanned back into the
+  library. `--dry-run` lists what would come back, `--json` reports each
+  file. No Full Disk Access is needed.
+- **`videre dedupe --delete`** removes the duplicate copies permanently,
+  for when you do not need them back or a volume has no trash. It asks with
+  that wording first.
+
+### Changed
+
+- **`dedupe --trash` is fast on macOS.** It used to ask Finder to trash each
+  file in turn, about 4 files a second, waiting behind any Finder dialog and
+  needing permission to script Finder. It now uses the system's file
+  manager directly: measured at about 400 files a second on an internal
+  disk and 1,600 on a USB drive, with no Finder prompt.
+- **`dedupe --trash` and `--delete` show their progress** and report each
+  file that cannot be removed as it happens, so a long run never looks
+  frozen.
+- **Each removed copy leaves the library as it goes.** A run stopped
+  halfway leaves the library listing exactly what is still on disk, and a
+  copy an earlier run already removed counts as `already gone`, not as a
+  failure.
+- **The cleanup after a removal is named** (`Cleaning up the library, as
+  videre prune does:`), and `fix-dates` points at `videre prune` when files
+  it skipped are no longer on disk.
+
+### Upgrading
+
+- **`dedupe --remove` is now `dedupe --trash`.** The old flag is gone;
+  scripts using it fail to parse until updated.
+- **Runs trashed by 0.52 or older have no undo record.** Those went through
+  Finder, so Finder's **Put Back** works for them.
+
+
 ## [0.52.0] - 2026-10-01
 
 ### Added
@@ -2916,7 +2958,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.52.0...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.53.0...HEAD
+[0.53.0]: https://github.com/erhangundogan/videre/compare/v0.52.0...v0.53.0
 [0.52.0]: https://github.com/erhangundogan/videre/compare/v0.51.0...v0.52.0
 [0.51.0]: https://github.com/erhangundogan/videre/compare/v0.50.0...v0.51.0
 [0.50.0]: https://github.com/erhangundogan/videre/compare/v0.49.2...v0.50.0
