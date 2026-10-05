@@ -69,6 +69,9 @@ fn a_trash_run_writes_one_manifest_and_delete_writes_none() {
     let text = std::fs::read_to_string(&runs[0]).unwrap();
     assert_eq!(text.lines().count(), 2, "{text}");
     for e in &edits {
-        assert!(text.contains(&*e.file_name().unwrap().to_string_lossy()), "{text}");
+        assert!(
+            text.contains(&*e.file_name().unwrap().to_string_lossy()),
+            "{text}"
+        );
     }
 }

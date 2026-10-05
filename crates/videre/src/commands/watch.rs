@@ -1,9 +1,9 @@
 use super::faces::format_clustering_only_summary;
 use crate::command_context::CommandContext;
 use anyhow::Result;
-use rayon::prelude::*;
+
 use std::time::{Duration, Instant};
-use videre::{hasher, scanner, sqlite_output, types};
+use videre::scanner;
 use videre_core::{decode_failures, face_db};
 use videre_ml::pipeline::{run_clustering, run_face_pipeline_in};
 
@@ -1900,31 +1900,19 @@ fn run_scan_stage(
             }
             // Incremental in both modes: a spurious event on an unchanged
             // file hashes nothing, exactly like an unchanged file in a full
-            // walk.
-            let sigs = videre_core::db::stored_signatures(conn).unwrap_or_default();
-            let paths: Vec<_> = paths
-                .into_iter()
-                .filter(|p| videre::incremental::needs_processing(&sigs, p))
-                .collect();
-            let records: Vec<types::FileRecord> = paths
-                .par_iter()
-                .filter_map(|path| hasher::hash_file(path).ok())
-                .collect();
+            // walk. XMP reconcile covers just the files hashed here; the full
+            // walk's sidecar-change sweep keeps its own incremental rule
+            // through reconcile_xmp_in.
+            let prec = args.xmp.resolve_from(&ctx.library.settings)?;
+            let written =
+                crate::indexing::index_paths(conn, &ctx.library, paths, prec, args.silent)?;
             // Reported to the caller: the startup pass feeds these into the
             // pending set, so a downstream stage that was busy while the scan
             // ran retries them on the backoff instead of waiting an hour.
-            hashed.extend(records.iter().map(|r| std::path::PathBuf::from(&r.path)));
-            sqlite_output::write_records_in(conn, &ctx.library, &records)?;
-            let prec = args.xmp.resolve_from(&ctx.library.settings)?;
-            // XMP reconcile covers the files hashed in this run. A scoped
-            // (event) run reconciles just what it hashed; the full walk's
-            // sidecar-change sweep keeps its own incremental rule through
-            // reconcile_xmp_in.
-            let changed: std::collections::HashSet<String> =
-                records.iter().map(|r| r.path.clone()).collect();
-            crate::xmp::reconcile_xmp_in(conn, &ctx.library, prec, &changed, args.silent)?;
+            let count = written.len();
+            hashed.extend(written);
             if !args.silent {
-                tracing::info!("videre watch: scan stage wrote {} record(s)", records.len());
+                tracing::info!("videre watch: scan stage wrote {count} record(s)");
             }
             Ok(())
         },

@@ -192,8 +192,16 @@ mod tests {
             trashed: None,
         });
         let b = entry("Fotoğraflar/çiçek-edited.jpg");
-        write_run(state.path(), "20261005T100000.000Z-dedupe.jsonl", &[a.clone()]);
-        write_run(state.path(), "20261005T110000.000Z-gallery.jsonl", &[b.clone()]);
+        write_run(
+            state.path(),
+            "20261005T100000.000Z-dedupe.jsonl",
+            &[a.clone()],
+        );
+        write_run(
+            state.path(),
+            "20261005T110000.000Z-gallery.jsonl",
+            &[b.clone()],
+        );
 
         let stack = runs(state.path()).unwrap();
         assert_eq!(stack.len(), 2);
@@ -229,7 +237,10 @@ mod tests {
             "20261005T100000.000Z-dedupe.jsonl",
             &[entry("a.jpg")],
         );
-        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
         f.write_all(b"{\"path\":\"b.j").unwrap();
         assert_eq!(read(&path).unwrap().entries, vec![entry("a.jpg")]);
     }

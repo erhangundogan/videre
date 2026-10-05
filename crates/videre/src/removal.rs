@@ -132,7 +132,9 @@ fn to_trash(path: &Path) -> Result<Option<PathBuf>, String> {
 /// the trash's own listing.
 #[cfg(not(target_os = "macos"))]
 fn to_trash(path: &Path) -> Result<Option<PathBuf>, String> {
-    trash::delete(path).map(|()| None).map_err(|e| e.to_string())
+    trash::delete(path)
+        .map(|()| None)
+        .map_err(|e| e.to_string())
 }
 
 type Moved = crate::trash_stack::Moved;
@@ -200,7 +202,7 @@ mod tests {
         conn.execute_batch(
             "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, hash TEXT, size_bytes INTEGER);",
         )
-            .unwrap();
+        .unwrap();
         for p in paths {
             conn.execute(
                 "INSERT INTO file_hashes VALUES (?1, 'h', 1)",
@@ -245,8 +247,13 @@ mod tests {
         let gone = dir.path().join("IMG_1-edited.jpg");
         let conn = rows_for(&[&gone]);
         for method in [Method::Trash, Method::Delete] {
-            let res =
-                remove_and_forget(Some(&conn), std::slice::from_ref(&gone), method, &quiet(1), None);
+            let res = remove_and_forget(
+                Some(&conn),
+                std::slice::from_ref(&gone),
+                method,
+                &quiet(1),
+                None,
+            );
             assert_eq!(
                 res,
                 vec![(gone.clone(), Outcome::AlreadyGone)],
@@ -313,7 +320,10 @@ mod tests {
                 let run = crate::trash_stack::read(&stack[0]).unwrap();
                 assert_eq!(run.entries.len(), 1);
                 let e = &run.entries[0];
-                assert_eq!((e.file.path.as_path(), e.hash.as_str(), e.size), (f.as_path(), "h", 1));
+                assert_eq!(
+                    (e.file.path.as_path(), e.hash.as_str(), e.size),
+                    (f.as_path(), "h", 1)
+                );
                 let side = e.sidecar.as_ref().expect("the sidecar is recorded");
                 assert_eq!(side.path, sidecar);
                 // Where each landed is recorded on macOS, so --undo needs no
@@ -339,7 +349,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let f = dir.path().join("a.jpg");
         std::fs::write(&f, b"x").unwrap();
-        let res = remove_and_forget(None, std::slice::from_ref(&f), Method::Delete, &quiet(1), None);
+        let res = remove_and_forget(
+            None,
+            std::slice::from_ref(&f),
+            Method::Delete,
+            &quiet(1),
+            None,
+        );
         assert_eq!(res[0].1, Outcome::Removed);
         assert!(!f.exists());
     }

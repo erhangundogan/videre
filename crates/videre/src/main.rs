@@ -6,6 +6,7 @@ mod commands;
 mod completions;
 mod display_path;
 mod exit;
+mod indexing;
 mod logging;
 mod removal;
 mod render;
