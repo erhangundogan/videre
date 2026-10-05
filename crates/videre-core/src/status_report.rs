@@ -306,6 +306,39 @@ pub fn estimate_cost(
     }
 }
 
+/// How many files take their capture date from each source
+/// (`crate::capture_date::DateSource`); `unresolved` rows were written before
+/// capture dates and wait for the next scan.
+#[derive(Debug, Default, Clone, PartialEq, serde::Serialize)]
+pub struct DateSources {
+    pub exif: i64,
+    pub video: i64,
+    pub sidecar: i64,
+    pub mvhd: i64,
+    pub mtime: i64,
+    pub unresolved: i64,
+}
+
+fn date_sources(conn: &Connection) -> Result<DateSources> {
+    let mut out = DateSources::default();
+    let mut stmt = conn.prepare("SELECT date_source, count(*) FROM file_hashes GROUP BY 1")?;
+    let rows = stmt.query_map([], |r| {
+        Ok((r.get::<_, Option<String>>(0)?, r.get::<_, i64>(1)?))
+    })?;
+    for row in rows {
+        let (source, n) = row?;
+        match source.as_deref() {
+            Some("exif") => out.exif += n,
+            Some("video") => out.video += n,
+            Some("sidecar") => out.sidecar += n,
+            Some("mvhd") => out.mvhd += n,
+            Some("mtime") => out.mtime += n,
+            _ => out.unresolved += n,
+        }
+    }
+    Ok(out)
+}
+
 /// The whole operational picture for one library, from one call. Rendered
 /// by `videre status` (text and --json); `stats` and the MCP tools read the
 /// same model rather than re-deriving it.
@@ -321,6 +354,8 @@ pub struct StatusReport {
     pub embed_model: String,
     /// The latest run of each command, as its log records it.
     pub logs: Vec<crate::error_log::CommandLogSummary>,
+    /// Where the library's capture dates come from.
+    pub dates: DateSources,
 }
 
 impl StatusReport {
@@ -366,6 +401,7 @@ pub fn compute_status_in(
             )
         })
         .collect();
+    let dates = date_sources(conn)?;
     Ok(StatusReport {
         coverage,
         pipelines,
@@ -373,6 +409,7 @@ pub fn compute_status_in(
         costs,
         embed_model,
         logs,
+        dates,
     })
 }
 

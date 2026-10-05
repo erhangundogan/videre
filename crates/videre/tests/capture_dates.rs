@@ -212,3 +212,36 @@ fn status_counts_a_sidecar_date_as_fix_dates_work() {
         .success());
     assert_eq!(outstanding(&lib), 0);
 }
+
+/// status says where the library's dates come from, so a library dated by
+/// file times alone (an unpacked export) is visible, and asks for a scan
+/// while rows wait to be resolved.
+#[test]
+fn status_reports_where_dates_come_from() {
+    let lib = TestLibrary::new();
+    let photo = undated_jpeg(&lib, "Fotoğraflar/IMG-20160104-WA0000.jpg", 70);
+    sidecar(&photo, TAKEN, 0.0, 0.0);
+    undated_jpeg(&lib, "Ekran/görüntü.jpg", 80);
+    lib.copy_fixture("tiny.jpg", "Kamera/çekim.jpg");
+    lib.scan();
+
+    let out = lib.cmd().args(["status", "--json"]).output().unwrap();
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let dates = &doc["report"]["dates"];
+    assert_eq!(dates["exif"], 1, "{dates}");
+    assert_eq!(dates["sidecar"], 1, "{dates}");
+    assert_eq!(dates["mtime"], 1, "{dates}");
+    assert_eq!(dates["unresolved"], 0, "{dates}");
+
+    let text = String::from_utf8(lib.cmd().arg("status").output().unwrap().stdout).unwrap();
+    assert!(
+        text.contains("1 from Takeout sidecars") && text.contains("1 from file times only"),
+        "{text}"
+    );
+
+    lib.conn()
+        .execute_batch("UPDATE file_hashes SET date_source = NULL")
+        .unwrap();
+    let text = String::from_utf8(lib.cmd().arg("status").output().unwrap().stdout).unwrap();
+    assert!(text.contains("run 'videre scan': 3 file(s)"), "{text}");
+}
