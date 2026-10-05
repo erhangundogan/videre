@@ -2435,3 +2435,56 @@ fn a_search_has_a_page_of_its_own() {
         "the page has the grid to rank into"
     );
 }
+
+// ---- capture dates: a Takeout photo lands on the day it was taken ---------
+
+/// An undated photo whose Google Takeout sidecar says when it was taken is
+/// filed under that day, not under the day the export was unpacked (its
+/// mtime), in the date tree and the date page alike, and the page carries
+/// the capture date for the browser to show.
+#[test]
+fn a_takeout_photo_is_filed_under_its_sidecar_day() {
+    let lib = TestLibrary::new();
+    let photo = lib
+        .context()
+        .paths
+        .root
+        .join("Fotoğraflar/IMG-20160104-WA0000.jpg");
+    std::fs::create_dir_all(photo.parent().unwrap()).unwrap();
+    image::RgbImage::from_pixel(16, 16, image::Rgb([10, 90, 200]))
+        .save(&photo)
+        .unwrap();
+    // Noon UTC on 4 Jan 2016: the same calendar day in every zone from
+    // UTC-11 to UTC+11, so the test does not depend on the machine's zone.
+    let taken: i64 = 1_451_908_800;
+    std::fs::write(
+        photo.with_file_name("IMG-20160104-WA0000.jpg.supplemental-metadata.json"),
+        format!(r#"{{"photoTakenTime":{{"timestamp":"{taken}"}}}}"#),
+    )
+    .unwrap();
+    // Unpacked years later: the mtime says 2026.
+    filetime::set_file_mtime(&photo, filetime::FileTime::from_unix_time(1_789_727_404, 0)).unwrap();
+    lib.scan();
+    let server = Server::start(&lib);
+
+    let (status, body) = server.get("/api/dates?level=year");
+    assert_eq!(status, 200);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let years: Vec<&str> = v["buckets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b["key"].as_str().unwrap())
+        .collect();
+    assert_eq!(years, ["2016"], "{body}");
+
+    let (status, body) = server.get("/api/files?view=date&date=2016-01-04&limit=10");
+    assert_eq!(status, 200);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let files = v["files"].as_array().expect("files");
+    assert_eq!(files.len(), 1, "{body}");
+    assert!(
+        files[0]["ca"].as_str().unwrap().starts_with("2016-01-04T"),
+        "{body}"
+    );
+}

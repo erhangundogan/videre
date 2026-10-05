@@ -608,7 +608,7 @@ mod location_cluster_tests {
                     ext TEXT,
                     created_at TEXT,
                     modified_at TEXT,
-                    exif_date TEXT,
+                    exif_date TEXT, capture_date TEXT,
                     gps_lat REAL,
                     gps_lon REAL,
                     width INTEGER,
@@ -676,7 +676,7 @@ mod location_cluster_tests {
             .execute_batch(
                 "CREATE TABLE file_hashes (
                     path TEXT PRIMARY KEY, hash TEXT NOT NULL, size_bytes INTEGER,
-                    ext TEXT, created_at TEXT, modified_at TEXT, exif_date TEXT,
+                    ext TEXT, created_at TEXT, modified_at TEXT, exif_date TEXT, capture_date TEXT,
                     gps_lat REAL, gps_lon REAL, width INTEGER, height INTEGER,
                     location_cluster_id INTEGER
                 );",
@@ -714,7 +714,7 @@ mod location_cluster_tests {
             .execute_batch(
                 "CREATE TABLE file_hashes (
                     path TEXT PRIMARY KEY, hash TEXT NOT NULL, size_bytes INTEGER,
-                    ext TEXT, created_at TEXT, modified_at TEXT, exif_date TEXT,
+                    ext TEXT, created_at TEXT, modified_at TEXT, exif_date TEXT, capture_date TEXT,
                     gps_lat REAL, gps_lon REAL, width INTEGER, height INTEGER,
                     location_cluster_id INTEGER
                 );
@@ -1046,6 +1046,28 @@ mod events_tests {
             .iter()
             .filter(|row| row.hash.starts_with("bad-") || row.hash == "infinite")
             .all(|row| row.gps.is_none()));
+    }
+
+    /// A Takeout sidecar's date is a capture time like EXIF's, so the photo
+    /// takes part in Events; a date that only the file's own time gave it
+    /// does not, as before.
+    #[test]
+    fn trip_snapshot_counts_a_sidecar_date_as_a_capture_but_not_a_file_time() {
+        let conn = Connection::open_in_memory().unwrap();
+        videre_core::library_db::ensure_scan_schema(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO file_hashes (path, hash, ext, capture_date, date_source) VALUES
+             ('/p/WhatsApp.jpg','yan','jpg','2016-01-04T22:29:58','sidecar'),
+             ('/p/ekran.jpg','zaman','jpg','2026-09-18T15:30:04','mtime');",
+        )
+        .unwrap();
+        let rows = load_trip_rows(&conn).unwrap();
+        let capture = |h: &str| rows.iter().find(|r| r.hash == h).unwrap().capture;
+        assert_eq!(
+            capture("yan"),
+            Some(super::super::events::parse_capture("2016-01-04T22:29:58").unwrap())
+        );
+        assert_eq!(capture("zaman"), None);
     }
 
     #[test]
@@ -3595,7 +3617,14 @@ fn load_trip_rows(conn: &Connection) -> rusqlite::Result<Vec<super::events::Trip
     use std::collections::BTreeMap;
 
     let mut stmt = conn.prepare(
-        "SELECT hash, exif_date, gps_lat, gps_lon, path, COALESCE(ext,''), mime, width, height \
+        // A capture time is one the moment of capture recorded: EXIF, a
+        // video's own date, a Takeout sidecar, mvhd. A date that only the
+        // file's own time gave it is not; an unresolved row keeps its EXIF.
+        "SELECT hash, \
+                CASE WHEN date_source IS NULL THEN exif_date \
+                     WHEN date_source = 'mtime' THEN NULL \
+                     ELSE capture_date END, \
+                gps_lat, gps_lon, path, COALESCE(ext,''), mime, width, height \
          FROM file_hashes ORDER BY hash, path",
     )?;
     let rows = stmt.query_map([], |r| {
