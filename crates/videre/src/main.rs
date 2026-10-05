@@ -9,6 +9,7 @@ mod exit;
 mod logging;
 mod removal;
 mod render;
+mod trash_stack;
 mod xmp;
 
 #[derive(Parser)]
