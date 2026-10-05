@@ -55,6 +55,14 @@ impl DateSource {
 
 const WALL: &str = "%Y-%m-%dT%H:%M:%S";
 
+/// A row's capture time when the moment of capture recorded one (EXIF, a
+/// video's own date, a Takeout sidecar, mvhd), else NULL: a date only the
+/// file's own time gave is not one. A row not yet resolved keeps its EXIF
+/// date. What fix-dates writes, what status counts as its work, and what
+/// Events trusts for chronology.
+pub const CAPTURE_TIME_SQL: &str = "CASE WHEN date_source IS NULL THEN exif_date \
+     WHEN date_source = 'mtime' THEN NULL ELSE capture_date END";
+
 /// A stored or EXIF-derived wall clock (`YYYY-MM-DDTHH:MM:SS`), checked and
 /// normalised, or `None` when it is not a date.
 ///

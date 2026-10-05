@@ -172,12 +172,15 @@ fn locations_coverage(conn: &Connection) -> Result<StageCoverage> {
     })
 }
 
-/// Fix-dates stage: rows with a camera date whose stored modified time does
-/// not match what fix-dates would write. Judged in Rust because the target
-/// depends on the local timezone, which SQL cannot compute.
+/// Fix-dates stage: rows with a capture time (EXIF, video, Takeout sidecar)
+/// whose stored modified time does not match what fix-dates would write.
+/// Judged in Rust because the target depends on the local timezone, which
+/// SQL cannot compute.
 fn fix_dates_coverage(conn: &Connection) -> Result<StageCoverage> {
-    let mut stmt =
-        conn.prepare("SELECT exif_date, modified_at FROM file_hashes WHERE exif_date IS NOT NULL")?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT * FROM (SELECT {} AS taken, modified_at FROM file_hashes) WHERE taken IS NOT NULL",
+        crate::capture_date::CAPTURE_TIME_SQL
+    ))?;
     let rows = stmt.query_map([], |r| {
         Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
     })?;
@@ -394,7 +397,7 @@ mod tests {
                 modified_at TEXT,
                 ext         TEXT,
                 phash       INTEGER,
-                exif_date   TEXT, capture_date TEXT,
+                exif_date   TEXT, capture_date TEXT, date_source TEXT,
                 gps_lat     REAL,
                 gps_lon     REAL,
                 width       INTEGER,

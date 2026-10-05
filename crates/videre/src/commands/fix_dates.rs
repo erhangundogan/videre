@@ -72,11 +72,11 @@ fn run_fix_dates(
     conn: &rusqlite::Connection,
 ) -> anyhow::Result<usize> {
     let mut stmt = conn
-        .prepare(
-            "SELECT path, exif_date, modified_at FROM file_hashes \
-             WHERE exif_date IS NOT NULL \
-             ORDER BY path",
-        )
+        .prepare(&format!(
+            "SELECT * FROM (SELECT path, {} AS taken, modified_at FROM file_hashes) \
+                 WHERE taken IS NOT NULL ORDER BY path",
+            videre_core::capture_date::CAPTURE_TIME_SQL
+        ))
         .expect("failed to prepare query");
 
     let all: Vec<(String, String, Option<String>)> = stmt

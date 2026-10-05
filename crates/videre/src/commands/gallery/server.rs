@@ -3616,17 +3616,11 @@ fn load_trip_rows(conn: &Connection) -> rusqlite::Result<Vec<super::events::Trip
     use super::events::{MediaKind, TripRow};
     use std::collections::BTreeMap;
 
-    let mut stmt = conn.prepare(
-        // A capture time is one the moment of capture recorded: EXIF, a
-        // video's own date, a Takeout sidecar, mvhd. A date that only the
-        // file's own time gave it is not; an unresolved row keeps its EXIF.
-        "SELECT hash, \
-                CASE WHEN date_source IS NULL THEN exif_date \
-                     WHEN date_source = 'mtime' THEN NULL \
-                     ELSE capture_date END, \
-                gps_lat, gps_lon, path, COALESCE(ext,''), mime, width, height \
-         FROM file_hashes ORDER BY hash, path",
-    )?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT hash, {}, gps_lat, gps_lon, path, COALESCE(ext,''), mime, width, height \
+             FROM file_hashes ORDER BY hash, path",
+        videre_core::capture_date::CAPTURE_TIME_SQL
+    ))?;
     let rows = stmt.query_map([], |r| {
         Ok((
             r.get::<_, String>(0)?,

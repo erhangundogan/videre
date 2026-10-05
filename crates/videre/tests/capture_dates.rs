@@ -181,3 +181,34 @@ fn rows_from_before_capture_dates_resolve_on_the_next_scan_without_rehashing() {
     assert_eq!(r.capture_date.as_deref(), Some("2015-10-30T00:03:39"));
     assert_eq!(r.exif_date.as_deref(), Some("2015-10-30T00:03:39"));
 }
+
+/// status counts a sidecar-dated photo as fix-dates work until fix-dates
+/// writes it, then not.
+#[test]
+fn status_counts_a_sidecar_date_as_fix_dates_work() {
+    let lib = TestLibrary::new();
+    let photo = undated_jpeg(&lib, "Fotoğraflar/IMG-20160104-WA0000.jpg", 60);
+    sidecar(&photo, TAKEN, 0.0, 0.0);
+    lib.scan();
+    let outstanding = |lib: &TestLibrary| -> i64 {
+        let out = lib.cmd().args(["status", "--json"]).output().unwrap();
+        let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        doc["report"]["coverage"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["stage"] == "fix-dates")
+            .unwrap()["outstanding"]
+            .as_i64()
+            .unwrap()
+    };
+    assert_eq!(outstanding(&lib), 1);
+    assert!(lib
+        .cmd()
+        .args(["fix-dates", "--yes"])
+        .output()
+        .unwrap()
+        .status
+        .success());
+    assert_eq!(outstanding(&lib), 0);
+}

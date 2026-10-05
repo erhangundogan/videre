@@ -7,7 +7,6 @@
 //! metadata. Nothing here knows what a Takeout sidecar is.
 
 use crate::command_context::CommandContext;
-use filetime::FileTime;
 use std::path::{Path, PathBuf};
 use videre_core::import_location::{locate_with_database, LocateOptions, Located};
 use videre_core::import_providers::{self, ProviderDescriptor};
@@ -34,7 +33,8 @@ pub struct ImportArgs {
     #[arg(long)]
     allow_partial: bool,
 
-    /// Report what would change without modifying any file
+    /// Report only. import changes no file either way: scan reads a Takeout
+    /// sidecar's date, and fix-dates sets it as the file's time
     #[arg(long)]
     dry_run: bool,
 
@@ -62,6 +62,10 @@ pub(crate) struct Summary {
     pub unmatched: usize,
     pub ambiguous: usize,
     pub with_location: usize,
+    /// Google Takeout: files whose sidecar records when they were taken.
+    pub dated: usize,
+    /// Files whose time import changed: none since scan reads sidecar dates
+    /// and fix-dates writes them. Kept so the JSON shape holds.
     pub updated: usize,
     pub errors: usize,
     pub aborted: bool,
@@ -73,9 +77,8 @@ pub(crate) struct Summary {
 pub fn run(args: ImportArgs, ctx: &CommandContext) -> anyhow::Result<()> {
     if let Some(into) = &args.into {
         anyhow::bail!(
-            "--into ({}) is not implemented yet; import currently corrects \
-             timestamps in place. Copy the files yourself, then run \
-             'videre import' on the copy.",
+            "--into ({}) is not implemented yet; import works in place. Copy \
+             the files yourself, then run 'videre import' on the copy.",
             ctx.operand(into).display()
         );
     }
@@ -194,29 +197,17 @@ fn import_one(
         return Ok(Some(summary));
     }
 
-    // Per-file metadata recovery: the one thing a source supplies that the
-    // command cannot. Everything after this point is source-agnostic again.
-    let pending = if provider.id == "google-takeout" {
-        recover_takeout_dates(&files, &mut summary, args)
-    } else {
-        Vec::new()
-    };
-
-    let question = if pending.is_empty() {
-        "Continue?".to_string()
-    } else {
-        format!(
-            "This will set the modified time on {} file(s) from their import source. Continue?",
-            pending.len()
-        )
-    };
-    if !args.yes && !args.dry_run && !confirm(&question)? {
+    // Takeout: what its sidecars hold. scan reads their dates and places and
+    // fix-dates writes the dates as file times, so import itself changes no
+    // file and asks nothing; two date writers once undid each other.
+    let takeout = provider.id == "google-takeout";
+    if takeout {
+        survey_takeout(&files, &mut summary, args);
+    } else if !args.yes && !args.dry_run && !confirm("Continue?")? {
         tracing::info!("Aborted; no files modified.");
         summary.aborted = true;
         return Ok(Some(summary));
     }
-
-    apply_dates(&pending, &mut summary, args, ctx);
 
     if !args.silent {
         // Every located root, since a Lightroom catalog routinely has several
@@ -224,6 +215,12 @@ fn import_one(
         tracing::info!("Next:");
         for r in &roots {
             tracing::info!("  videre scan {}", r.display());
+        }
+        if takeout && summary.dated > 0 {
+            tracing::info!(
+                "  videre fix-dates                  # set {} file time(s) from their sidecar",
+                summary.dated
+            );
         }
         if summary.edited_pairs > 0 {
             tracing::info!(
@@ -321,14 +318,9 @@ fn apple_preflight(root: &Path, files: &[PathBuf], args: &ImportArgs) -> anyhow:
     Ok(true)
 }
 
-/// A file and the capture time recovered for it, in Unix seconds.
-type PendingDate = (PathBuf, i64);
-
-fn recover_takeout_dates(
-    files: &[PathBuf],
-    summary: &mut Summary,
-    args: &ImportArgs,
-) -> Vec<PendingDate> {
+/// Counts what a Takeout export's sidecars hold. Nothing is written: scan
+/// reads the dates and places, fix-dates sets the dates as file times.
+fn survey_takeout(files: &[PathBuf], summary: &mut Summary, args: &ImportArgs) {
     use videre::takeout_sidecar as import_takeout;
 
     let survey = import_takeout::survey(files);
@@ -336,8 +328,6 @@ fn recover_takeout_dates(
     summary.unmatched = survey.unmatched;
     summary.ambiguous = survey.ambiguous;
 
-    let mut pending = Vec::new();
-    let mut already_correct = 0usize;
     for m in &survey.matched {
         let meta = match std::fs::read_to_string(&m.sidecar)
             .map_err(anyhow::Error::from)
@@ -354,81 +344,19 @@ fn recover_takeout_dates(
         if meta.gps.is_some() {
             summary.with_location += 1;
         }
-        let Some(taken) = meta.taken_unix else {
-            continue;
-        };
-        if current_mtime(&m.file) == Some(taken) {
-            already_correct += 1;
-            continue;
+        if meta.taken_unix.is_some() {
+            summary.dated += 1;
         }
-        pending.push((m.file.clone(), taken));
     }
 
     if !args.silent {
         report_takeout_survey(summary, survey.folders);
         tracing::info!(
-            "  {} would have their date corrected ({already_correct} already agree)",
-            pending.len()
+            "  {} with a capture date and {} with a place; videre scan reads both",
+            summary.dated,
+            summary.with_location
         );
     }
-    pending
-}
-
-/// Sets each recovered capture time as the file's mtime.
-///
-/// `filetime::set_file_mtime` is the same call `fix-dates` uses, so the two
-/// commands cannot disagree about what "correcting a date" means.
-fn apply_dates(
-    pending: &[PendingDate],
-    summary: &mut Summary,
-    args: &ImportArgs,
-    ctx: &CommandContext,
-) {
-    for (file, taken) in pending {
-        if !args.dry_run {
-            // Revalidate through the confined writer at the moment of mutation,
-            // so a symlink swapped in since the batch check is not followed.
-            let ft = FileTime::from_unix_time(*taken, 0);
-            let result = videre_core::library_io::open_media(&ctx.library, file)
-                .and_then(|f| Ok(filetime::set_file_handle_times(&f, None, Some(ft))?));
-            if let Err(e) = result {
-                if let Some(io) = e.downcast_ref::<std::io::Error>() {
-                    if io.kind() == std::io::ErrorKind::NotFound {
-                        // Moved or trashed since the walk; not this run's problem.
-                        continue;
-                    }
-                }
-                tracing::error!("{}: {e:#}", file.display());
-                summary.errors += 1;
-                continue;
-            }
-        }
-        summary.updated += 1;
-        if !args.silent {
-            let prefix = if args.dry_run {
-                "[dry-run]"
-            } else {
-                "[updated]"
-            };
-            println!("{prefix} {}  ->  {}", file.display(), format_date(*taken));
-        }
-    }
-}
-
-fn current_mtime(path: &Path) -> Option<i64> {
-    std::fs::metadata(path)
-        .ok()
-        .map(|m| FileTime::from_last_modification_time(&m).unix_seconds())
-}
-
-fn format_date(unix: i64) -> String {
-    chrono::DateTime::from_timestamp(unix, 0)
-        .map(|d| {
-            d.with_timezone(&chrono::Local)
-                .format("%Y-%m-%dT%H:%M:%S")
-                .to_string()
-        })
-        .unwrap_or_else(|| unix.to_string())
 }
 
 /// Takeout is routinely handed the export folder itself rather than its
@@ -602,6 +530,7 @@ fn json_summary(s: &Summary) -> serde_json::Value {
         "unmatched": s.unmatched,
         "ambiguous": s.ambiguous,
         "with_location": s.with_location,
+        "dated": s.dated,
         "updated": s.updated,
         "errors": s.errors,
         "aborted": s.aborted,
