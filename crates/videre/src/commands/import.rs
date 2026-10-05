@@ -329,7 +329,7 @@ fn recover_takeout_dates(
     summary: &mut Summary,
     args: &ImportArgs,
 ) -> Vec<PendingDate> {
-    use super::import_takeout;
+    use videre::takeout_sidecar as import_takeout;
 
     let survey = import_takeout::survey(files);
     summary.matched = survey.matched.len();
