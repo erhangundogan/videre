@@ -175,6 +175,11 @@ fn run_text(args: DedupeArgs, ctx: &CommandContext) -> anyhow::Result<()> {
     if args.method().is_some() && !args.dry_run && moved > 0 {
         drop(activity);
         let prune_args = super::prune::PruneArgs::for_watch_stage(args.silent);
+        // Named, so the summary line that follows is not a puzzle, and the
+        // command it stands for is learned.
+        if !args.silent {
+            tracing::info!("Cleaning up the library, as videre prune does:");
+        }
         match crate::command_context::with_tracked_command(
             ctx,
             "prune",

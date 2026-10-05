@@ -144,7 +144,8 @@ you. `--dry-run` costs nothing and shows the exact before and after.
 
 **Files missing on disk are skipped**, not treated as errors. Deleted duplicates
 still recorded in the database fall into this category, and appear in the
-summary as skipped.
+summary as skipped. When there are any, fix-dates says so and points at
+[`videre prune`](/commands/prune/), which drops their rows from the library.
 
 **Exits nonzero if any file could not be updated**, for example on a read-only
 volume or a permissions error. Missing files do not count.

@@ -227,3 +227,29 @@ fn nothing_to_fix_asks_nothing_and_says_so() {
     assert!(!text.contains("Aborted"), "{text}");
     assert!(text.contains("1 already correct"), "{text}");
 }
+
+/// A row whose file is gone is skipped, and only then does fix-dates point at
+/// `videre prune`, which drops such rows. A run with every file present says
+/// nothing about it.
+#[test]
+fn a_file_no_longer_on_disk_points_at_prune() {
+    let (lib, file) = fixture_library();
+    let out = lib.cmd().args(["fix-dates", "--yes"]).output().unwrap();
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("videre prune"));
+
+    let gone = lib.context().paths.root.join("silindi.jpg");
+    lib.conn()
+        .execute(
+            "INSERT INTO file_hashes (path, hash, exif_date)
+             VALUES (?1, 'hgone', '2018-01-01T10:00:00')",
+            [gone.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+    let out = lib.cmd().args(["fix-dates", "--yes"]).output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("1 file(s) were not found; videre prune drops their rows"),
+        "{stderr}"
+    );
+    assert!(file.exists());
+}

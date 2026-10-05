@@ -403,6 +403,12 @@ fn delete_removes_the_copy_and_its_sidecar_permanently() {
     let out = dedupe(&lib, &["--delete", "--yes"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("Deleted 1 file(s)"), "{stderr}");
+    // The clean-up that follows says what it is, so its line is not a puzzle
+    // and the command it stands for is learned.
+    assert!(
+        stderr.contains("Cleaning up the library, as videre prune does:"),
+        "{stderr}"
+    );
     assert_eq!(remaining(&[&a, &b]), 1);
     let gone = if a.exists() { &b } else { &a };
     assert!(!PathBuf::from(format!("{}.xmp", gone.display())).exists());
