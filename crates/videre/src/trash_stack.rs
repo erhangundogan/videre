@@ -173,9 +173,11 @@ fn recorded(m: &Moved) -> Vec<Candidate> {
         .collect()
 }
 
-/// Where the trash run recorded each file landed (macOS).
+/// Where the trash run recorded each file landed (macOS; tests everywhere).
+#[cfg(any(target_os = "macos", test))]
 pub struct Recorded;
 
+#[cfg(any(target_os = "macos", test))]
 impl Locate for Recorded {
     fn candidates(&self, entries: &[Entry]) -> Vec<(Vec<Candidate>, Vec<Candidate>)> {
         entries
@@ -445,7 +447,7 @@ mod tests {
         write_run(
             state.path(),
             "20261005T110000.000Z-gallery.jsonl",
-            &[b.clone()],
+            std::slice::from_ref(&b),
         );
 
         let stack = runs(state.path()).unwrap();

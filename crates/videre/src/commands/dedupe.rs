@@ -31,11 +31,20 @@ pub struct DedupeArgs {
     #[arg(long)]
     delete: bool,
 
-    /// With --trash or --delete, list what would be removed and remove nothing.
+    /// Put back the files the most recent --trash run moved to the trash.
+    /// Each call undoes one run, newest first; run it again for the one
+    /// before. Files are matched by content hash, never overwrite an existing
+    /// file, and are scanned back into the library. Runs removed with
+    /// --delete cannot be undone.
+    #[arg(long, conflicts_with_all = ["trash", "delete", "edited", "similar", "html", "print0", "force"])]
+    undo: bool,
+
+    /// With --trash, --delete or --undo, list what would change and change
+    /// nothing.
     #[arg(long)]
     dry_run: bool,
 
-    /// With --trash or --delete, skip the confirmation prompt.
+    /// With --trash, --delete or --undo, skip the confirmation prompt.
     #[arg(long)]
     yes: bool,
 
@@ -77,6 +86,9 @@ impl DedupeArgs {
 }
 
 pub fn run(args: DedupeArgs, ctx: &CommandContext) -> anyhow::Result<()> {
+    if args.undo {
+        return run_undo(&args, ctx);
+    }
     // --trash and --delete are the human removal paths; --json and --similar
     // are report surfaces. Combining them is ambiguous (remove the JSON?
     // remove the review-only near-duplicates?), so reject rather than guess.
@@ -487,4 +499,111 @@ fn run_json(
     videre_core::pipeline_runs::track_in(&conn, &ctx.library, &guard, "dedupe", || {
         super::build_find_duplicates_from(&conn, args.similar, args.edited)
     })
+}
+
+/// `--undo`: put back the newest recorded trash run (dedupe or gallery
+/// Delete), one run per call.
+fn run_undo(args: &DedupeArgs, ctx: &CommandContext) -> anyhow::Result<()> {
+    use crate::trash_stack::{self, Step};
+    let conn = videre_core::library_db::open_existing(&ctx.library)?;
+    let _activity = videre_core::library_locks::try_activity(
+        &ctx.library,
+        videre_core::library_locks::ActivityMode::Shared,
+    )?;
+    let guard = videre_core::library_locks::try_command(&ctx.library, "dedupe")?;
+    let locate = trash_stack::system();
+
+    let Some((run, steps)) = trash_stack::plan_latest(&ctx.library.paths.state, locate.as_ref())?
+    else {
+        if args.json {
+            println!("{}", serde_json::json!({ "nothing_to_undo": true }));
+        } else {
+            tracing::info!("Nothing to undo: no --trash run is recorded in this library.");
+        }
+        return Ok(());
+    };
+    let restorable = steps
+        .iter()
+        .filter(|s| matches!(s, Step::Restore(_)))
+        .count();
+
+    if args.dry_run {
+        for (entry, step) in run.entries.iter().zip(&steps) {
+            let path = entry.file.path.display();
+            match step {
+                Step::Restore(c) => println!("[would restore] {path}  <-  {}", c.file.display()),
+                Step::Occupied => println!("[skipped, a file is already there] {path}"),
+                Step::NotInTrash => println!("[not in the trash] {path}"),
+            }
+        }
+        if !args.silent {
+            tracing::info!(
+                "Dry run: {restorable} of {} file(s) trashed on {} would be restored.",
+                run.entries.len(),
+                run.when
+            );
+        }
+        return Ok(());
+    }
+
+    if restorable > 0
+        && !args.yes
+        && !super::confirm(&format!(
+            "Restore {restorable} file(s) trashed on {}?",
+            run.when
+        ))?
+    {
+        tracing::info!("Aborted; nothing was restored.");
+        return Ok(());
+    }
+
+    let progress = videre_core::progress::Progress::new_counting(
+        run.entries.len() as u64,
+        args.silent || args.json,
+        "files",
+    );
+    let report =
+        videre_core::pipeline_runs::track_in(&conn, &ctx.library, &guard, "dedupe", || {
+            trash_stack::undo_latest(&conn, &ctx.library, locate.as_ref(), &progress, args.silent)
+        })?
+        .expect("planned above");
+    progress.finish();
+
+    if args.json {
+        println!("{}", serde_json::to_string(&report)?);
+    } else if !args.silent {
+        let mut notes = Vec::new();
+        if !report.not_in_trash.is_empty() {
+            notes.push(format!("{} not in the trash", report.not_in_trash.len()));
+        }
+        if !report.occupied.is_empty() {
+            notes.push(format!(
+                "{} skipped: a file is already there",
+                report.occupied.len()
+            ));
+        }
+        if !report.failed.is_empty() {
+            notes.push(format!("{} could not be moved", report.failed.len()));
+        }
+        let notes = if notes.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", notes.join(", "))
+        };
+        tracing::info!(
+            "Restored {} file(s) from the run of {}{notes}. {} earlier run(s) can still be undone.",
+            report.restored.len(),
+            report.when,
+            report.runs_left
+        );
+        if !report.restored.is_empty() {
+            tracing::info!(
+                "Their embeddings and faces are rebuilt by videre embed and videre faces, or a running videre watch; videre status lists them until then."
+            );
+        }
+    }
+    if report.restored.is_empty() && !report.failed.is_empty() {
+        return Err(crate::exit::Exit::code(1).into());
+    }
+    Ok(())
 }
