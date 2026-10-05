@@ -1,4 +1,5 @@
 pub mod atomic_file;
+pub mod capture_date;
 pub mod classify;
 pub mod db;
 pub mod decode_failures;
