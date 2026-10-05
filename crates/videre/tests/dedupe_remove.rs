@@ -52,7 +52,7 @@ fn remove_dry_run_lists_and_deletes_nothing() {
     let (lib, a, b) = lib_with_spaced_duplicate();
     let out = lib
         .cmd()
-        .args(["dedupe", "--remove", "--dry-run"])
+        .args(["dedupe", "--trash", "--dry-run"])
         .output()
         .unwrap();
     assert!(
@@ -71,7 +71,7 @@ fn remove_yes_trashes_one_copy_and_keeps_the_other() {
     let (lib, a, b) = lib_with_spaced_duplicate();
     let out = lib
         .cmd()
-        .args(["dedupe", "--remove", "--yes"])
+        .args(["dedupe", "--trash", "--yes"])
         .output()
         .unwrap();
     if out.status.success() {
@@ -99,7 +99,7 @@ fn remove_yes_also_prunes_the_loser_row() {
     let (lib, a, b) = lib_with_spaced_duplicate();
     let out = lib
         .cmd()
-        .args(["dedupe", "--remove", "--yes", "--silent"])
+        .args(["dedupe", "--trash", "--yes", "--silent"])
         .output()
         .unwrap();
     if !out.status.success() {
@@ -129,7 +129,7 @@ fn remove_takes_the_copys_sidecar_and_leaves_the_kept_ones() {
 
     let dry = lib
         .cmd()
-        .args(["dedupe", "--remove", "--dry-run"])
+        .args(["dedupe", "--trash", "--dry-run"])
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&dry.stderr);
@@ -144,7 +144,7 @@ fn remove_takes_the_copys_sidecar_and_leaves_the_kept_ones() {
 
     let out = lib
         .cmd()
-        .args(["dedupe", "--remove", "--yes", "--silent"])
+        .args(["dedupe", "--trash", "--yes", "--silent"])
         .output()
         .unwrap();
     if !out.status.success() {
@@ -165,9 +165,9 @@ fn remove_takes_the_copys_sidecar_and_leaves_the_kept_ones() {
 fn remove_rejects_similar_json_and_html() {
     let (lib, _a, _b) = lib_with_spaced_duplicate();
     let combos: [&[&str]; 3] = [
-        &["--remove", "--similar"],
-        &["--remove", "--json"],
-        &["--remove", "--html"],
+        &["--trash", "--similar"],
+        &["--trash", "--json"],
+        &["--trash", "--html"],
     ];
     for extra in combos {
         let mut args = vec!["dedupe"];
@@ -233,7 +233,7 @@ fn edited_remove_trashes_the_edit_and_keeps_the_original() {
     let (lib, original, edit) = lib_with_edited_pair();
     let out = lib
         .cmd()
-        .args(["dedupe", "--edited", "--remove", "--yes"])
+        .args(["dedupe", "--edited", "--trash", "--yes"])
         .output()
         .unwrap();
     if !out.status.success() {
@@ -266,7 +266,7 @@ fn an_edit_that_is_also_an_exact_duplicate_is_removed_once() {
     // exact-duplicate loser too.
     let album = lib.copy_fixture("sample_with_exif.jpg", "Album/IMG_1-edited.jpg");
     lib.scan();
-    let out = dedupe(&lib, &["--edited", "--remove", "--dry-run"]);
+    let out = dedupe(&lib, &["--edited", "--trash", "--dry-run"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     let listed = stdout.lines().filter(|l| !l.trim().is_empty()).count();
     let unique: std::collections::HashSet<&str> =
@@ -311,7 +311,7 @@ fn edited_pairs_do_not_trip_the_bulk_guard() {
         std::fs::write(dir.join(format!("IMG_{i}-edited.jpg")), format!("edit {i}")).unwrap();
     }
     lib.scan();
-    let out = dedupe(&lib, &["--edited", "--remove", "--dry-run"]);
+    let out = dedupe(&lib, &["--edited", "--trash", "--dry-run"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!stderr.contains("refusing"), "{stderr}");
     assert!(
@@ -326,13 +326,13 @@ fn edited_pairs_do_not_trip_the_bulk_guard() {
 fn an_edit_whose_original_is_gone_from_disk_is_kept() {
     let (lib, original, edit) = lib_with_edited_pair();
     std::fs::remove_file(&original).unwrap();
-    let out = dedupe(&lib, &["--edited", "--remove", "--dry-run"]);
+    let out = dedupe(&lib, &["--edited", "--trash", "--dry-run"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(!stdout.contains("IMG_1-edited.jpg"), "{stdout}");
 
     let out = lib
         .cmd()
-        .args(["dedupe", "--edited", "--remove", "--yes"])
+        .args(["dedupe", "--edited", "--trash", "--yes"])
         .output()
         .unwrap();
     assert!(
@@ -362,11 +362,90 @@ fn an_edit_kept_by_exact_dedupe_does_not_take_its_copy_with_it() {
         "fixture: the edit must be the exact group's keeper"
     );
 
-    let out = dedupe(&lib, &["--edited", "--remove", "--dry-run"]);
+    let out = dedupe(&lib, &["--edited", "--trash", "--dry-run"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("Photos/B-edited.jpg"), "{stdout}");
     assert!(
         !stdout.contains("Album/A.jpg"),
         "a copy must survive: {stdout}"
     );
+}
+
+#[test]
+fn the_old_remove_flag_is_gone_and_trash_and_delete_exclude_each_other() {
+    let (lib, a, b) = lib_with_spaced_duplicate();
+    let out = lib
+        .cmd()
+        .args(["dedupe", "--remove", "--yes"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let out = lib
+        .cmd()
+        .args(["dedupe", "--trash", "--delete", "--yes"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert_eq!(remaining(&[&a, &b]), 2, "nothing removed by a refused run");
+}
+
+#[test]
+fn delete_removes_the_copy_and_its_sidecar_permanently() {
+    let (lib, a, b) = lib_with_spaced_duplicate();
+    for p in [&a, &b] {
+        std::fs::write(format!("{}.xmp", p.display()), "<x:xmpmeta/>").unwrap();
+    }
+    let dry = dedupe(&lib, &["--delete", "--dry-run"]);
+    let stderr = String::from_utf8_lossy(&dry.stderr);
+    assert!(stderr.contains("would be permanently deleted"), "{stderr}");
+    assert_eq!(remaining(&[&a, &b]), 2, "dry run");
+
+    let out = dedupe(&lib, &["--delete", "--yes"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("Deleted 1 file(s)"), "{stderr}");
+    // The clean-up that follows says what it is, so its line is not a puzzle
+    // and the command it stands for is learned.
+    assert!(
+        stderr.contains("Cleaning up the library, as videre prune does:"),
+        "{stderr}"
+    );
+    assert_eq!(remaining(&[&a, &b]), 1);
+    let gone = if a.exists() { &b } else { &a };
+    assert!(!PathBuf::from(format!("{}.xmp", gone.display())).exists());
+    let rows: i64 = lib
+        .conn()
+        .query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(rows, 1);
+}
+
+/// An earlier run removed the edit but was stopped before the library was
+/// updated: the row is still there, the file is not. Not a failure.
+#[test]
+fn a_file_an_earlier_run_removed_is_already_gone_not_a_failure() {
+    let (lib, original, edit) = lib_with_edited_pair();
+    std::fs::remove_file(&edit).unwrap();
+    for method in ["--trash", "--delete"] {
+        let out = lib
+            .cmd()
+            .args(["dedupe", "--edited", method, "--yes"])
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{method}: {stderr}");
+        assert!(!stderr.contains("could not"), "{method}: {stderr}");
+        if method == "--trash" {
+            assert!(stderr.contains("1 already gone"), "{stderr}");
+        }
+    }
+    assert!(original.exists());
+    let rows: Vec<String> = lib
+        .conn()
+        .prepare("SELECT path FROM file_hashes")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(rows.len(), 1, "the gone edit's row is forgotten: {rows:?}");
 }

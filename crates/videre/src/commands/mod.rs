@@ -46,7 +46,7 @@ pub(crate) fn confirm(prompt: &str) -> anyhow::Result<bool> {
 /// Share of a set whose removal is implausible enough to stop for. Both
 /// conditions must hold: a percentage alone would block a tiny fixture where a
 /// few files were legitimately removed, and a raw count alone would never trip
-/// on a small library. Shared by prune (row cleanup) and dedupe --remove (file
+/// on a small library. Shared by prune (row cleanup) and dedupe --trash (file
 /// deletion) so one guard governs every bulk removal.
 pub(crate) const BULK_DELETE_FRACTION: f64 = 0.20;
 pub(crate) const BULK_DELETE_MIN_ROWS: usize = 100;

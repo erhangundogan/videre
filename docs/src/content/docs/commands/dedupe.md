@@ -4,55 +4,92 @@ description: Find duplicate copies and move them to the trash, safely.
 ---
 
 Finds duplicates already recorded in the database. It can list them (one path
-per line) or, with `--remove`, move the copies to the system trash itself.
+per line), or remove the copies itself: `--trash` moves them to the system
+trash, `--delete` deletes them permanently.
 
 ```bash
 videre dedupe                          # list removable copies (one path per line)
-videre dedupe --remove --dry-run       # show what --remove would trash
-videre dedupe --remove                 # move the copies to the trash (asks first)
-videre dedupe --remove --yes           # ...without the confirmation prompt
+videre dedupe --trash --dry-run        # show what --trash would move
+videre dedupe --trash                  # move the copies to the trash (asks first)
+videre dedupe --trash --yes            # ...without the confirmation prompt
+videre dedupe --delete                 # delete the copies permanently (asks first)
 videre dedupe --similar                # also report look-alike groups (review only)
-videre dedupe --edited --remove        # Google Takeout: trash the -edited copies, keep the originals
+videre dedupe --edited --trash         # Google Takeout: trash the -edited copies, keep the originals
 videre --library ~/Photos dedupe       # select a different library
 videre dedupe --json                   # print one JSON object instead
 ```
 
-**Prefer `--remove` over piping.** videre holds the real path strings, so
-`--remove` handles paths containing spaces correctly; a shell pipe like
+**Prefer `--trash` over piping.** videre holds the real path strings, so
+`--trash` handles paths containing spaces correctly; a shell pipe like
 `videre dedupe | xargs trash` splits every path on its spaces and mishandles
-any that contain one (common in Google Takeout exports). `--remove` moves copies
-to the system trash (recoverable), never `rm`, asks before deleting unless
-`--yes`, previews with `--dry-run`, and refuses an implausibly large deletion
-unless `--force`. It removes only **exact** duplicates; `--similar` groups are
-review-only. A copy's XMP sidecar (`<file>.<ext>.xmp`) goes to the trash with it,
-and `--dry-run` lists which sidecars would.
+any that contain one (common in Google Takeout exports). Both `--trash` and
+`--delete` ask before removing anything unless `--yes`, preview with
+`--dry-run`, show their progress, and refuse an implausibly large removal
+unless `--force`. They remove only **exact** duplicates; `--similar` groups are
+review-only. A copy's XMP sidecar (`<file>.<ext>.xmp`) goes with it, and
+`--dry-run` lists which sidecars would.
 
 :::danger
-`--remove` (without `--dry-run`) moves copies to the trash immediately once you
-confirm. Review first with [`videre dedupe --html`](/commands/dedupe/) or
-`--remove --dry-run`.
+`--trash` and `--delete` (without `--dry-run`) remove copies immediately once
+you confirm, and `--delete` cannot be undone. Review first with
+[`videre dedupe --html`](/commands/dedupe/) or `--trash --dry-run`.
 :::
 
 ## Where removed copies go
 
-`--remove` never hard-deletes. Copies go to the operating system's trash,
-exactly as if you had dragged them there yourself:
+`--trash` moves copies to the operating system's trash, exactly as if you had
+dragged them there yourself. `--delete` deletes them outright, which is faster
+on a large set, and is the one to use where a volume has no trash at all.
 
-- **macOS:** the Finder Trash. The first time a terminal application moves
-  files on your behalf, macOS may show a permission prompt; approving it is a
-  one-time system decision, not a videre account or upload.
+- **macOS:** the Trash of the copy's volume, through the system's file
+  manager service rather than by scripting Finder, so no Finder permission
+  prompt appears and thousands of files take seconds. Finder's **Put Back**
+  may not be offered for them; drag a copy out of the Trash instead.
 - **Linux:** the freedesktop.org trash. The file moves to a trash folder on
   the same volume when one can be created, otherwise to your home trash, so
   Restore still works. If no trash is available (a read-only volume, say),
-  videre refuses and removes nothing rather than falling back to a hard
-  delete.
+  `--trash` refuses that file rather than falling back to a hard delete; use
+  `--delete` if deleting is what you want.
 
 Recovering a copy is the same as recovering anything else from the trash: put
 it back where it was and run `videre scan` (or let `watch` pick it up).
 
+### `--trash` or `--delete`
+
+| | `--trash` | `--delete` |
+|---|---|---|
+| Undo | Yes: drag the copy out of the Trash | No: the copy is gone |
+| Speed | About 400 files a second on macOS | Thousands of files a second |
+| Disk space | Freed only once you empty the Trash | Freed at once |
+| Needs | A trash on the copy's volume, and permission to move files into it | Permission to delete files in the folder |
+
+Measured on a Mac with an internal SSD: `--trash` moved about 400 files a
+second, so 3,000 copies take several seconds, while `--delete` removed 3,000
+in half a second. A USB or network drive is slower for both.
+
+**`--trash` may need extra permissions.** Moving files to the trash is done on
+behalf of the app you run videre in (Terminal, iTerm2, your editor), so macOS
+applies that app's privacy settings. On a USB drive, an external disk, or a
+protected folder such as Desktop, Documents or Downloads, macOS may ask
+whether the app can access that location, or refuse until it is allowed under
+**System Settings > Privacy & Security** (Files and Folders, or Full Disk
+Access). If a copy cannot be moved, videre reports it, keeps it in the
+library, and carries on with the rest; re-run once access is granted, or use
+`--delete` if you do not need the copies back. On Linux, a volume where no
+trash folder can be created (read-only, or without write access at its root)
+has the same effect.
+
+`--delete` needs nothing beyond the ordinary right to delete files in the
+folder, which is why it also works where there is no trash at all.
+
 ### The database is cleaned up too
 
-After a successful removal, videre runs the same pass
+Each copy's row is dropped from the library the moment the copy leaves, so a
+run you stop halfway leaves the library listing exactly what is still on disk.
+A copy that is already gone, from an earlier run that was stopped say, is
+counted as `already gone`, not as a failure, and its row is dropped too.
+
+After the removal, videre runs the same pass
 [`videre prune`](/commands/prune/) would: the removed copies' rows, and any
 embeddings or cached thumbnails only they were using, are dropped at once, so
 the gallery never shows a ghost of a deleted copy. The pass appears as its own
@@ -68,7 +105,7 @@ for, and it takes one extra command:
 ```bash
 videre --library ~/Photos scan           # 1. record what you have
 videre dedupe --html                  # 2. review the groups visually
-videre dedupe --remove                # 3. move the copies to the trash, once you agree
+videre dedupe --trash                 # 3. move the copies to the trash, once you agree
 videre prune                          # 4. tidy the database afterwards
 ```
 
@@ -87,7 +124,7 @@ videre dedupe --print0 | xargs -0 trash      # or pipe it, space-safe
 ```
 
 `--print0` writes the paths NUL-delimited; a plain `videre dedupe | xargs trash`
-splits on spaces and is unsafe. For anything but scripting, `--remove` is
+splits on spaces and is unsafe. For anything but scripting, `--trash` is
 simpler and safer.
 
 Step 4 matters more than it looks: until you prune, the database still lists the
@@ -100,7 +137,7 @@ Exact, identical image or video content. Each file is hashed with BLAKE3 with
 its metadata left out (EXIF, XMP, comments, a video's creation date), and files
 are grouped by that hash. So a copy whose date was fixed, or that was rotated
 in the gallery, is still a duplicate of the original, and
-[`--remove`](#which-copy-is-kept) keeps the oldest-dated copy.
+[`--trash`](#which-copy-is-kept) keeps the oldest-dated copy.
 
 A re-saved, re-compressed, resized or cropped copy is **not** a duplicate here,
 however similar it looks. That is what `--similar` is for.
@@ -128,7 +165,7 @@ copy usually has a later filesystem date, while the EXIF date survives copying.
 :::caution[The kept copy decides which metadata survives]
 Members of a group have the same pixels or media data, but their metadata can
 differ: one copy may carry a date or location you corrected in another app. Only
-the KEEP copy's metadata survives `--remove`, and because the oldest date wins,
+the KEEP copy's metadata survives `--trash`, and because the oldest date wins,
 a copy whose date you moved later is the one removed.
 
 Review in `videre dedupe --html` before removing: check the dates, and check
@@ -154,11 +191,11 @@ edit is Google's re-encoded copy of it.
 
 ```bash
 videre dedupe --edited --html             # review the pairs side by side
-videre dedupe --edited --remove --dry-run # list the edits that would go
-videre dedupe --edited --remove           # trash them (asks first)
+videre dedupe --edited --trash --dry-run  # list the edits that would go
+videre dedupe --edited --trash            # trash them (asks first)
 ```
 
-With `--remove`, the edits go the same way exact duplicates do: to the trash,
+With `--trash` or `--delete`, the edits go the same way exact duplicates do,
 after a confirmation, followed by the database clean-up. They do not count
 toward the implausibly-large-deletion check, so no `--force` is needed: a pair
 exists only when both files are in the library, so a large number of them is
@@ -223,7 +260,7 @@ may be on the one you consider the backup. See
 **Deleting duplicates by hand does not free everything.** If you delete copies
 yourself in Finder or a file manager, their embeddings and cached thumbnails
 remain until [`videre prune`](/commands/prune/) removes them. `videre dedupe
---remove` runs the prune pass for you, so its removals are clean in one step.
+--trash` and `--delete` run the prune pass for you, so its removals are clean in one step.
 Either way, deleting one copy of a photo you still have elsewhere frees nothing
 derived, because that work is keyed by content and still in use.
 

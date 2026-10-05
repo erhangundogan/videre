@@ -6302,7 +6302,10 @@ mod bulk_delete_tests {
     }
 
     #[tokio::test]
-    async fn delete_trashes_files_forgets_rows_and_reports_what_it_could_not_move() {
+    /// A file already missing from disk is not a failure: its row goes, so
+    /// the gallery stops showing a file that is not there. (A file that will
+    /// not move keeps its row: see `removal`'s tests.)
+    async fn delete_trashes_files_and_forgets_rows_including_files_already_gone() {
         let dir = tempfile::tempdir().unwrap();
         let state = library(
             dir.path(),
@@ -6315,21 +6318,17 @@ mod bulk_delete_tests {
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert!(!dir.path().join("a.jpg").exists(), "moved to the trash");
-        assert_eq!(body["trashed"], json!(["ha"]));
-        assert_eq!(body["failed"].as_array().unwrap().len(), 1);
-        let left: Vec<String> = {
-            let conn = state.conn.lock().unwrap();
-            let mut stmt = conn.prepare("SELECT hash FROM file_hashes").unwrap();
-            stmt.query_map([], |r| r.get(0))
-                .unwrap()
-                .collect::<rusqlite::Result<_>>()
-                .unwrap()
-        };
-        assert_eq!(
-            left,
-            vec!["hg".to_string()],
-            "a file that did not move keeps its row"
-        );
+        let mut trashed: Vec<String> = serde_json::from_value(body["trashed"].clone()).unwrap();
+        trashed.sort();
+        assert_eq!(trashed, ["ha", "hg"]);
+        assert!(body["failed"].as_array().unwrap().is_empty(), "{body}");
+        let left: i64 = state
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, 0);
     }
 
     #[tokio::test]

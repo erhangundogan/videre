@@ -203,6 +203,13 @@ fn run_fix_dates(
             errors,
             skipped_note,
         );
+        // A row whose file is gone stays until prune drops it; say so, since
+        // nothing else would tell the user the library lists missing files.
+        if skipped > 0 {
+            tracing::info!(
+                "{skipped} file(s) were not found; videre prune drops their rows from the library."
+            );
+        }
     }
 
     Ok(errors)

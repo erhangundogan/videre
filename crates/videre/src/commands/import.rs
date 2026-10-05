@@ -231,7 +231,7 @@ fn import_one(
                 summary.edited_pairs
             );
             tracing::info!(
-                "  videre dedupe --edited --remove   # keep the originals, trash the edits"
+                "  videre dedupe --edited --trash    # keep the originals, trash the edits"
             );
         }
     }

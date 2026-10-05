@@ -102,7 +102,7 @@ modified.
 
 ```bash
 videre dedupe --html                  # look at what would go
-videre dedupe --remove                # move the copies to the trash, once you agree
+videre dedupe --trash                 # move the copies to the trash, once you agree
 videre prune                          # tidy the database afterwards
 ```
 
@@ -113,9 +113,9 @@ This is where the album duplication disappears. Those copies are byte-identical,
 so removing them loses nothing at all.
 
 :::caution
-`videre dedupe --remove` deletes immediately once you confirm. Run `videre
-dedupe --html` first to review, or preview with `--remove --dry-run`. Prefer
-`--remove` over a `| xargs trash` pipe, which splits Takeout paths on their
+`videre dedupe --trash` deletes immediately once you confirm. Run `videre
+dedupe --html` first to review, or preview with `--trash --dry-run`. Prefer
+`--trash` over a `| xargs trash` pipe, which splits Takeout paths on their
 spaces. See [cautions](/reference/cautions/).
 :::
 
@@ -126,7 +126,7 @@ above leaves them. `videre import` counts them and says so; remove them with:
 
 ```bash
 videre dedupe --edited --html         # each original beside its edit
-videre dedupe --edited --remove       # keep the originals, trash the edits
+videre dedupe --edited --trash        # keep the originals, trash the edits
 ```
 
 The original is kept because it is the file the camera wrote; the edit is

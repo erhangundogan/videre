@@ -272,7 +272,7 @@ fn a_takeout_import_with_edits_points_at_dedupe_edited() {
             && text.contains("1 photo(s) Google Photos exported twice"),
         "{text}"
     );
-    assert!(text.contains("videre dedupe --edited --remove"), "{text}");
+    assert!(text.contains("videre dedupe --edited --trash"), "{text}");
 }
 
 #[test]
