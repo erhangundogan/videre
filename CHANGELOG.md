@@ -16,6 +16,72 @@ version number and are released together.
 ## [Unreleased]
 
 
+## [0.54.0] - 2026-10-05
+
+### Added
+
+- **`videre status` says where dates come from:** how many files are dated
+  by EXIF or the video's own date, a Google Takeout sidecar, a video
+  container time, or the file's time alone, so a library dated only by
+  file times (an unpacked export) is visible. While rows wait to be dated,
+  it asks for a scan.
+
+### Changed
+
+- **One capture date per file, on one clock.** `scan` now stores each
+  file's capture date and where it came from: its EXIF or video date, else
+  its Google Takeout sidecar, else the video container's time, else the
+  file's own time, always as local wall-clock time. Date filters, the
+  gallery's date pages, Events and search sorts all read it. A Takeout
+  library is now dated correctly by `scan` alone, and a file with no GPS
+  takes its place from the sidecar.
+- **`fix-dates` writes every recovered date**, from EXIF, a video or a
+  Takeout sidecar. **`import` no longer changes file times**; it reports
+  what the sidecars hold and points at `scan` and `fix-dates`. The two
+  used to write different clocks to the same photo and undo each other.
+- **Text search keeps its best matches by default.** The 10% match floor
+  from 0.52 hid real matches on short queries (a subject the library
+  holds scored 1%, an absent one up to 25%), so `search_min_match` now
+  defaults to 0 and is an opt-in floor. An empty search mentions the floor
+  only when one is set.
+- **The gallery's People pages load face crops as they scroll into
+  view**, and assigning, naming and removing faces go first. A real
+  Takeout library's People page requested 11,941 crops at once, and an
+  assignment could wait up to 20 seconds behind them; it now loads about
+  45 on open.
+- **The README and docs show the query language**, and every duplicate
+  removal points at `dedupe --trash` or `--delete` instead of a pipe to
+  `trash`, which split paths on spaces. `--help` and the MCP search
+  description are up to date.
+
+### Fixed
+
+- **Video dates from the container's own time were hours off.** That
+  time is UTC and was stored as if it were local; it is now converted.
+- **A Takeout file named `X.jpg-large.jpg`** finds its sidecar, which
+  kept the original name, so it gets a date.
+- **An EXIF time of hour 24** is read as midnight of the next day.
+- **A gallery date page that failed to read a row** now reports the
+  error instead of showing an empty day.
+
+### Upgrading
+
+- **Schema 5.** The first writable command (`scan`, `watch` and the like)
+  adds three columns to the library in place; every row is kept, and the
+  next `scan` or `watch` fills in capture dates without hashing any file
+  again. A read-only command asks for a writable one first. Older
+  versions refuse a schema 5 library.
+- **Run `videre scan`** after upgrading so dates, filters and Events use
+  the resolved capture dates; for a Takeout library, then
+  `videre fix-dates` to set file times.
+- **If you rely on the 0.52 search floor**, set it back with
+  `videre config set search-min-match 0.1`.
+- **For crates depending on `videre-core`:** `capture_date` is a new
+  module; `status_report::StatusReport` has a new `dates` field and
+  `video_meta::VideoMeta` new `date_source` and `mvhd_unix` fields, so
+  build them with all fields; `query::EFFECTIVE_DATE_SQL` prefers the new
+  `capture_date` column; `library_config::SEARCH_MIN_MATCH_DEFAULT` is 0.
+
 ## [0.53.0] - 2026-10-05
 
 ### Added
@@ -2958,7 +3024,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.53.0...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.54.0...HEAD
+[0.54.0]: https://github.com/erhangundogan/videre/compare/v0.53.0...v0.54.0
 [0.53.0]: https://github.com/erhangundogan/videre/compare/v0.52.0...v0.53.0
 [0.52.0]: https://github.com/erhangundogan/videre/compare/v0.51.0...v0.52.0
 [0.51.0]: https://github.com/erhangundogan/videre/compare/v0.50.0...v0.51.0
