@@ -36,7 +36,7 @@ let facesData = { people: [], clusters: [], singletons: [] };
 
     async function loadFaces() {
       try {
-        const r = await fetch('/api/faces' + (QUERY ? '?q=' + encodeURIComponent(QUERY) : ''));
+        const r = await fetch('/api/faces' + (QUERY ? '?q=' + encodeURIComponent(QUERY) : ''), { priority: 'high' });
         if (r.status === 400) {
           const e = await r.json();
           const at = (typeof e.at === 'number') ? ` (at character ${e.at + 1})` : '';
@@ -87,7 +87,10 @@ let facesData = { people: [], clusters: [], singletons: [] };
     }
 
     function faceImg(faceId, w, h) {
-      return `<img class="face-img" src="/api/faces/${faceId}/image" width="${w}" height="${h}" title="#${faceId}" onerror="this.removeAttribute('src');this.style.background='#ddd'">`;
+      // Lazy: with thousands of unclustered faces, requesting every crop at
+      // once queued them on the browser's few connections, and an assignment
+      // waited behind the queue (seconds per crop cut from a slow drive).
+      return `<img class="face-img" loading="lazy" decoding="async" src="/api/faces/${faceId}/image" width="${w}" height="${h}" title="#${faceId}" onerror="this.removeAttribute('src');this.style.background='#ddd'">`;
     }
 
     function thumbGrid(faceIds) {
@@ -331,6 +334,7 @@ let facesData = { people: [], clusters: [], singletons: [] };
       const ids = selection.list().map(Number);
       const r = await fetch('/api/people', {
         method: 'POST',
+        priority: 'high',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ face_ids: ids, name: label })
       });
@@ -387,6 +391,7 @@ let facesData = { people: [], clusters: [], singletons: [] };
       const data = JSON.parse(event.dataTransfer.getData('application/json'));
       const r = await fetch(`/api/people/${encodeURIComponent(personLabel)}/faces`, {
         method: 'PUT',
+        priority: 'high',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ face_ids: data.face_ids })
       });
@@ -427,6 +432,7 @@ let facesData = { people: [], clusters: [], singletons: [] };
       if (!label) return;
       const r = await fetch('/api/people', {
         method: 'POST',
+        priority: 'high',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ face_ids: faceIds, name: label })
       });

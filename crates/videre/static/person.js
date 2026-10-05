@@ -119,7 +119,7 @@ function peopleHome() {
         <div class="card${f.is_primary ? ' is-default' : ''}" id="card-${f.face_id}">
           ${f.is_primary ? '<span class="default-badge">&#9733; Default</span>' : ''}
           <a href="/api/faces/${f.face_id}/original" target="_blank" title="Open original image">
-            <img class="face-img" src="/api/faces/${f.face_id}/image" width="180" height="180"
+            <img class="face-img" loading="lazy" decoding="async" src="/api/faces/${f.face_id}/image" width="180" height="180"
                  onerror="this.removeAttribute('src');this.style.background='#ddd'">
           </a>
           <div class="path" title="${escHtml(f.path)}">${escHtml(basename(f.path))}</div>
@@ -139,7 +139,7 @@ function peopleHome() {
     }
 
     async function removeFace(faceId) {
-      const r = await fetch(`/api/faces/${faceId}`, { method: 'DELETE' });
+      const r = await fetch(`/api/faces/${faceId}`, { method: 'DELETE', priority: 'high' });
       if (!r.ok) { document.getElementById('status').textContent = await failureText(r, 'remove failed'); return; }
       document.getElementById(`card-${faceId}`)?.remove();
       facesData = facesData.filter(f => f.face_id !== faceId);
@@ -148,7 +148,7 @@ function peopleHome() {
 
     async function setDefault(faceId) {
       const r = await fetch(`/api/faces/${faceId}`, {
-        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        method: 'PATCH', priority: 'high', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ person_label: personName })
       });
       if (!r.ok) { document.getElementById('status').textContent = await failureText(r, 'set default failed'); return; }
