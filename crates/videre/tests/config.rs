@@ -254,7 +254,7 @@ fn config_and_scan_report_the_same_fixed_database() {
 fn search_cutoffs_are_set_shown_and_checked() {
     let library = TestLibrary::new();
     let shown = String::from_utf8_lossy(&run(&library, &["config"]).stdout).to_string();
-    assert!(shown.contains("search-min-match: 0.1 (default)"), "{shown}");
+    assert!(shown.contains("search-min-match: 0 (default)"), "{shown}");
     assert!(
         shown.contains("similar-min-score: none (default)"),
         "{shown}"

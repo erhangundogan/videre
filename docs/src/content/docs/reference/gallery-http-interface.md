@@ -529,8 +529,9 @@ Ranks photos by text or by similarity to an existing hash: `q` with words, or
 filters, which narrow what is ranked; words with an example, or a query that
 cannot run, answer `400`.
 
-A text query's `score` is the match probability from 0 to 1, and results below
-the library's `search_min_match` are left out. A `like` search's `score` is the
+A text query's `score` is the match probability from 0 to 1; results below
+the library's `search_min_match` are left out when one is set (none by
+default). A `like` search's `score` is the
 similarity, from -1 to 1, kept above `similar_min_score` when that is set. See
 [search](/commands/search/).
 

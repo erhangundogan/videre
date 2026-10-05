@@ -109,20 +109,24 @@ videre search "a dog on a beach" --scores
 0.184  /Photos/2021/garden.jpg
 ```
 
-Weak matches are left out: a result needs at least a 10% match. So a query
-nothing fits returns nothing, rather than the least bad photos, and fewer than
-`-k` results is normal. Change the cutoff per library:
+A search returns its best matches, best first, each with that score. The score
+is computed from the model's own trained scale for matching text to images, so
+it means the same for every [model](/reference/models/), which raw similarity
+does not: the same similarity can be a strong match on one model and noise on
+another.
+
+Expect low numbers for short queries. On a real library of 14,000 photos, the
+best match for `dog` scored 1% and for `a photo of a beach` 8%. The score does
+not tell a subject the library has from one it lacks, either: on the same
+library `submarine` scored 25%. Read it as an order, not as a yes or no.
+
+To drop weak matches anyway, set a floor per library. On short queries it can
+hide real matches, so it is off by default:
 
 ```bash
-videre config set search-min-match 0.5    # only strong matches
-videre config set search-min-match 0      # every ranked result, as before
+videre config set search-min-match 0.1    # leave out matches below 10%
+videre config set search-min-match 0      # every ranked result (the default)
 ```
-
-The score means the same for every query and every
-[model](/reference/models/), so one cutoff fits them all. It is computed from
-the model's own trained scale for matching text to images, which raw
-similarity is not: the same similarity can be a strong match on one model and
-noise on another.
 
 ## Finding photos like one you have
 
