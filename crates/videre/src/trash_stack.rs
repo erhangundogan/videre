@@ -318,7 +318,6 @@ pub fn undo_latest(
     library: &videre_core::library::LibraryContext,
     locate: &dyn Locate,
     progress: &videre_core::progress::Progress,
-    silent: bool,
 ) -> anyhow::Result<Option<UndoReport>> {
     let state = &library.paths.state;
     let Some((run, steps)) = plan_latest(state, locate)? else {
@@ -389,7 +388,8 @@ pub fn undo_latest(
         library,
         report.restored.clone(),
         library.settings.xmp_precedence,
-        silent,
+        // Quiet: the restore already showed its own progress.
+        true,
     )?;
     keep_only(&run, &keep)?;
     report.runs_left = runs(state)?.len();
@@ -573,7 +573,7 @@ mod tests {
 
         fn undo(&self) -> Option<UndoReport> {
             let progress = videre_core::progress::Progress::new_counting(0, true, "files");
-            undo_latest(&self.conn, &self.library, &Recorded, &progress, true).unwrap()
+            undo_latest(&self.conn, &self.library, &Recorded, &progress).unwrap()
         }
 
         fn indexed(&self, path: &Path) -> bool {
@@ -741,7 +741,7 @@ mod tests {
         assert_eq!(res[0].1, crate::removal::Outcome::Removed);
         assert!(!path.exists());
 
-        let r = undo_latest(&f.conn, &f.library, system().as_ref(), &progress, true)
+        let r = undo_latest(&f.conn, &f.library, system().as_ref(), &progress)
             .unwrap()
             .unwrap();
         assert_eq!(r.restored, vec![path.clone()]);

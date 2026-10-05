@@ -564,7 +564,7 @@ fn run_undo(args: &DedupeArgs, ctx: &CommandContext) -> anyhow::Result<()> {
     );
     let report =
         videre_core::pipeline_runs::track_in(&conn, &ctx.library, &guard, "dedupe", || {
-            trash_stack::undo_latest(&conn, &ctx.library, locate.as_ref(), &progress, args.silent)
+            trash_stack::undo_latest(&conn, &ctx.library, locate.as_ref(), &progress)
         })?
         .expect("planned above");
     progress.finish();
