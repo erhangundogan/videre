@@ -371,11 +371,7 @@ mod tests {
     /// take a sidecar named `İzmir.supplemental-metadata.json`.
     #[test]
     fn a_plain_name_does_not_take_a_sidecar_without_its_extension() {
-        let (_d, index) = indexed(&[
-            "İzmir.jpg",
-            "İzmir.png",
-            "İzmir.supplemental-metadata.json",
-        ]);
+        let (_d, index) = indexed(&["İzmir.jpg", "İzmir.png", "İzmir.supplemental-metadata.json"]);
         assert_eq!(match_sidecar(&index, "İzmir.jpg"), None);
         assert_eq!(match_sidecar(&index, "İzmir.png"), None);
     }
