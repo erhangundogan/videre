@@ -61,10 +61,11 @@ fn a_trash_run_writes_one_manifest_and_delete_writes_none() {
         .args(["dedupe", "--edited", "--trash", "--yes"])
         .output()
         .unwrap();
-    if !out.status.success() || edits.iter().any(|e| e.exists()) {
-        // No usable trash on this host (a container without one).
-        return;
-    }
+    assert!(
+        out.status.success() && edits.iter().all(|e| !e.exists()),
+        "--trash failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let runs = manifests(&lib);
     assert_eq!(runs.len(), 1, "{runs:?}");
     let text = std::fs::read_to_string(&runs[0]).unwrap();
@@ -79,9 +80,11 @@ fn a_trash_run_writes_one_manifest_and_delete_writes_none() {
     dedupe(&lib, &["--undo", "--yes", "--silent"]);
 }
 
-/// Trash the edits of a fresh set of pairs under `folder`; `None` when this
-/// host has no usable trash (a container without one).
-fn trash_edits(lib: &TestLibrary, folder: &str, n: usize) -> Option<Vec<PathBuf>> {
+/// Trash the edits of a fresh set of pairs under `folder`. No skip when the
+/// trash does not work: every test library has its own home, so the
+/// freedesktop.org home trash is always there on Linux, and macOS always has
+/// a Trash. A skip here would let CI pass without testing anything.
+fn trash_edits(lib: &TestLibrary, folder: &str, n: usize) -> Vec<PathBuf> {
     let edits = lib_with_edits(lib, folder, n);
     lib.scan();
     let out = lib
@@ -89,7 +92,12 @@ fn trash_edits(lib: &TestLibrary, folder: &str, n: usize) -> Option<Vec<PathBuf>
         .args(["dedupe", "--edited", "--trash", "--yes", "--silent"])
         .output()
         .unwrap();
-    (out.status.success() && edits.iter().all(|e| !e.exists())).then_some(edits)
+    assert!(
+        out.status.success() && edits.iter().all(|e| !e.exists()),
+        "--trash failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    edits
 }
 
 fn rows(lib: &TestLibrary) -> i64 {
@@ -124,9 +132,7 @@ fn undo_with_nothing_recorded_says_so_and_succeeds() {
 #[test]
 fn undo_dry_run_lists_and_changes_nothing() {
     let lib = TestLibrary::new();
-    let Some(edits) = trash_edits(&lib, "Deneme", 2) else {
-        return;
-    };
+    let edits = trash_edits(&lib, "Deneme", 2);
     let out = dedupe(&lib, &["--undo", "--dry-run"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     for e in &edits {
@@ -140,10 +146,8 @@ fn undo_dry_run_lists_and_changes_nothing() {
 #[test]
 fn undo_restores_the_newest_run_first_and_back_into_the_library() {
     let lib = TestLibrary::new();
-    let Some(first) = trash_edits(&lib, "Tatil_ilk", 2) else {
-        return;
-    };
-    let second = trash_edits(&lib, "Tatil_son", 1).unwrap();
+    let first = trash_edits(&lib, "Tatil_ilk", 2);
+    let second = trash_edits(&lib, "Tatil_son", 1);
     assert_eq!(rows(&lib), 3, "three originals left");
 
     let out = dedupe(&lib, &["--undo", "--yes"]);
@@ -181,9 +185,7 @@ fn undo_restores_the_newest_run_first_and_back_into_the_library() {
 #[test]
 fn undo_json_reports_each_outcome_and_never_overwrites() {
     let lib = TestLibrary::new();
-    let Some(edits) = trash_edits(&lib, "Doğum_günü", 2) else {
-        return;
-    };
+    let edits = trash_edits(&lib, "Doğum_günü", 2);
     // One original path is taken again: that file is skipped, never replaced.
     std::fs::write(&edits[0], b"yeni").unwrap();
     let out = dedupe(&lib, &["--undo", "--yes", "--json"]);
@@ -229,11 +231,43 @@ fn same_named_copies_from_different_folders_both_come_back() {
         .args(["dedupe", "--edited", "--trash", "--yes", "--silent"])
         .output()
         .unwrap();
-    if !out.status.success() || edits.iter().any(|(e, _)| e.exists()) {
-        return;
-    }
+    assert!(
+        out.status.success() && edits.iter().all(|(e, _)| !e.exists()),
+        "--trash failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     dedupe(&lib, &["--undo", "--yes", "--silent"]);
     for (edit, bytes) in &edits {
         assert_eq!(&std::fs::read(edit).unwrap(), bytes, "{edit:?}");
     }
+}
+
+/// An edit's XMP sidecar goes to the trash with it and comes back with it,
+/// through the platform's real trash.
+#[test]
+fn a_sidecar_goes_and_comes_back_with_its_edit() {
+    let lib = TestLibrary::new();
+    let edits = lib_with_edits(&lib, "Yan_dosya", 1);
+    let sidecar = PathBuf::from(format!("{}.xmp", edits[0].display()));
+    std::fs::write(&sidecar, "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"/>").unwrap();
+    lib.scan();
+    let out = lib
+        .cmd()
+        .args(["dedupe", "--edited", "--trash", "--yes", "--silent"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!edits[0].exists() && !sidecar.exists());
+
+    dedupe(&lib, &["--undo", "--yes", "--silent"]);
+    assert!(edits[0].exists(), "the edit is back");
+    assert_eq!(
+        std::fs::read_to_string(&sidecar).unwrap(),
+        "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"/>",
+        "and its sidecar"
+    );
 }

@@ -6331,6 +6331,62 @@ mod bulk_delete_tests {
         assert_eq!(left, 0);
     }
 
+    /// A gallery Delete is recorded like a `dedupe --trash` run, so
+    /// `dedupe --undo` puts it back.
+    #[tokio::test]
+    async fn a_gallery_delete_is_put_back_by_undo() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let state = library(&root, &[]);
+        // A name of its own: tests share the one real trash.
+        let photo = root.join(format!("galeriden-silinen-{}.jpg", std::process::id()));
+        std::fs::write(&photo, "geri gelecek fotoğraf").unwrap();
+        let hash: String = {
+            let conn = state.conn.lock().unwrap();
+            crate::indexing::index_paths(
+                &conn,
+                &state.context.library,
+                vec![photo.clone()],
+                videre_core::marks::XmpPrecedence::Db,
+                true,
+            )
+            .unwrap();
+            conn.query_row("SELECT hash FROM file_hashes", [], |r| r.get(0))
+                .unwrap()
+        };
+
+        let (status, body) = delete(
+            &app(state.clone()),
+            json!({ "hashes": [hash], "dry_run": false }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(!photo.exists(), "moved to the trash");
+        let runs = crate::trash_stack::runs(&state.context.library.paths.state).unwrap();
+        assert_eq!(runs.len(), 1);
+        assert!(runs[0].to_string_lossy().ends_with("-gallery.jsonl"));
+
+        let conn = state.conn.lock().unwrap();
+        let progress = videre_core::progress::Progress::new_counting(1, true, "files");
+        let report = crate::trash_stack::undo_latest(
+            &conn,
+            &state.context.library,
+            crate::trash_stack::system().as_ref(),
+            &progress,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(report.restored, vec![photo.clone()]);
+        assert_eq!(
+            std::fs::read_to_string(&photo).unwrap(),
+            "geri gelecek fotoğraf"
+        );
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1, "back in the library");
+    }
+
     #[tokio::test]
     async fn delete_waits_for_the_library_to_be_free() {
         let dir = tempfile::tempdir().unwrap();
