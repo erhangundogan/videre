@@ -41,16 +41,16 @@ struct Cli {
 // clap's name sort takes over.
 #[command(next_display_order = None)]
 enum Command {
-    /// Print a shell completion script (bash, zsh, or fish)
+    /// Print a shell completion script (bash, zsh, fish, elvish or powershell)
     Completion {
         #[arg(value_enum)]
         shell: clap_complete::shells::Shell,
     },
-    /// Report duplicate files from the database and print paths to remove
+    /// Find duplicate copies, then list them, move them to the trash, delete them, or undo a trash run
     Dedupe(commands::dedupe::DedupeArgs),
-    /// Browse the library in a local web UI: files, duplicates, dates, people, map, events
+    /// Browse the library in a local web UI: files, search, duplicates, dates, people, map, events
     Gallery(commands::gallery::GalleryArgs),
-    /// Scan a directory, hash every image, and populate the database
+    /// Scan the library, hash every photo and video, and populate the database
     Scan(commands::scan::ScanArgs),
     /// Set each file's mtime to its EXIF shoot date
     FixDates(commands::fix_dates::FixDatesArgs),
@@ -60,15 +60,15 @@ enum Command {
     Prune(commands::prune::PruneArgs),
     /// Cluster GPS coordinates by geographic proximity and persist the result
     Locations(commands::locations::LocationsArgs),
-    /// Compute SigLIP embeddings for every image in the database
+    /// Compute SigLIP embeddings for every photo and video (one frame) in the library
     Embed(commands::embed::EmbedArgs),
-    /// Search images by text, example image, or person name
+    /// Search photos and videos by text or an example image, filtered by a query: person, tag, date, place, rating and more
     Search(commands::search::SearchArgs),
     /// Detect, embed, and cluster faces; enables person search
     Faces(commands::faces::FacesArgs),
     /// Classify images as photo/screenshot/document/meme (zero-shot, reuses embeddings)
     Classify(commands::classify::ClassifyArgs),
-    /// Background loop keeping scan/faces/HEIC-cache/location data fresh
+    /// Background loop keeping scan, faces, embeddings, HEIC thumbnails and locations fresh
     Watch(commands::watch::WatchArgs),
     /// Bring the library fully current: scan, then faces, embed, classify, locations
     Pipeline(commands::pipeline::PipelineArgs),

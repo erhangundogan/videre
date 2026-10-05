@@ -31,11 +31,9 @@ pub struct WatchArgs {
     #[arg(long)]
     embed: bool,
     /// Sync stale rows/cache and clean orphans each cycle (same cleanup as
-    /// `videre prune`). Opt-in only, unlike the other default stages, this is
-    /// NOT included when no stage flags are passed, so existing `videre
-    /// watch` invocations keep their current behavior unchanged. Never
-    /// deletes real files, only stale db rows and cache entries for files
-    /// already gone from disk.
+    /// `videre prune`). Opt-in: unlike the other stages, it does not run
+    /// when no stage flags are given. Never deletes real files, only stale
+    /// db rows and cache entries for files already gone from disk.
     #[arg(long)]
     prune: bool,
     /// Write XMP sidecars for updated labels each cycle (opt-in). Also enabled
@@ -46,6 +44,7 @@ pub struct WatchArgs {
     #[command(flatten)]
     xmp: crate::xmp::XmpArg,
 
+    /// Suppress per-cycle progress output (errors always shown)
     #[arg(long)]
     silent: bool,
 
