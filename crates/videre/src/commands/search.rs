@@ -789,14 +789,7 @@ fn collect_hits(
                 args.radius,
                 query.value
             ),
-            // Ranked, and the cutoff left nothing: say which setting did it,
-            // or an empty answer reads as "nothing in the library".
-            "text" => tracing::info!(
-                "No matches of at least {:.0}% (search_min_match {}); \
-                 videre config set search-min-match 0 shows every ranked result",
-                ctx.library.settings.search_min_match * 100.0,
-                ctx.library.settings.search_min_match
-            ),
+            "text" => tracing::info!("{}", empty_text_note(ctx.library.settings.search_min_match)),
             "image" => {
                 if let Some(floor) = ctx.library.settings.similar_min_score {
                     tracing::info!(
@@ -904,6 +897,21 @@ fn rank(
                 .then_some((hash, cos)),
         })
         .collect())
+}
+
+/// What an empty text search says. With a floor set, the floor is the likely
+/// cause, so it is named, or an empty answer reads as "nothing in the
+/// library". With none, the filters left nothing to rank.
+fn empty_text_note(floor: f64) -> String {
+    if floor > 0.0 {
+        format!(
+            "No matches of at least {:.0}% (search_min_match {floor}); \
+             videre config set search-min-match 0 shows every ranked result",
+            floor * 100.0
+        )
+    } else {
+        "No matches: the filters left nothing to rank".to_string()
+    }
 }
 
 #[cfg(test)]
@@ -1312,20 +1320,41 @@ mod relevance_tests {
             .collect()
     }
 
+    /// No floor by default: a weak match is still a result, ranked last and
+    /// scored as weak. On real photos the best match for a one-word query
+    /// can score 1%, so a default floor hid what the user asked for.
     #[test]
-    fn a_text_search_scores_the_match_probability_and_drops_weak_matches() {
+    fn a_text_search_scores_the_match_probability_and_keeps_every_ranked_match() {
         let (_t, ctx) = library("");
         let got = search(&ctx, &["deniz"]);
         let names: Vec<&str> = got.iter().map(|(h, _)| h.as_str()).collect();
-        assert_eq!(names, ["deniz", "kumsal"], "kedi is a 0.7% match: {got:?}");
+        assert_eq!(names, ["deniz", "kumsal", "kedi"], "{got:?}");
         assert!(got[0].1 > 0.99, "{got:?}");
         assert!((got[1].1 - 0.5).abs() < 0.02, "{got:?}");
+        assert!(got[2].1 < 0.01, "kedi is a 0.7% match: {got:?}");
+    }
+
+    /// An empty text result names the floor only when one is set; with none
+    /// it was the filters that left nothing, and pointing at the setting
+    /// would send the user after the wrong cause.
+    #[test]
+    fn an_empty_text_result_names_the_floor_only_when_one_is_set() {
+        let none = empty_text_note(0.0);
+        assert!(!none.contains("search_min_match"), "{none}");
+        assert!(none.contains("filters"), "{none}");
+        let set = empty_text_note(0.1);
+        assert!(set.contains("at least 10%"), "{set}");
+        assert!(set.contains("search-min-match 0"), "{set}");
     }
 
     #[test]
     fn the_text_cutoff_is_the_library_s_setting() {
-        let (_t, ctx) = library("search_min_match = 0\n");
-        assert_eq!(search(&ctx, &["deniz"]).len(), 3);
+        let (_t, ctx) = library("search_min_match = 0.1\n");
+        let names: Vec<String> = search(&ctx, &["deniz"])
+            .into_iter()
+            .map(|(h, _)| h)
+            .collect();
+        assert_eq!(names, ["deniz", "kumsal"], "a set floor drops weak matches");
         let (_t, ctx) = library("search_min_match = 0.9\n");
         let got = search(&ctx, &["deniz"]);
         assert_eq!(got.len(), 1, "{got:?}");

@@ -55,7 +55,7 @@ mod calibration_tests {
         assert!((c.probability(0.0) - 1.0 / (1.0 + 16.7717f32.exp())).abs() < 1e-9);
         let half = -c.bias / c.scale;
         assert!((c.probability(half) - 0.5).abs() < 1e-6);
-        // The measured 10% point.
+        // Cosine 0.129 is a 10% match on this model.
         assert!((c.probability(0.1294) - 0.1).abs() < 0.005);
     }
 

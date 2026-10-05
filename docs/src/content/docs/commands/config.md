@@ -49,7 +49,7 @@ log-format:    json
 log-max-size-mb: 10 MB
 log-keep:      5
 log-max-age-days: 30 days
-search-min-match: 0.1 (default)
+search-min-match: 0 (default)
 similar-min-score: none (default)
 ```
 
@@ -75,7 +75,7 @@ similar-min-score: none (default)
 | `log-max-size-mb` | Size at which a log file rotates |
 | `log-keep` | Rotated log files kept per log file |
 | `log-max-age-days` | Age after which a rotated log file is deleted |
-| `search-min-match` | The least match a text search keeps |
+| `search-min-match` | The least match a text search keeps; 0 keeps every match |
 | `similar-min-score` | The least similarity an image search keeps |
 
 Showing config creates nothing. Setting a value may create
@@ -100,7 +100,7 @@ are responsible for initializing a library database.
 | `log-max-size-mb` | `log_max_size_mb` | A positive whole number of megabytes (default 10) |
 | `log-keep` | `log_keep` | A whole number of rotated files, 0 or more (default 5) |
 | `log-max-age-days` | `log_max_age_days` | A positive whole number of days (default 30) |
-| `search-min-match` | `search_min_match` | A match probability from 0 to 1 (default 0.1); [search](/commands/search/) drops weaker text matches, and `0` keeps every one |
+| `search-min-match` | `search_min_match` | A match probability from 0 to 1 (default 0, every match); [search](/commands/search/) drops weaker text matches. On short queries a floor can hide real matches |
 | `similar-min-score` | `similar_min_score` | A similarity from -1 to 1, or unset (the default) to keep every result of an image search or **Similar** |
 
 Storage cannot be redirected. `db` and `jsonl` are fixed declarations and
