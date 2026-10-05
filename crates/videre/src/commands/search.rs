@@ -1312,20 +1312,28 @@ mod relevance_tests {
             .collect()
     }
 
+    /// No floor by default: a weak match is still a result, ranked last and
+    /// scored as weak. On real photos the best match for a one-word query
+    /// can score 1%, so a default floor hid what the user asked for.
     #[test]
-    fn a_text_search_scores_the_match_probability_and_drops_weak_matches() {
+    fn a_text_search_scores_the_match_probability_and_keeps_every_ranked_match() {
         let (_t, ctx) = library("");
         let got = search(&ctx, &["deniz"]);
         let names: Vec<&str> = got.iter().map(|(h, _)| h.as_str()).collect();
-        assert_eq!(names, ["deniz", "kumsal"], "kedi is a 0.7% match: {got:?}");
+        assert_eq!(names, ["deniz", "kumsal", "kedi"], "{got:?}");
         assert!(got[0].1 > 0.99, "{got:?}");
         assert!((got[1].1 - 0.5).abs() < 0.02, "{got:?}");
+        assert!(got[2].1 < 0.01, "kedi is a 0.7% match: {got:?}");
     }
 
     #[test]
     fn the_text_cutoff_is_the_library_s_setting() {
-        let (_t, ctx) = library("search_min_match = 0\n");
-        assert_eq!(search(&ctx, &["deniz"]).len(), 3);
+        let (_t, ctx) = library("search_min_match = 0.1\n");
+        let names: Vec<String> = search(&ctx, &["deniz"])
+            .into_iter()
+            .map(|(h, _)| h)
+            .collect();
+        assert_eq!(names, ["deniz", "kumsal"], "a set floor drops weak matches");
         let (_t, ctx) = library("search_min_match = 0.9\n");
         let got = search(&ctx, &["deniz"]);
         assert_eq!(got.len(), 1, "{got:?}");

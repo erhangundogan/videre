@@ -153,10 +153,16 @@ pub struct LibraryConfig {
     pub similar_min_score: Option<f64>,
 }
 
-/// `search_min_match` when absent: a 10% match. On the default model that is
-/// a cosine of 0.129, above most wrong matches and below most right ones in
-/// the 300-photo measurement recorded at `DEFAULT_MODEL_ID`.
-pub const SEARCH_MIN_MATCH_DEFAULT: f64 = 0.1;
+/// `search_min_match` when absent: no floor, so a text search returns its best
+/// matches, each scored by its match probability.
+///
+/// A 10% default (0.52) was set from 300 Flickr8k photos searched by full
+/// captions. On a real 14,471-photo library with one- or two-word queries
+/// (2026-10-05, siglip2-base) the probability did not separate subjects the
+/// library has from ones it lacks: `dog` scored 1.3% at best, `submarine` 25%
+/// and `xyzzy qwerty` 20%. No cutoff kept the first and dropped the others,
+/// so any default floor hid real matches. Setting one is an explicit choice.
+pub const SEARCH_MIN_MATCH_DEFAULT: f64 = 0.0;
 
 impl Default for LibraryConfig {
     /// The built-in defaults: the built-in embedding model, db-first XMP
@@ -860,7 +866,7 @@ mod tests {
     fn search_cutoffs_default_and_round_trip() {
         let (_t, ctx) = library_with_config("");
         let defaults = LibraryConfig::default();
-        assert_eq!(defaults.search_min_match, 0.1);
+        assert_eq!(defaults.search_min_match, 0.0);
         assert_eq!(defaults.similar_min_score, None);
 
         edit(
