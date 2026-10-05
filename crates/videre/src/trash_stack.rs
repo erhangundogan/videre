@@ -149,6 +149,251 @@ pub fn keep_only(run: &Run, remaining: &[Entry]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// A place a trashed file may be now. `info` is the Linux `.trashinfo`
+/// describing it, removed once the file is back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Candidate {
+    pub file: PathBuf,
+    pub info: Option<PathBuf>,
+}
+
+/// Where each entry's file, and its sidecar, may be in the trash now.
+pub trait Locate {
+    fn candidates(&self, entries: &[Entry]) -> Vec<(Vec<Candidate>, Vec<Candidate>)>;
+}
+
+fn recorded(m: &Moved) -> Vec<Candidate> {
+    m.trashed
+        .iter()
+        .filter(|p| p.symlink_metadata().is_ok())
+        .map(|p| Candidate {
+            file: p.clone(),
+            info: None,
+        })
+        .collect()
+}
+
+/// Where the trash run recorded each file landed (macOS).
+pub struct Recorded;
+
+impl Locate for Recorded {
+    fn candidates(&self, entries: &[Entry]) -> Vec<(Vec<Candidate>, Vec<Candidate>)> {
+        entries
+            .iter()
+            .map(|e| {
+                let side = e.sidecar.as_ref().map(recorded).unwrap_or_default();
+                (recorded(&e.file), side)
+            })
+            .collect()
+    }
+}
+
+/// The freedesktop.org trash's own listing, read once, newest first per
+/// original path, after any recorded landing.
+#[cfg(not(target_os = "macos"))]
+pub struct Listed;
+
+#[cfg(not(target_os = "macos"))]
+impl Locate for Listed {
+    fn candidates(&self, entries: &[Entry]) -> Vec<(Vec<Candidate>, Vec<Candidate>)> {
+        let mut items = trash::os_limited::list().unwrap_or_default();
+        items.sort_by_key(|i| std::cmp::Reverse(i.time_deleted));
+        let listed = |m: &Moved| -> Vec<Candidate> {
+            let mut out = recorded(m);
+            for item in items.iter().filter(|i| i.original_path() == m.path) {
+                let info = PathBuf::from(&item.id);
+                let (Some(dir), Some(stem)) =
+                    (info.parent().and_then(Path::parent), info.file_stem())
+                else {
+                    continue;
+                };
+                out.push(Candidate {
+                    file: dir.join("files").join(stem),
+                    info: Some(info.clone()),
+                });
+            }
+            out
+        };
+        entries
+            .iter()
+            .map(|e| {
+                let side = e.sidecar.as_ref().map(&listed).unwrap_or_default();
+                (listed(&e.file), side)
+            })
+            .collect()
+    }
+}
+
+/// The platform's way of finding trashed files.
+pub fn system() -> Box<dyn Locate> {
+    #[cfg(target_os = "macos")]
+    return Box::new(Recorded);
+    #[cfg(not(target_os = "macos"))]
+    return Box::new(Listed);
+}
+
+/// What undoing one entry will do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Step {
+    /// Put back from this place in the trash.
+    Restore(Candidate),
+    /// Something is already at the original path; never overwritten.
+    Occupied,
+    /// Nothing in the trash has this file's content (emptied, or replaced).
+    NotInTrash,
+}
+
+/// The newest run and what undoing it would do, entry by entry; `None` when
+/// no run is recorded.
+pub fn plan_latest(state: &Path, locate: &dyn Locate) -> anyhow::Result<Option<(Run, Vec<Step>)>> {
+    let Some(newest) = runs(state)?.into_iter().next() else {
+        return Ok(None);
+    };
+    let run = read(&newest)?;
+    let candidates = locate.candidates(&run.entries);
+    let steps = run
+        .entries
+        .iter()
+        .zip(candidates)
+        .map(|(entry, (files, _))| {
+            if entry.file.path.symlink_metadata().is_ok() {
+                return Step::Occupied;
+            }
+            files
+                .into_iter()
+                .find(|c| is_the_same_file(entry, &c.file))
+                .map_or(Step::NotInTrash, Step::Restore)
+        })
+        .collect();
+    Ok(Some((run, steps)))
+}
+
+/// Same size and content hash: a trash copy that is not provably the file
+/// that was trashed is never taken.
+fn is_the_same_file(entry: &Entry, candidate: &Path) -> bool {
+    candidate.metadata().is_ok_and(|m| m.len() == entry.size)
+        && videre::hasher::hash_file(candidate).is_ok_and(|r| r.hash == entry.hash)
+}
+
+/// Move `from` back to `to`, creating its folder, never replacing a file.
+fn put_back(from: &Path, to: &Path) -> std::io::Result<()> {
+    if to.symlink_metadata().is_ok() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "a file is already there",
+        ));
+    }
+    if let Some(parent) = to.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    match std::fs::rename(from, to) {
+        // A trash on another volume than the original (Linux home trash).
+        Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
+            std::fs::copy(from, to)?;
+            std::fs::remove_file(from)
+        }
+        other => other,
+    }
+}
+
+/// What an undo did.
+#[derive(Debug, Default, serde::Serialize)]
+pub struct UndoReport {
+    pub when: String,
+    pub restored: Vec<PathBuf>,
+    pub not_in_trash: Vec<PathBuf>,
+    pub occupied: Vec<PathBuf>,
+    pub failed: Vec<(PathBuf, String)>,
+    /// Runs still recorded after this one, for the next `--undo`.
+    pub runs_left: usize,
+}
+
+/// Put back the newest run's files, bring them back into the library, and
+/// pop the run off the stack. Entries skipped because their path is taken,
+/// or that failed to move, stay recorded so the run can be undone again.
+pub fn undo_latest(
+    conn: &rusqlite::Connection,
+    library: &videre_core::library::LibraryContext,
+    locate: &dyn Locate,
+    progress: &videre_core::progress::Progress,
+    silent: bool,
+) -> anyhow::Result<Option<UndoReport>> {
+    let state = &library.paths.state;
+    let Some((run, steps)) = plan_latest(state, locate)? else {
+        return Ok(None);
+    };
+    let sidecars: Vec<Vec<Candidate>> = locate
+        .candidates(&run.entries)
+        .into_iter()
+        .map(|(_, side)| side)
+        .collect();
+    let mut report = UndoReport {
+        when: run.when.clone(),
+        ..UndoReport::default()
+    };
+    let mut keep = Vec::new();
+    for ((entry, step), side) in run.entries.iter().zip(steps).zip(sidecars) {
+        let path = &entry.file.path;
+        match step {
+            Step::Occupied => {
+                report.occupied.push(path.clone());
+                keep.push(entry.clone());
+                progress.skip(
+                    &path.display().to_string(),
+                    anyhow::anyhow!("a file is already there"),
+                );
+            }
+            Step::NotInTrash => {
+                report.not_in_trash.push(path.clone());
+                progress.skip(
+                    &path.display().to_string(),
+                    anyhow::anyhow!("not in the trash"),
+                );
+            }
+            Step::Restore(c) => match put_back(&c.file, path) {
+                Ok(()) => {
+                    if let Some(info) = &c.info {
+                        let _ = std::fs::remove_file(info);
+                    }
+                    // The sidecar follows its photo; one that cannot come
+                    // back is warned about and never fails the photo.
+                    if let (Some(s), Some(sc)) = (&entry.sidecar, side.first()) {
+                        match put_back(&sc.file, &s.path) {
+                            Ok(()) => {
+                                if let Some(info) = &sc.info {
+                                    let _ = std::fs::remove_file(info);
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!("could not put back the sidecar {:?}: {e}", s.path)
+                            }
+                        }
+                    }
+                    report.restored.push(path.clone());
+                    progress.tick();
+                }
+                Err(e) => {
+                    report.failed.push((path.clone(), e.to_string()));
+                    keep.push(entry.clone());
+                    progress.skip(&path.display().to_string(), e.into());
+                }
+            },
+        }
+    }
+    // Back in the library before returning: rows return now, and embeddings
+    // and faces show as outstanding for the next embed, faces or watch.
+    crate::indexing::index_paths(
+        conn,
+        library,
+        report.restored.clone(),
+        library.settings.xmp_precedence,
+        silent,
+    )?;
+    keep_only(&run, &keep)?;
+    report.runs_left = runs(state)?.len();
+    Ok(Some(report))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,5 +488,261 @@ mod tests {
             .unwrap();
         f.write_all(b"{\"path\":\"b.j").unwrap();
         assert_eq!(read(&path).unwrap().entries, vec![entry("a.jpg")]);
+    }
+
+    /// A library, its database, and a directory standing in for the trash.
+    struct Fixture {
+        _dirs: [tempfile::TempDir; 3],
+        root: PathBuf,
+        trash: PathBuf,
+        library: videre_core::library::LibraryContext,
+        conn: rusqlite::Connection,
+    }
+
+    fn fixture() -> Fixture {
+        let dirs = [
+            tempfile::tempdir().unwrap(),
+            tempfile::tempdir().unwrap(),
+            tempfile::tempdir().unwrap(),
+        ];
+        let root = dirs[0].path().canonicalize().unwrap();
+        let trash = dirs[2].path().canonicalize().unwrap();
+        let library = videre_core::library::LibraryContext::new(&root, dirs[1].path()).unwrap();
+        let conn = videre_core::library_db::initialize(&library).unwrap();
+        Fixture {
+            _dirs: dirs,
+            root,
+            trash,
+            library,
+            conn,
+        }
+    }
+
+    impl Fixture {
+        /// Create `rel` with `bytes`, index it, then "trash" it into the
+        /// stand-in trash as `landed`, forgetting its row and recording it.
+        fn trash(&self, w: &mut Writer, rel: &str, bytes: &[u8], landed: &str) -> PathBuf {
+            let path = self.root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, bytes).unwrap();
+            crate::indexing::index_paths(
+                &self.conn,
+                &self.library,
+                vec![path.clone()],
+                videre_core::marks::XmpPrecedence::Db,
+                true,
+            )
+            .unwrap();
+            let hash: String = self
+                .conn
+                .query_row(
+                    "SELECT hash FROM file_hashes WHERE path = ?1",
+                    [path.to_string_lossy()],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let to = self.trash.join(landed);
+            std::fs::rename(&path, &to).unwrap();
+            self.conn
+                .execute(
+                    "DELETE FROM file_hashes WHERE path = ?1",
+                    [path.to_string_lossy()],
+                )
+                .unwrap();
+            w.record(&Entry {
+                file: Moved {
+                    path: path.clone(),
+                    trashed: Some(to),
+                },
+                hash,
+                size: bytes.len() as u64,
+                sidecar: None,
+            })
+            .unwrap();
+            path
+        }
+
+        fn writer(&self, stamp: &str) -> Writer {
+            Writer {
+                path: dir(&self.library.paths.state).join(format!("{stamp}-dedupe.jsonl")),
+                file: None,
+            }
+        }
+
+        fn undo(&self) -> Option<UndoReport> {
+            let progress = videre_core::progress::Progress::new_counting(0, true, "files");
+            undo_latest(&self.conn, &self.library, &Recorded, &progress, true).unwrap()
+        }
+
+        fn indexed(&self, path: &Path) -> bool {
+            self.conn
+                .query_row(
+                    "SELECT COUNT(*) FROM file_hashes WHERE path = ?1",
+                    [path.to_string_lossy()],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap()
+                == 1
+        }
+    }
+
+    #[test]
+    fn two_runs_undo_newest_first() {
+        let f = fixture();
+        let mut first = f.writer("20261005T100000.000Z");
+        let a = f.trash(
+            &mut first,
+            "Fotoğraflar/a-edited.jpg",
+            b"birinci",
+            "a-edited.jpg",
+        );
+        let mut second = f.writer("20261005T110000.000Z");
+        let b = f.trash(
+            &mut second,
+            "Fotoğraflar/b-edited.jpg",
+            b"ikinci",
+            "b-edited.jpg",
+        );
+
+        let r = f.undo().unwrap();
+        assert_eq!(r.restored, vec![b.clone()]);
+        assert_eq!(r.runs_left, 1);
+        assert!(b.exists() && !a.exists());
+
+        let r = f.undo().unwrap();
+        assert_eq!(r.restored, vec![a.clone()]);
+        assert_eq!(r.runs_left, 0);
+        assert!(a.exists());
+        assert!(f.undo().is_none(), "nothing left to undo");
+    }
+
+    #[test]
+    fn restored_files_are_back_in_the_library() {
+        let f = fixture();
+        let mut w = f.writer("20261005T100000.000Z");
+        let a = f.trash(
+            &mut w,
+            "çiçek-edited.jpg",
+            "çiçek".as_bytes(),
+            "çiçek-edited.jpg",
+        );
+        assert!(!f.indexed(&a));
+        f.undo().unwrap();
+        assert!(f.indexed(&a));
+    }
+
+    #[test]
+    fn a_trash_copy_with_other_bytes_is_not_taken() {
+        let f = fixture();
+        let mut w = f.writer("20261005T100000.000Z");
+        let a = f.trash(&mut w, "a.jpg", b"asil", "a.jpg 11-52-15-741.jpg");
+        std::fs::write(f.trash.join("a.jpg 11-52-15-741.jpg"), b"baska").unwrap();
+        let r = f.undo().unwrap();
+        assert_eq!(r.not_in_trash, vec![a.clone()]);
+        assert!(r.restored.is_empty() && !a.exists());
+        assert!(f.trash.join("a.jpg 11-52-15-741.jpg").exists());
+        assert_eq!(r.runs_left, 0, "a run that cannot be restored is dropped");
+    }
+
+    #[test]
+    fn an_occupied_original_is_skipped_and_the_run_stays_undoable() {
+        let f = fixture();
+        let mut w = f.writer("20261005T100000.000Z");
+        let a = f.trash(&mut w, "a.jpg", b"asil", "a.jpg");
+        std::fs::write(&a, b"yeni dosya").unwrap();
+        let r = f.undo().unwrap();
+        assert_eq!(r.occupied, vec![a.clone()]);
+        assert_eq!(
+            std::fs::read(&a).unwrap(),
+            b"yeni dosya",
+            "never overwritten"
+        );
+        assert_eq!(r.runs_left, 1, "kept for another try");
+
+        std::fs::remove_file(&a).unwrap();
+        let r = f.undo().unwrap();
+        assert_eq!(r.restored, vec![a.clone()]);
+        assert_eq!(std::fs::read(&a).unwrap(), b"asil");
+    }
+
+    #[test]
+    fn a_file_emptied_from_the_trash_is_reported_and_the_run_is_dropped() {
+        let f = fixture();
+        let mut w = f.writer("20261005T100000.000Z");
+        let a = f.trash(&mut w, "a.jpg", b"asil", "a.jpg");
+        std::fs::remove_file(f.trash.join("a.jpg")).unwrap();
+        let r = f.undo().unwrap();
+        assert_eq!(r.not_in_trash, vec![a]);
+        assert!(runs(&f.library.paths.state).unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_sidecar_comes_back_with_its_photo() {
+        let f = fixture();
+        let photo = f.root.join("Tatil/deniz.jpg");
+        let sidecar = f.root.join("Tatil/deniz.jpg.xmp");
+        let mut w = f.writer("20261005T100000.000Z");
+        f.trash(&mut w, "Tatil/deniz.jpg", b"deniz", "deniz.jpg");
+        // Rewrite the manifest with the sidecar recorded too.
+        let run_path = runs(&f.library.paths.state).unwrap().remove(0);
+        let mut run = read(&run_path).unwrap();
+        std::fs::write(f.trash.join("deniz.jpg.xmp"), b"<x:xmpmeta/>").unwrap();
+        run.entries[0].sidecar = Some(Moved {
+            path: sidecar.clone(),
+            trashed: Some(f.trash.join("deniz.jpg.xmp")),
+        });
+        keep_only(&run, &run.entries).unwrap();
+
+        f.undo().unwrap();
+        assert!(photo.exists() && sidecar.exists());
+    }
+
+    #[test]
+    fn a_dry_run_plan_changes_nothing() {
+        let f = fixture();
+        let mut w = f.writer("20261005T100000.000Z");
+        let a = f.trash(&mut w, "a.jpg", b"asil", "a.jpg");
+        let (run, steps) = plan_latest(&f.library.paths.state, &Recorded)
+            .unwrap()
+            .unwrap();
+        assert_eq!(run.entries[0].file.path, a);
+        assert!(matches!(steps[0], Step::Restore(_)));
+        assert!(!a.exists());
+        assert_eq!(runs(&f.library.paths.state).unwrap().len(), 1);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn system_trash_round_trip() {
+        let f = fixture();
+        let path = f
+            .root
+            .join(format!("videre-geri-al-{}.jpg", std::process::id()));
+        std::fs::write(&path, b"gercek cop kutusu").unwrap();
+        crate::indexing::index_paths(
+            &f.conn,
+            &f.library,
+            vec![path.clone()],
+            videre_core::marks::XmpPrecedence::Db,
+            true,
+        )
+        .unwrap();
+        let mut w = Writer::new(&f.library.paths.state, "dedupe");
+        let progress = videre_core::progress::Progress::new_counting(1, true, "files");
+        let res = crate::removal::remove_and_forget(
+            Some(&f.conn),
+            std::slice::from_ref(&path),
+            crate::removal::Method::Trash,
+            &progress,
+            Some(&mut w),
+        );
+        assert_eq!(res[0].1, crate::removal::Outcome::Removed);
+        assert!(!path.exists());
+
+        let r = undo_latest(&f.conn, &f.library, system().as_ref(), &progress, true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(r.restored, vec![path.clone()]);
+        assert_eq!(std::fs::read(&path).unwrap(), b"gercek cop kutusu");
     }
 }
