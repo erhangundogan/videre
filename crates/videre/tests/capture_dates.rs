@@ -143,3 +143,41 @@ fn a_file_with_nothing_else_is_dated_by_its_own_time_in_local_time() {
     assert_eq!(r.date_source.as_deref(), Some("mtime"));
     assert_eq!(r.capture_date, videre_core::capture_date::wall_clock(TAKEN));
 }
+
+/// A library written before capture dates has rows with no source (and an
+/// EXIF date stored as the camera wrote it, hour 24 included). The next scan
+/// resolves them without hashing a single file again.
+#[test]
+fn rows_from_before_capture_dates_resolve_on_the_next_scan_without_rehashing() {
+    let lib = TestLibrary::new();
+    let undated = undated_jpeg(&lib, "Fotoğraflar/IMG-20160104-WA0000.jpg", 50);
+    sidecar(&undated, TAKEN, 41.04, 29.0);
+    let dated = lib.copy_fixture("tiny.jpg", "Fotoğraflar/gece-yarısı.jpg");
+    lib.scan();
+    lib.conn()
+        .execute_batch(
+            "UPDATE file_hashes SET capture_date = NULL, date_source = NULL,
+                 gps_source = NULL, gps_lat = NULL, gps_lon = NULL;
+             UPDATE file_hashes SET exif_date = '2015-10-29T24:03:39'
+                 WHERE path LIKE '%gece-yarısı.jpg';",
+        )
+        .unwrap();
+
+    let out = lib.cmd().args(["scan", "--json"]).output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(doc["total_files"], 0, "nothing rehashed: {doc}");
+
+    let r = row(&lib, &undated);
+    assert_eq!(r.date_source.as_deref(), Some("sidecar"));
+    assert_eq!(r.capture_date, videre_core::capture_date::wall_clock(TAKEN));
+    assert_eq!(r.gps, Some((41.04, 29.0)));
+    let r = row(&lib, &dated);
+    assert_eq!(r.date_source.as_deref(), Some("exif"));
+    assert_eq!(r.capture_date.as_deref(), Some("2015-10-30T00:03:39"));
+    assert_eq!(r.exif_date.as_deref(), Some("2015-10-30T00:03:39"));
+}

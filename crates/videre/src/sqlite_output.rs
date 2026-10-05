@@ -50,22 +50,44 @@ pub fn sidecar_facts(
         .collect()
 }
 
+/// What a file itself says about its date and place, from a fresh scan or
+/// from a stored row.
+struct FileDates<'a> {
+    /// `exif_date` and where it came from (`exif`, `video`, `mvhd`).
+    date: Option<&'a str>,
+    source: Option<&'a str>,
+    mvhd_unix: Option<i64>,
+    modified_at: Option<&'a str>,
+    gps: Option<(f64, f64)>,
+}
+
+impl<'a> From<&'a FileRecord> for FileDates<'a> {
+    fn from(r: &'a FileRecord) -> Self {
+        FileDates {
+            date: r.exif_date.as_deref(),
+            source: r.date_source.as_deref(),
+            mvhd_unix: r.mvhd_unix,
+            modified_at: r.modified_at.as_deref(),
+            gps: r.gps_lat.zip(r.gps_lon),
+        }
+    }
+}
+
 fn resolve_record(
-    r: &FileRecord,
+    r: &FileDates,
     sidecar: Option<&crate::takeout_sidecar::SidecarMeta>,
 ) -> Resolved {
     use videre_core::capture_date::{resolve, DateSource, Inputs};
-    let source = r.date_source.as_deref().and_then(DateSource::parse);
-    let date = r.exif_date.as_deref();
+    let source = r.source.and_then(DateSource::parse);
     let inputs = Inputs {
-        exif: date.filter(|_| source == Some(DateSource::Exif)),
-        video_apple: date.filter(|_| source == Some(DateSource::Video)),
+        exif: r.date.filter(|_| source == Some(DateSource::Exif)),
+        video_apple: r.date.filter(|_| source == Some(DateSource::Video)),
         sidecar_unix: sidecar.and_then(|s| s.taken_unix),
         mvhd_unix: r.mvhd_unix,
-        mtime: r.modified_at.as_deref(),
+        mtime: r.modified_at,
     };
     let resolved = resolve(&inputs);
-    let (gps, gps_source) = match (r.gps_lat.zip(r.gps_lon), sidecar.and_then(|s| s.gps)) {
+    let (gps, gps_source) = match (r.gps, sidecar.and_then(|s| s.gps)) {
         (Some(g), _) => (Some(g), Some("file")),
         (None, Some(g)) => (Some(g), Some("sidecar")),
         (None, None) => (None, None),
@@ -76,6 +98,86 @@ fn resolve_record(
         gps,
         gps_source,
     }
+}
+
+/// Resolve the capture date and place of rows written before capture dates
+/// existed (`date_source IS NULL`), from what the row already holds, a video
+/// header read and the Takeout sidecars. No file is hashed, so a library
+/// upgraded to capture dates is brought current by its next scan at the cost
+/// of a metadata pass. Returns how many rows it resolved.
+pub fn resolve_unresolved(conn: &rusqlite::Connection) -> anyhow::Result<usize> {
+    struct Stored {
+        path: String,
+        exif_date: Option<String>,
+        modified_at: Option<String>,
+        gps: Option<(f64, f64)>,
+        video: bool,
+    }
+    let rows: Vec<Stored> = conn
+        .prepare(
+            "SELECT path, exif_date, modified_at, gps_lat, gps_lon, coalesce(mime, '')
+             FROM file_hashes WHERE date_source IS NULL",
+        )?
+        .query_map([], |r| {
+            let lat: Option<f64> = r.get(3)?;
+            let lon: Option<f64> = r.get(4)?;
+            let mime: String = r.get(5)?;
+            Ok(Stored {
+                path: r.get(0)?,
+                exif_date: r.get(1)?,
+                modified_at: r.get(2)?,
+                gps: lat.zip(lon),
+                video: mime.starts_with("video/"),
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    if rows.is_empty() {
+        return Ok(0);
+    }
+    let paths: Vec<PathBuf> = rows.iter().map(|r| PathBuf::from(&r.path)).collect();
+    let sidecars = sidecar_facts(&paths);
+    let tx = conn.unchecked_transaction()?;
+    {
+        let mut update = tx.prepare(
+            "UPDATE file_hashes SET exif_date = ?2, capture_date = ?3, date_source = ?4,
+                 gps_lat = ?5, gps_lon = ?6, gps_source = ?7
+             WHERE path = ?1",
+        )?;
+        for row in &rows {
+            // A video's stored date may be an mvhd time written as UTC; read
+            // the header again for the date and which field it came from.
+            let (date, source, mvhd_unix) = if row.video {
+                let v = videre_core::video_meta::read(std::path::Path::new(&row.path));
+                (v.date, v.date_source.map(|s| s.as_str()), v.mvhd_unix)
+            } else {
+                let date = row
+                    .exif_date
+                    .as_deref()
+                    .and_then(videre_core::capture_date::normalize_exif);
+                let source = date.as_ref().map(|_| "exif");
+                (date, source, None)
+            };
+            let dates = FileDates {
+                date: date.as_deref(),
+                source,
+                mvhd_unix,
+                modified_at: row.modified_at.as_deref(),
+                gps: row.gps,
+            };
+            let resolved = resolve_record(&dates, sidecars.get(&PathBuf::from(&row.path)));
+            update.execute(params![
+                row.path,
+                date,
+                resolved.capture_date,
+                resolved.date_source,
+                resolved.gps.map(|g| g.0),
+                resolved.gps.map(|g| g.1),
+                resolved.gps_source,
+            ])?;
+        }
+    }
+    tx.commit()?;
+    Ok(rows.len())
 }
 
 fn write_records_to(conn: &rusqlite::Connection, records: &[FileRecord]) -> Result<()> {
@@ -125,7 +227,7 @@ fn write_records_to(conn: &rusqlite::Connection, records: &[FileRecord]) -> Resu
         )?;
 
         for r in records {
-            let resolved = resolve_record(r, sidecars.get(&PathBuf::from(&r.path)));
+            let resolved = resolve_record(&r.into(), sidecars.get(&PathBuf::from(&r.path)));
             stmt.execute(params![
                 r.path,
                 r.hash,
