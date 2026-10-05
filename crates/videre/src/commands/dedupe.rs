@@ -388,7 +388,16 @@ fn run_remove(
     // listing exactly what is still on disk.
     let progress =
         videre_core::progress::Progress::new_counting(losers.len() as u64, args.silent, "files");
-    let results = crate::removal::remove_and_forget(Some(conn), &losers, method, &progress);
+    // A trash run records what it moved, so `--undo` can put it back.
+    let mut manifest = (method == crate::removal::Method::Trash)
+        .then(|| crate::trash_stack::Writer::new(&ctx.library.paths.state, "dedupe"));
+    let results = crate::removal::remove_and_forget(
+        Some(conn),
+        &losers,
+        method,
+        &progress,
+        manifest.as_mut(),
+    );
     progress.finish();
     let removed = results
         .iter()

@@ -9,14 +9,26 @@
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-/// One trashed file.
+/// A file moved to the trash: where it was, and where it landed when the
+/// platform says (macOS). Recorded rather than searched for, because listing
+/// the macOS Trash needs Full Disk Access while a known path in it does not,
+/// and a name clash there gets an unguessable name (`a.jpg 11-52-15-741.jpg`).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Moved {
+    pub path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trashed: Option<PathBuf>,
+}
+
+/// One trashed library file, with what proves a trash copy is the same file.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Entry {
-    pub path: PathBuf,
+    #[serde(flatten)]
+    pub file: Moved,
     pub hash: String,
     pub size: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sidecar: Option<PathBuf>,
+    pub sidecar: Option<Moved>,
 }
 
 /// Appends the entries of one run. The file appears with the first entry, so
@@ -143,7 +155,10 @@ mod tests {
 
     fn entry(path: &str) -> Entry {
         Entry {
-            path: PathBuf::from(path),
+            file: Moved {
+                path: PathBuf::from(path),
+                trashed: Some(PathBuf::from(format!("Trash/{path}"))),
+            },
             hash: format!("h-{path}"),
             size: 3,
             sidecar: None,
@@ -172,7 +187,10 @@ mod tests {
     fn entries_round_trip_and_runs_are_newest_first() {
         let state = tempfile::tempdir().unwrap();
         let mut a = entry("Fotoğraflar/IMG_1-edited.jpg");
-        a.sidecar = Some(PathBuf::from("Fotoğraflar/IMG_1-edited.jpg.xmp"));
+        a.sidecar = Some(Moved {
+            path: PathBuf::from("Fotoğraflar/IMG_1-edited.jpg.xmp"),
+            trashed: None,
+        });
         let b = entry("Fotoğraflar/çiçek-edited.jpg");
         write_run(state.path(), "20261005T100000.000Z-dedupe.jsonl", &[a.clone()]);
         write_run(state.path(), "20261005T110000.000Z-gallery.jsonl", &[b.clone()]);
