@@ -83,7 +83,7 @@ the order matters:
 ```bash
 videre import ~/Takeout      # fix the dates Takeout mangled
 videre --library ~/Takeout scan        # now record them
-videre dedupe --remove       # collapse the copies albums created
+videre dedupe --trash        # collapse the copies albums created
 videre prune                 # tidy up
 ```
 
@@ -110,7 +110,7 @@ closing hint adds the two commands that deal with them:
 Next:
   videre scan ~/Takeout/Google Photos
   videre dedupe --edited --html     # review 3763 photo(s) Google Photos exported twice
-  videre dedupe --edited --remove   # keep the originals, trash the edits
+  videre dedupe --edited --trash    # keep the originals, trash the edits
 ```
 
 `--json` reports the count as `edited_pairs`. See
