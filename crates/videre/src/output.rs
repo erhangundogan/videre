@@ -156,6 +156,8 @@ mod tests {
             height: None,
             duration_secs: None,
             codec: None,
+            date_source: None,
+            mvhd_unix: None,
         }
     }
 

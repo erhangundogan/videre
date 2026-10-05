@@ -25,6 +25,8 @@ struct ExifData {
 #[derive(Default)]
 struct ExtractedMeta {
     date: Option<String>,
+    date_source: Option<videre_core::capture_date::DateSource>,
+    mvhd_unix: Option<i64>,
     gps_lat: Option<f64>,
     gps_lon: Option<f64>,
     width: Option<u32>,
@@ -35,8 +37,17 @@ struct ExtractedMeta {
 
 impl From<ExifData> for ExtractedMeta {
     fn from(d: ExifData) -> Self {
+        // Hour 24 becomes midnight of the next day; an unusable date is none.
+        let date = d
+            .exif_date
+            .as_deref()
+            .and_then(videre_core::capture_date::normalize_exif);
         Self {
-            date: d.exif_date,
+            date_source: date
+                .is_some()
+                .then_some(videre_core::capture_date::DateSource::Exif),
+            mvhd_unix: None,
+            date,
             gps_lat: d.gps_lat,
             gps_lon: d.gps_lon,
             width: d.width,
@@ -52,6 +63,8 @@ impl From<videre_core::video_meta::VideoMeta> for ExtractedMeta {
     fn from(v: videre_core::video_meta::VideoMeta) -> Self {
         Self {
             date: v.date,
+            date_source: v.date_source,
+            mvhd_unix: v.mvhd_unix,
             gps_lat: v.gps_lat,
             gps_lon: v.gps_lon,
             width: v.width,
@@ -304,6 +317,8 @@ fn hash_open_file(
         height: meta.height,
         duration_secs: meta.duration_secs,
         codec: meta.codec,
+        date_source: meta.date_source.map(|s| s.as_str().to_string()),
+        mvhd_unix: meta.mvhd_unix,
     })
 }
 

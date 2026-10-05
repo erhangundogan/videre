@@ -24,8 +24,72 @@ pub fn write_records_in(
     Ok(())
 }
 
+/// A record's resolved capture date and place: what the file says, or else
+/// its Google Takeout sidecar, or else its own time.
+struct Resolved {
+    capture_date: Option<String>,
+    date_source: Option<&'static str>,
+    gps: Option<(f64, f64)>,
+    gps_source: Option<&'static str>,
+}
+
+/// The Takeout sidecar facts for those of `paths` that have a sidecar,
+/// matched by the same rules `videre import` uses. Folders with no sidecar
+/// cost one directory read.
+pub fn sidecar_facts(
+    paths: &[PathBuf],
+) -> std::collections::HashMap<PathBuf, crate::takeout_sidecar::SidecarMeta> {
+    crate::takeout_sidecar::survey(paths)
+        .matched
+        .into_iter()
+        .filter_map(|m| {
+            let text = std::fs::read_to_string(&m.sidecar).ok()?;
+            let meta = crate::takeout_sidecar::parse_sidecar(&text).ok()?;
+            Some((m.file, meta))
+        })
+        .collect()
+}
+
+fn resolve_record(
+    r: &FileRecord,
+    sidecar: Option<&crate::takeout_sidecar::SidecarMeta>,
+) -> Resolved {
+    use videre_core::capture_date::{resolve, DateSource, Inputs};
+    let source = r.date_source.as_deref().and_then(DateSource::parse);
+    let date = r.exif_date.as_deref();
+    let inputs = Inputs {
+        exif: date.filter(|_| source == Some(DateSource::Exif)),
+        video_apple: date.filter(|_| source == Some(DateSource::Video)),
+        sidecar_unix: sidecar.and_then(|s| s.taken_unix),
+        mvhd_unix: r.mvhd_unix,
+        mtime: r.modified_at.as_deref(),
+    };
+    let resolved = resolve(&inputs);
+    let (gps, gps_source) = match (r.gps_lat.zip(r.gps_lon), sidecar.and_then(|s| s.gps)) {
+        (Some(g), _) => (Some(g), Some("file")),
+        (None, Some(g)) => (Some(g), Some("sidecar")),
+        (None, None) => (None, None),
+    };
+    Resolved {
+        capture_date: resolved.as_ref().map(|(d, _)| d.clone()),
+        date_source: resolved.map(|(_, s)| s.as_str()),
+        gps,
+        gps_source,
+    }
+}
+
 fn write_records_to(conn: &rusqlite::Connection, records: &[FileRecord]) -> Result<()> {
     videre_core::library_db::ensure_scan_schema(conn)?;
+    // Only a record the file itself leaves short of a date or a place needs
+    // its sidecar.
+    let wanting: Vec<PathBuf> = records
+        .iter()
+        .filter(|r| {
+            !matches!(r.date_source.as_deref(), Some("exif" | "video")) || r.gps_lat.is_none()
+        })
+        .map(|r| PathBuf::from(&r.path))
+        .collect();
+    let sidecars = sidecar_facts(&wanting);
     let tx = conn.unchecked_transaction()?;
 
     {
@@ -33,9 +97,10 @@ fn write_records_to(conn: &rusqlite::Connection, records: &[FileRecord]) -> Resu
             "INSERT INTO file_hashes
                 (path, hash, size_bytes, created_at, modified_at, ext, mime,
                  phash, exif_date, gps_lat, gps_lon, width, height,
-                 duration_secs, codec, meta_hash)
+                 duration_secs, codec, meta_hash, capture_date, date_source,
+                 gps_source)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                     ?14, ?15, ?16)
+                     ?14, ?15, ?16, ?17, ?18, ?19)
              ON CONFLICT(path) DO UPDATE SET
                 hash = excluded.hash,
                 meta_hash = excluded.meta_hash,
@@ -53,10 +118,14 @@ fn write_records_to(conn: &rusqlite::Connection, records: &[FileRecord]) -> Resu
                 width = excluded.width,
                 height = excluded.height,
                 duration_secs = excluded.duration_secs,
-                codec = excluded.codec",
+                codec = excluded.codec,
+                capture_date = excluded.capture_date,
+                date_source = excluded.date_source,
+                gps_source = excluded.gps_source",
         )?;
 
         for r in records {
+            let resolved = resolve_record(r, sidecars.get(&PathBuf::from(&r.path)));
             stmt.execute(params![
                 r.path,
                 r.hash,
@@ -67,13 +136,16 @@ fn write_records_to(conn: &rusqlite::Connection, records: &[FileRecord]) -> Resu
                 r.mime,
                 r.phash.map(|p| p as i64),
                 r.exif_date,
-                r.gps_lat,
-                r.gps_lon,
+                resolved.gps.map(|g| g.0),
+                resolved.gps.map(|g| g.1),
                 r.width,
                 r.height,
                 r.duration_secs,
                 r.codec,
                 r.meta_hash,
+                resolved.capture_date,
+                resolved.date_source,
+                resolved.gps_source,
             ])?;
         }
     }
@@ -127,6 +199,8 @@ pub fn file_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileRec
         height: row.get(12)?,
         duration_secs: row.get(13)?,
         codec: row.get(14)?,
+        date_source: None,
+        mvhd_unix: None,
         meta_hash: row.get(15)?,
     })
 }
@@ -153,6 +227,8 @@ mod tests {
             height: Some(80),
             duration_secs: None,
             codec: None,
+            date_source: None,
+            mvhd_unix: None,
         }
     }
 

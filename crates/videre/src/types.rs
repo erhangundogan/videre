@@ -38,6 +38,15 @@ pub struct FileRecord {
     /// codec name.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub codec: Option<String>,
+    /// Where `exif_date` came from at extraction: `exif`, `video` (the Apple
+    /// key) or `mvhd`. The writer resolves the capture date from it, a
+    /// Takeout sidecar and the file time (`videre_core::capture_date`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date_source: Option<String>,
+    /// A video's `mvhd` creation time as the UTC instant it is, when its date
+    /// came from there. Never serialised.
+    #[serde(skip)]
+    pub mvhd_unix: Option<i64>,
 }
 
 #[derive(Debug)]
@@ -199,6 +208,8 @@ mod tests {
             height: None,
             duration_secs: None,
             codec: None,
+            date_source: None,
+            mvhd_unix: None,
         };
         let json = serde_json::to_string(&record).unwrap();
         assert!(json.contains("\"path\":\"/photos/img.jpg\""));
@@ -233,6 +244,8 @@ mod tests {
             height: Some(80),
             duration_secs: None,
             codec: None,
+            date_source: None,
+            mvhd_unix: None,
         };
         let json = serde_json::to_string(&record).unwrap();
         assert!(json.contains("\"exif_date\":\"2023-08-15T14:30:00\""));
@@ -261,6 +274,8 @@ mod tests {
             height: None,
             duration_secs: None,
             codec: None,
+            date_source: None,
+            mvhd_unix: None,
         };
         let json = serde_json::to_string(&record).unwrap();
         assert!(!json.contains("exif_date"));
@@ -288,6 +303,8 @@ mod tests {
             height: None,
             duration_secs: None,
             codec: None,
+            date_source: None,
+            mvhd_unix: None,
         }
     }
 
