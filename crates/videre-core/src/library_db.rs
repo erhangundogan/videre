@@ -41,8 +41,10 @@ use std::time::Duration;
 
 /// Schema 3 introduced the metadata-independent content key. Version 4 makes
 /// face IDs monotonic so retained learning provenance cannot refer to a
-/// different face after pruning.
-const SCHEMA_VERSION: i64 = 4;
+/// different face after pruning. Version 5 adds the resolved capture date
+/// (`capture_date`, `date_source`) and where a row's GPS came from
+/// (`gps_source`), in place.
+const SCHEMA_VERSION: i64 = 5;
 
 /// How long every open waits for a concurrent writer before failing, so two
 /// videre processes on one library surface as a bounded error rather than
@@ -78,6 +80,14 @@ const FILE_HASHES_COLUMNS: &[(&str, &str)] = &[
     // against the sidecar's current mtime to decide whether a re-import is
     // needed, so unchanged files are never re-read.
     ("xmp_sidecar_mtime", "TEXT"),
+    // One capture date per row, a local wall clock, and where it came from
+    // (`videre_core::capture_date`). NULL source = not yet resolved, filled
+    // by the next scan without rehashing.
+    ("capture_date", "TEXT"),
+    ("date_source", "TEXT"),
+    // 'exif' or 'sidecar' (a Google Takeout sidecar's geoData); NULL with no
+    // GPS.
+    ("gps_source", "TEXT"),
 ];
 
 /// The complete current `faces` schema, verified after preparation.
@@ -184,6 +194,7 @@ pub fn ensure_scan_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(&file_hashes_ddl_for("file_hashes", true))?;
     add_missing_columns(conn, "file_hashes", FILE_HASHES_COLUMNS)?;
     ensure_hash_index(conn)?;
+    ensure_capture_date_index(conn)?;
     // The declared location-cluster key needs its parent table to exist
     // before any row is written, including through standalone scan writers
     // that never run the full schema preparation.
@@ -302,6 +313,13 @@ pub fn ensure_hash_index(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_file_hashes_hash ON file_hashes(hash);")
 }
 
+/// Index the resolved capture date every date filter and date page reads.
+fn ensure_capture_date_index(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_file_hashes_capture_date ON file_hashes(capture_date);",
+    )
+}
+
 /// Prepare the complete supported schema on a fresh database: the scan table
 /// plus the optional faces/people/marks/tags/classification/location/run
 /// tables, created by the existing helpers the commands already use, then
@@ -378,8 +396,7 @@ fn upgrade_v3_to_v4(conn: &Connection) -> Result<()> {
             violations == 0,
             "schema upgrade found {violations} foreign key violation(s)"
         );
-        verify_schema(conn)?;
-        conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        conn.pragma_update(None, "user_version", 4)?;
         Ok(())
     })();
     match result {
@@ -395,6 +412,48 @@ fn upgrade_v3_to_v4(conn: &Connection) -> Result<()> {
             Err(error.context("upgrade library face IDs to schema 4"))
         }
     }
+}
+
+/// Add the capture-date and GPS-source columns. Additive: every row stays,
+/// with the new columns NULL, which the next scan resolves without rehashing.
+fn upgrade_v4_to_v5(conn: &Connection) -> Result<()> {
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let result = (|| -> Result<()> {
+        anyhow::ensure!(
+            user_version(conn)? == 4,
+            "expected schema 4 for the capture-date upgrade"
+        );
+        add_missing_columns(conn, "file_hashes", FILE_HASHES_COLUMNS)?;
+        ensure_capture_date_index(conn)?;
+        conn.pragma_update(None, "user_version", 5)?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => {
+            conn.execute_batch("COMMIT")?;
+            Ok(())
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
+}
+
+/// Every in-place upgrade from `version` to the current schema, in order.
+fn upgrade_from(conn: &Connection) -> Result<()> {
+    if user_version(conn)? == 3 {
+        upgrade_v3_to_v4(conn)?;
+    }
+    if user_version(conn)? == 4 {
+        upgrade_v4_to_v5(conn)?;
+    }
+    Ok(())
+}
+
+/// Whether `version` is one this build upgrades in place on a writable open.
+fn upgradable(version: i64) -> bool {
+    (3..SCHEMA_VERSION).contains(&version)
 }
 
 /// Whether the file is a SQLite database. The caller has already handled
@@ -655,9 +714,9 @@ fn require_current(ctx: &LibraryContext, conn: &Connection) -> Result<()> {
     if version > SCHEMA_VERSION {
         return Err(newer_schema(ctx, version));
     }
-    if version == 3 {
+    if upgradable(version) {
         return Err(anyhow::anyhow!(
-            "the library at {} uses schema 3; run `videre scan` or another writable command to upgrade face IDs before opening it read-only",
+            "the library at {} uses schema {version}; run `videre scan` or another writable command to upgrade it before opening it read-only",
             ctx.paths.root.display()
         ).context(crate::error_kind::ErrorKind::LibrarySchema));
     }
@@ -857,10 +916,10 @@ pub fn initialize(ctx: &LibraryContext) -> Result<Connection> {
         }
         DbFile::Present => {
             let conn = open_existing_conn(ctx)?;
-            if user_version(&conn)? == 3 {
+            if upgradable(user_version(&conn)?) {
                 require_supported_library(&conn, &ctx.paths.db)?;
                 validate_row_containment(ctx, &conn)?;
-                upgrade_v3_to_v4(&conn)?;
+                upgrade_from(&conn)?;
             }
             open_prepared(ctx, &conn)?;
             conn
@@ -899,7 +958,7 @@ pub fn open_existing(ctx: &LibraryContext) -> Result<Connection> {
     // Every refusal below leaves the file exactly as it was, except for the
     // one supported schema upgrade.
     let conn = open_existing_conn(ctx)?;
-    if user_version(&conn)? == 3 {
+    if upgradable(user_version(&conn)?) {
         require_supported_library(&conn, &ctx.paths.db)?;
         validate_row_containment(ctx, &conn)?;
         drop(conn);
@@ -908,7 +967,7 @@ pub fn open_existing(ctx: &LibraryContext) -> Result<Connection> {
         // library (an older `watch` or gallery) stops the upgrade: say so.
         let upgrade_blocked = || {
             format!(
-                "the library at {} needs a one-time upgrade to schema 4, which needs \
+                "the library at {} needs a one-time upgrade to schema {SCHEMA_VERSION}, which needs \
                  every other videre command in it stopped first; stop them and retry",
                 ctx.paths.root.display()
             )
@@ -920,9 +979,7 @@ pub fn open_existing(ctx: &LibraryContext) -> Result<Connection> {
         let conn = open_existing_conn(ctx)?;
         require_supported_library(&conn, &ctx.paths.db)?;
         validate_row_containment(ctx, &conn)?;
-        if user_version(&conn)? == 3 {
-            upgrade_v3_to_v4(&conn)?;
-        }
+        upgrade_from(&conn)?;
         open_prepared(ctx, &conn)?;
         return Ok(conn);
     }
@@ -1074,13 +1131,72 @@ mod tests {
         let _other = crate::library_locks::try_activity(&ctx, ActivityMode::Shared).unwrap();
         let error = open_existing(&ctx).unwrap_err();
         assert!(
-            format!("{error:#}").contains("one-time upgrade to schema 4"),
+            format!("{error:#}").contains("one-time upgrade to schema"),
             "{error:#}"
         );
         assert_eq!(
             user_version(&open_without_create(&ctx.paths.db).unwrap()).unwrap(),
             3
         );
+    }
+
+    /// A schema 4 library: the date columns schema 5 added are dropped again.
+    fn make_v4(conn: &Connection) {
+        conn.execute_batch(
+            "DROP INDEX IF EXISTS idx_file_hashes_capture_date;
+             ALTER TABLE file_hashes DROP COLUMN capture_date;
+             ALTER TABLE file_hashes DROP COLUMN date_source;
+             ALTER TABLE file_hashes DROP COLUMN gps_source;",
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 4).unwrap();
+    }
+
+    /// Schema 5 adds the resolved capture date in place: rows, hashes and
+    /// faces stay, and the new columns start empty for the next scan to fill.
+    #[test]
+    fn v4_upgrade_adds_the_date_columns_and_keeps_every_row() {
+        let (_temp, ctx) = library();
+        let conn = initialize(&ctx).unwrap();
+        make_v4(&conn);
+        let path = ctx.paths.root.join("Fotoğraflar/çiçek.jpg");
+        conn.execute(
+            "INSERT INTO file_hashes(path,hash,exif_date) VALUES(?1,'hçiçek','2016-01-04T22:29:58')",
+            [path.to_string_lossy()],
+        )
+        .unwrap();
+        conn.execute_batch(
+            "INSERT INTO faces(hash,bbox,embedding) VALUES('hçiçek','0,0,1,1',X'00')",
+        )
+        .unwrap();
+        drop(conn);
+
+        let conn = open_existing(&ctx).unwrap();
+        assert_eq!(user_version(&conn).unwrap(), SCHEMA_VERSION);
+        let (hash, source): (String, Option<String>) = conn
+            .query_row("SELECT hash, date_source FROM file_hashes", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!((hash.as_str(), source), ("hçiçek", None));
+        let faces: i64 = conn
+            .query_row("SELECT count(*) FROM faces", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(faces, 1);
+    }
+
+    #[test]
+    fn read_only_v4_refuses_without_writing() {
+        let (_temp, ctx) = library();
+        let conn = initialize(&ctx).unwrap();
+        make_v4(&conn);
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+            .unwrap();
+        drop(conn);
+        let before = std::fs::read(&ctx.paths.db).unwrap();
+        let error = open_existing_read_only(&ctx).unwrap_err();
+        assert!(format!("{error:#}").contains("videre scan"), "{error:#}");
+        assert_eq!(std::fs::read(&ctx.paths.db).unwrap(), before);
     }
 
     #[test]

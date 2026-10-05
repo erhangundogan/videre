@@ -40,8 +40,10 @@ You should end up with `~/Takeout/Google Photos/` containing folders like
 
 Look at the extracted folder and you will see two problems.
 
-**Every photo has today's date.** Your capture dates are not in the files. They
-are in the `.json` files sitting beside them, and nothing else reads those.
+**Photos without a camera date have today's date.** WhatsApp and Viber images,
+screenshots and scans carry no date of their own, so they arrive dated the day
+you unpacked the export. Their real dates, and often their places, are in the
+`.json` files sitting beside them, which most tools ignore.
 
 **Photos appear several times.** A photo in three albums is exported three
 times, so a 40 GB library can extract to considerably more.
@@ -52,10 +54,10 @@ as the original, `IMG_1.jpg`, and Google's render of the edit,
 
 videre fixes both.
 
-## 4. Restore the real dates
+## 4. Check the export
 
 ```bash
-videre import ~/Takeout --dry-run
+videre import ~/Takeout
 ```
 
 This changes nothing. It reports what it found:
@@ -65,22 +67,12 @@ Google Takeout at ~/Takeout
   12,431 media file(s) in 84 folder(s)
   11,902 matched a sidecar (95.7%)
      529 unmatched, left untouched
-   8,113 would have their date corrected
+  11,902 with a capture date and 9,214 with a place; videre scan reads both
 ```
 
 The percentage is the number to watch. Above about 95% is normal. Far below
 that suggests something unusual about the export, and is worth asking about
 before continuing.
-
-When it looks right, run it for real:
-
-```bash
-videre import ~/Takeout
-```
-
-It asks for confirmation before changing anything, because this does modify your
-files: it sets each file's date from its sidecar. Nothing else about the file
-changes.
 
 :::note[Why some files are never matched]
 Screenshots, some videos and a few edited copies arrive with no sidecar at all.
@@ -94,9 +86,22 @@ reported so you can see how many.
 videre --library ~/Takeout scan
 ```
 
-This records what you have in a database at `.videre/hashes.db` inside the library. It reads
-every file, so on a large library it takes a while. Your photos are not
-modified.
+This records what you have in a database at `.videre/hashes.db` inside the
+library. It reads every file, so on a large library it takes a while. A photo
+with no camera date takes its date, and a photo with no GPS its place, from its
+sidecar, so it lands on the right day and the right spot on the map.
+[`videre status`](/commands/status/) shows how many dates came from sidecars.
+Your photos are not modified.
+
+Then, to give the files themselves those dates, so any other tool sorts them
+correctly too:
+
+```bash
+videre --library ~/Takeout fix-dates
+```
+
+This one does change your files (only their modification times), so it asks
+first. See [`fix-dates`](/commands/fix-dates/).
 
 ## 6. Remove the album duplicates
 

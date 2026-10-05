@@ -51,6 +51,32 @@ detected type, and available media metadata. Photo metadata includes capture
 date, GPS coordinates, and dimensions. Video metadata can also include capture
 date, GPS coordinates, dimensions, duration, and codec.
 
+### Where a file's date comes from
+
+Every file gets one capture date, the one every date filter, the gallery's date
+pages, Events and sorting use. Scan takes the first of these the file has:
+
+| Source | When |
+|---|---|
+| The photo's EXIF date | the camera recorded one |
+| A video's own creation date | the clip carries Apple's date field |
+| The Google Takeout sidecar's `photoTakenTime` | the file sits beside a Takeout `.json` and records no date itself |
+| A video's container time | a clip with nothing better |
+| The file's own modification time | nothing above exists |
+
+Dates are kept as the clock time where the photo was taken, as EXIF writes them.
+A source that gives a moment in UTC (a sidecar, a container time, a file time)
+is converted to this machine's local time, the same assumption
+[`fix-dates`](/commands/fix-dates/#timezones) makes in the other direction. An
+EXIF time of `24:03` (written by some Android cameras for three minutes past
+midnight) is read as `00:03` the next day.
+
+A photo with no GPS of its own takes its place from the Takeout sidecar too.
+[`videre status`](/commands/status/) shows how many dates come from each source.
+
+A library scanned by an older videre has its dates worked out on the next scan,
+from what it already recorded, without reading any file again in full.
+
 Scan does not prepare semantic search, near-duplicate fingerprints or faces.
 Run [`videre embed`](/commands/embed/) and [`videre faces`](/commands/faces/)
 separately for those features.

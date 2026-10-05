@@ -28,7 +28,7 @@ const CANONICAL_SUFFIX: &str = ".supplemental-metadata.json";
 ///
 /// Per directory because Takeout always places a sidecar beside its media
 /// file, so the whole search space for one file is its own folder.
-pub(crate) struct SidecarIndex {
+pub struct SidecarIndex {
     by_name: HashMap<String, PathBuf>,
     names: Vec<String>,
 }
@@ -75,14 +75,14 @@ impl SidecarIndex {
 }
 
 /// One media file and the sidecar that belongs to it.
-pub(crate) struct Matched {
+pub struct Matched {
     pub file: PathBuf,
     pub sidecar: PathBuf,
 }
 
 /// The result of matching a whole export.
 #[derive(Default)]
-pub(crate) struct Survey {
+pub struct Survey {
     pub matched: Vec<Matched>,
     pub unmatched: usize,
     /// Counted apart from `unmatched`: ambiguity means the rules missed a
@@ -96,7 +96,7 @@ pub(crate) struct Survey {
 ///
 /// One index per directory, built once and reused for every file in it, since
 /// indexing is the only part that touches the filesystem.
-pub(crate) fn survey(files: &[PathBuf]) -> Survey {
+pub fn survey(files: &[PathBuf]) -> Survey {
     let mut by_folder: HashMap<PathBuf, Vec<&PathBuf>> = HashMap::new();
     for f in files {
         by_folder
@@ -134,7 +134,7 @@ pub(crate) fn survey(files: &[PathBuf]) -> Survey {
 
 /// What one sidecar says about its photo.
 #[derive(Debug, Default, PartialEq)]
-pub(crate) struct SidecarMeta {
+pub struct SidecarMeta {
     /// Unix seconds from `photoTakenTime`. `None` when the field is absent or
     /// unparseable, which leaves the file untouched.
     pub taken_unix: Option<i64>,
@@ -171,7 +171,7 @@ struct RawGeo {
 /// the photo was taken, so it is not read at all rather than used as a
 /// fallback: an import that silently applies upload dates looks exactly like
 /// one that worked.
-pub(crate) fn parse_sidecar(json: &str) -> anyhow::Result<SidecarMeta> {
+pub fn parse_sidecar(json: &str) -> anyhow::Result<SidecarMeta> {
     let raw: RawSidecar = serde_json::from_str(json)?;
     let taken_unix = raw
         .photo_taken_time
@@ -195,7 +195,7 @@ pub(crate) fn parse_sidecar(json: &str) -> anyhow::Result<SidecarMeta> {
 /// export names something in a way videre does not yet handle, and the summary
 /// counts it separately so that stays visible.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum SidecarMatch {
+pub enum SidecarMatch {
     Found(PathBuf),
     Ambiguous,
     Missing,
@@ -209,7 +209,7 @@ pub(crate) enum SidecarMatch {
 /// specified in terms of. Test-only because the command needs the three-valued
 /// form to count ambiguity apart from absence.
 #[cfg(test)]
-pub(crate) fn match_sidecar(index: &SidecarIndex, file_name: &str) -> Option<PathBuf> {
+pub fn match_sidecar(index: &SidecarIndex, file_name: &str) -> Option<PathBuf> {
     match match_sidecar_detailed(index, file_name) {
         SidecarMatch::Found(p) => Some(p),
         _ => None,
@@ -217,7 +217,7 @@ pub(crate) fn match_sidecar(index: &SidecarIndex, file_name: &str) -> Option<Pat
 }
 
 /// As `match_sidecar`, but distinguishing ambiguity from absence.
-pub(crate) fn match_sidecar_detailed(index: &SidecarIndex, file_name: &str) -> SidecarMatch {
+pub fn match_sidecar_detailed(index: &SidecarIndex, file_name: &str) -> SidecarMatch {
     macro_rules! attempt {
         ($e:expr) => {
             match $e {
@@ -237,14 +237,25 @@ pub(crate) fn match_sidecar_detailed(index: &SidecarIndex, file_name: &str) -> S
     if let Some((base, n)) = split_counter(file_name) {
         attempt!(try_counter_forms(index, &base, &n));
         attempt!(try_forms(index, &base));
-        if let Some(edited) = videre::takeout_names::original_name(&base) {
+        if let Some(edited) = crate::takeout_names::original_name(&base) {
             attempt!(try_forms(index, &edited));
         }
     }
 
     // An `-edited` render has no sidecar of its own; the original's applies.
-    if let Some(edited) = videre::takeout_names::original_name(file_name) {
+    if let Some(edited) = crate::takeout_names::original_name(file_name) {
         attempt!(try_forms(index, &edited));
+    }
+
+    // Google appended an extension to a title that already looked like one
+    // (`X.jpg-large` became `X.jpg-large.jpg`); the sidecar keeps the title.
+    // Exact names only, and only while a dot remains, so `a.jpg` and `a.png`
+    // never share an `a.` sidecar.
+    let (stem, ext) = split_extension(file_name);
+    if ext.is_some() && stem.contains('.') {
+        if let Some(p) = index.exact(&format!("{stem}{CANONICAL_SUFFIX}")) {
+            return SidecarMatch::Found(p);
+        }
     }
 
     SidecarMatch::Missing
@@ -338,6 +349,31 @@ mod tests {
 
     fn name_of(p: Option<std::path::PathBuf>) -> Option<String> {
         p.map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+    }
+
+    /// Google appended an extension to a name that already looked like one
+    /// (`X.jpg-large` exported as `X.jpg-large.jpg`); the sidecar keeps the
+    /// original title. Seen once in a 14,471-file Takeout library.
+    #[test]
+    fn matches_a_sidecar_named_before_the_export_added_an_extension() {
+        let (_d, index) = indexed(&[
+            "CYxf00wWwAAg6aA.jpg-large.jpg",
+            "CYxf00wWwAAg6aA.jpg-large.supplemental-metadata.json",
+        ]);
+        assert_eq!(
+            name_of(match_sidecar(&index, "CYxf00wWwAAg6aA.jpg-large.jpg")).as_deref(),
+            Some("CYxf00wWwAAg6aA.jpg-large.supplemental-metadata.json")
+        );
+    }
+
+    /// The rule above is only for names that still hold a dot once the last
+    /// extension is gone. Otherwise `İzmir.jpg` and `İzmir.png` would both
+    /// take a sidecar named `İzmir.supplemental-metadata.json`.
+    #[test]
+    fn a_plain_name_does_not_take_a_sidecar_without_its_extension() {
+        let (_d, index) = indexed(&["İzmir.jpg", "İzmir.png", "İzmir.supplemental-metadata.json"]);
+        assert_eq!(match_sidecar(&index, "İzmir.jpg"), None);
+        assert_eq!(match_sidecar(&index, "İzmir.png"), None);
     }
 
     #[test]

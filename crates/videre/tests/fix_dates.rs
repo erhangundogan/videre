@@ -253,3 +253,42 @@ fn a_file_no_longer_on_disk_points_at_prune() {
     );
     assert!(file.exists());
 }
+
+/// A photo with no EXIF date whose Takeout sidecar gave it one: fix-dates
+/// writes exactly the sidecar's instant, and a second run has nothing to do.
+#[test]
+fn a_sidecar_dated_photo_gets_its_sidecar_time_once() {
+    let lib = TestLibrary::new();
+    let photo = lib
+        .context()
+        .paths
+        .root
+        .join("Fotoğraflar/IMG-20160104-WA0000.jpg");
+    std::fs::create_dir_all(photo.parent().unwrap()).unwrap();
+    image::RgbImage::from_pixel(16, 16, image::Rgb([10, 90, 200]))
+        .save(&photo)
+        .unwrap();
+    let taken: i64 = 1_451_939_398;
+    std::fs::write(
+        photo.with_file_name("IMG-20160104-WA0000.jpg.supplemental-metadata.json"),
+        format!(r#"{{"photoTakenTime":{{"timestamp":"{taken}"}}}}"#),
+    )
+    .unwrap();
+    lib.scan();
+
+    let out = lib.cmd().args(["fix-dates", "--yes"]).output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let secs = |p: &std::path::Path| {
+        filetime::FileTime::from_last_modification_time(&std::fs::metadata(p).unwrap())
+            .unix_seconds()
+    };
+    assert_eq!(secs(&photo), taken);
+
+    let out = lib.cmd().args(["fix-dates", "--yes"]).output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("0 updated"), "{stderr}");
+}

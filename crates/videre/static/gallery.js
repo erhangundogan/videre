@@ -1134,6 +1134,9 @@ function peopleRootG(){
   return r.charAt(r.length-1)==='/'?r:r+'/';
 }
 function bestDateJs(f){
+  // The server's resolved capture date: EXIF, a video's own date, a Takeout
+  // sidecar, or the file's time, already on the local clock.
+  if(f.ca)return f.ca;
   if(f.ex&&f.ex.indexOf('0000')!==0)return f.ex;
   if(f.cr&&f.mo)return f.cr<f.mo?f.cr:f.mo;
   return f.cr||f.mo||'';

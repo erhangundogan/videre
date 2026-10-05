@@ -293,7 +293,7 @@ mod tests {
                 modified_at TEXT,
                 ext         TEXT,
                 phash       INTEGER,
-                exif_date   TEXT,
+                exif_date   TEXT, capture_date TEXT,
                 gps_lat     REAL,
                 gps_lon     REAL,
                 width       INTEGER,

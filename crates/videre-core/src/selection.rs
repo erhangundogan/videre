@@ -875,7 +875,7 @@ mod resolve_tests {
             "CREATE TABLE file_hashes (
                 path TEXT PRIMARY KEY, hash TEXT NOT NULL, size_bytes INTEGER,
                 created_at TEXT, modified_at TEXT, ext TEXT, mime TEXT, phash INTEGER,
-                exif_date TEXT, gps_lat REAL, gps_lon REAL, width INTEGER, height INTEGER);
+                exif_date TEXT, capture_date TEXT, gps_lat REAL, gps_lon REAL, width INTEGER, height INTEGER);
              INSERT INTO file_hashes (path, hash, ext, mime, exif_date, modified_at) VALUES
                ('/lib/a.jpg','h_jpg','jpg','image/jpeg','2024-05-01T10:00:00','2024-05-01T10:00:00'),
                ('/lib/b.mov','h_mov','mov','video/quicktime','2024-06-01T10:00:00','2024-06-01T10:00:00'),
@@ -1204,7 +1204,7 @@ mod resolve_tests {
             "CREATE TABLE file_hashes (
                 path TEXT PRIMARY KEY, hash TEXT NOT NULL, size_bytes INTEGER,
                 created_at TEXT, modified_at TEXT, ext TEXT, mime TEXT, phash INTEGER,
-                exif_date TEXT, gps_lat REAL, gps_lon REAL, width INTEGER, height INTEGER);",
+                exif_date TEXT, capture_date TEXT, gps_lat REAL, gps_lon REAL, width INTEGER, height INTEGER);",
         )
         .unwrap();
         c.execute(
@@ -1365,7 +1365,7 @@ mod resolve_in_tests {
             "CREATE TABLE file_hashes (
                 path TEXT PRIMARY KEY, hash TEXT NOT NULL, size_bytes INTEGER,
                 created_at TEXT, modified_at TEXT, ext TEXT, mime TEXT, phash INTEGER,
-                exif_date TEXT, gps_lat REAL, gps_lon REAL, width INTEGER, height INTEGER);",
+                exif_date TEXT, capture_date TEXT, gps_lat REAL, gps_lon REAL, width INTEGER, height INTEGER);",
         )
         .unwrap();
         for (rel, hash) in rows {

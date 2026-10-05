@@ -228,17 +228,35 @@ fn yes_skips_the_prompt_but_still_prints_the_checklist() {
     assert!(!text.contains("Aborted"), "--yes must proceed: {text}");
 }
 
+/// import changes no file: scan takes the sidecar's date, and fix-dates is
+/// the one command that writes a file's time, from that same date. Two
+/// writers once disagreed by hours and undid each other.
 #[test]
-fn takeout_import_corrects_the_date_from_the_sidecar() {
+fn takeout_import_writes_no_date_and_scan_then_fix_dates_applies_the_sidecar() {
     let lib = TestLibrary::new();
     let photo = takeout_tree(&lib.root);
-    assert_ne!(mtime_seconds(&photo), TAKEN, "fixture must start wrong");
+    let before = mtime_seconds(&photo);
+    assert_ne!(before, TAKEN, "fixture must start wrong");
 
     let text = run(&lib, &[".", "--yes"]);
     assert_eq!(
         mtime_seconds(&photo),
+        before,
+        "import writes nothing: {text}"
+    );
+    assert!(text.contains("videre fix-dates"), "{text}");
+
+    lib.scan();
+    let out = lib.cmd().args(["fix-dates", "--yes"]).output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        mtime_seconds(&photo),
         TAKEN,
-        "must apply photoTakenTime, not creationTime: {text}"
+        "photoTakenTime, not creationTime"
     );
 }
 
