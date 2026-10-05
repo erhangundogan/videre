@@ -503,24 +503,34 @@ embeddable and DNG is not decodable, so `ext = 'dng'` explicitly vetoes
 embeddability. Routing on mime alone revives the bug fixed 2026-08-01, where
 every DNG was queried as pending and failed to decode on every single run.
 
-### Video dates are local wall-clock, like photo dates
+### One capture date per file, on one clock
 
-`videre_core::video_meta` prefers `com.apple.quicktime.creationdate` (local
-time with a UTC offset) and stores the wall-clock part, discarding the offset.
-It falls back to `mvhd`'s creation time, which is **UTC**, only when that key is
-absent.
+Every row carries `capture_date` and `date_source`, resolved by
+`videre_core::capture_date::resolve` in this order: EXIF `DateTimeOriginal`, a
+video's `com.apple.quicktime.creationdate`, a Google Takeout sidecar's
+`photoTakenTime`, a video's `mvhd` creation time, the file's mtime. Every date
+consumer reads it through `EFFECTIVE_DATE_SQL` (which falls back to the old
+expression for an unresolved row) or `capture_date::CAPTURE_TIME_SQL` (a real
+capture time, NULL for an mtime date: fix-dates, status, Events).
 
-This is not a stylistic choice. `exif_date` holds local wall-clock for photos
-because EXIF carries no timezone, and every date filter, `EFFECTIVE_DATE_SQL`
-and `output::best_date` compares those strings. Storing UTC for video would put
-the two on different clocks in one column: a clip shot at 21:49 local lands on
-the following day, `--on` misses it, and a chronological sort interleaves it
-wrongly against photos taken minutes earlier. Silent and permanent.
+**Every stored date is a local wall clock** (`YYYY-MM-DDTHH:MM:SS`), the form
+EXIF writes. The Apple key is local time with an offset; the wall-clock part is
+kept and the offset dropped. Sources that are UTC instants (a sidecar, `mvhd`,
+an mtime) convert through `capture_date::wall_clock`, machine-local, the
+inverse of `fix_dates_target`, so a date that goes to the mtime and back is
+unchanged. EXIF hour 24 normalises to 00 of the next day.
 
-Seeing two date sources and picking the standard-looking one is the obvious
-"simplification" here, so the reasoning sits at the parse site as well. Measured
-on a 260-file corpus: 10 carry only the UTC field, all re-encoded renders rather
-than camera originals.
+This is not a stylistic choice. Storing UTC beside wall clocks put two clocks in
+one comparison: a clip shot at 21:49 local landed on the following day, an
+undated file written at 00:30 local landed on the previous one, and two commands
+(import writing sidecar instants, fix-dates writing EXIF as local) undid each
+other by hours. `fix-dates` is now the only command that writes an mtime;
+`import` changes no file. Measured on a 260-file corpus: 10 clips carry only
+`mvhd`. On a 14,471-file Takeout library: 3,518 files had no EXIF date and sat
+on the unpack date until scan read their sidecars.
+
+Takeout sidecars are matched by `videre::takeout_sidecar`, shared by scan and
+import; a sidecar's `geoData` fills a row with no GPS (`gps_source`).
 
 ### Probe videos before invoking QuickLook
 
@@ -798,6 +808,9 @@ above.
   deletes the WAL under a live connection -> `videre_core::library_db::is_sqlite_file`
 - Errors logged once, at boundaries; per-command log layout and reader -> `videre_core::error_log`, `videre_core::error_kind`, `crates/videre/src/logging.rs`
 - File identity is the content key, metadata excluded -> `videre::content_key`
+- One capture date per row, every date a local wall clock; schema 5 adds it in
+  place and the next scan resolves old rows without rehashing ->
+  `videre_core::capture_date`, `videre::sqlite_output::resolve_unresolved`
 - Face IDs are never reused (schema 4); prune keeps the journal and withdraws
   evidence that lost its source face -> `videre_core::library_db::upgrade_v3_to_v4`,
   `videre_core::face_learning::prune`

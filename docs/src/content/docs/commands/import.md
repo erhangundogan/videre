@@ -5,8 +5,10 @@ description: Bring photos in from Google Takeout, Apple Photos, or a Lightroom c
 
 Brings a library in from somewhere else: a Google Takeout export, an Apple
 Photos or iPhoto library, or an Adobe Lightroom catalog. It works out what you
-pointed it at, finds the actual files, and corrects the dates those tools left
-behind.
+pointed it at, finds the actual files, and reports what it found. It changes
+no file: [`videre scan`](/commands/scan/) reads a Takeout photo's real date and
+place from its sidecar, and [`videre fix-dates`](/commands/fix-dates/) sets that
+date as the file's time.
 
 ```bash
 videre import ~/Pictures                    # find whatever is in there
@@ -65,8 +67,8 @@ videre import --originals ~/somewhere/photos ~/Pictures/Odd.photoslibrary
 | `--originals <dir>` | Where the files actually are. Overrides every detection step |
 | `--use-library-db` | Also read the provider's catalog to locate files. Off by default |
 | `--allow-partial` | Proceed without prompting when an Apple library looks optimised |
-| `--dry-run` | Report what would change, modify nothing |
-| `-y`, `--yes` | Skip the confirmation prompts |
+| `--dry-run` | Report only. Import changes no file either way |
+| `-y`, `--yes` | Skip the confirmation prompts (Apple and Lightroom) |
 | `--silent` | No per-file output. Errors always show |
 | `--json` | One JSON summary object on stdout |
 
@@ -75,27 +77,34 @@ Copying into a clean destination tree is designed but not built. Passing
 `--into` exits with a message rather than silently ignoring it.
 :::
 
-## Import comes before scan
-
-Dates must be corrected before [`videre scan`](/commands/scan/) records them, so
-the order matters:
+## Then scan, then fix-dates
 
 ```bash
-videre import ~/Takeout      # fix the dates Takeout mangled
-videre --library ~/Takeout scan        # now record them
-videre dedupe --trash        # collapse the copies albums created
-videre prune                 # tidy up
+videre import ~/Takeout                # see what the export holds
+videre --library ~/Takeout scan        # record it, dates and places from the sidecars
+videre --library ~/Takeout fix-dates   # set those dates as the files' times
+videre dedupe --trash                  # collapse the copies albums created
 ```
 
 Import deliberately does not scan for you, keeping each command to one job.
+The order of import and scan does not matter: scan reads the sidecars itself,
+so a Takeout export dated correctly even if you never ran import.
 
 ## What each source does
 
 ### Google Takeout
 
-Takeout puts each photo's real capture date in a `.json` sidecar rather than in
-the file, so every photo's timestamp is the day you exported. Import reads those
-sidecars and restores the dates.
+Takeout puts each photo's real capture date and place in a `.json` sidecar
+rather than in the file, so a photo with no EXIF date (WhatsApp and Viber
+images, screenshots, scans) carries the day you unpacked the export.
+[`videre scan`](/commands/scan/#where-a-files-date-comes-from) reads those
+sidecars, so each such photo lands on the day it was taken; import reports how
+many sidecars it found and what they hold:
+
+```text
+  14143 matched a sidecar (97.7%)
+  14143 with a capture date and 10775 with a place; videre scan reads both
+```
 
 The sidecar names are the hard part: Google truncates them at around 46
 characters, so `photo.jpg.supplemental-metadata.json` can arrive as
@@ -109,6 +118,7 @@ closing hint adds the two commands that deal with them:
 ```text
 Next:
   videre scan ~/Takeout/Google Photos
+  videre fix-dates                  # set 14143 file time(s) from their sidecar
   videre dedupe --edited --html     # review 3763 photo(s) Google Photos exported twice
   videre dedupe --edited --trash    # keep the originals, trash the edits
 ```
@@ -126,6 +136,9 @@ the most common way other tools get this wrong.
 **When a name is ambiguous, no date is applied.** If a truncated name could
 belong to two sidecars, the file is left alone and counted separately. A wrong
 date is worse than a missing one.
+
+**A photo's own EXIF date wins.** The sidecar is used only for a photo whose file
+records no date, and for a place only when the file has none.
 
 ### Apple Photos and iPhoto
 
@@ -189,10 +202,11 @@ Catalog references 4 root folder(s):
 
 ## Caveats
 
-**Import changes file timestamps.** Like [`fix-dates`](/commands/fix-dates/), it
-writes to your files, so it asks before doing so and `--dry-run` shows exactly
-what it would do. Only the modification time changes; contents are never
-touched.
+**Import changes no file.** Earlier versions set file times from the sidecars
+themselves, in UTC, while `fix-dates` set them from EXIF in local time, so on a
+photo with both the two commands disagreed by hours and undid each other. Now
+[`fix-dates`](/commands/fix-dates/) is the only command that changes a file's
+time.
 
 **It reads other applications' libraries, and only reads.** Nothing is written
 back to a Photos library or a Lightroom catalog.

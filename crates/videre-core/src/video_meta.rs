@@ -30,6 +30,13 @@ pub struct VideoMeta {
     /// Local wall-clock, `YYYY-MM-DDTHH:MM:SS`, matching what `extract_exif`
     /// writes for photos. See `parse_apple_date` for why not UTC.
     pub date: Option<String>,
+    /// Which field `date` came from: the Apple key (`Video`) or `mvhd`
+    /// (`Mvhd`). A Takeout sidecar outranks `mvhd`, so the write path needs
+    /// to know which one it has.
+    pub date_source: Option<crate::capture_date::DateSource>,
+    /// `mvhd`'s creation time as the UTC instant it is, when `date` came
+    /// from it.
+    pub mvhd_unix: Option<i64>,
     pub gps_lat: Option<f64>,
     pub gps_lon: Option<f64>,
     pub width: Option<u32>,
@@ -126,10 +133,11 @@ const QT_EPOCH_OFFSET: i64 = 2_082_844_800;
 /// **This one is UTC**, unlike `com.apple.quicktime.creationdate`, and there is
 /// no offset stored anywhere to recover the local time from. Measured on a real
 /// corpus, 10 of 260 clips carry only this - all of them re-encoded renders
-/// rather than camera originals. A date that may be wrong by a timezone is
-/// still far better than no date, which excludes the file from every date
-/// filter entirely; but prefer the Apple key whenever it exists.
-fn parse_mvhd_date(p: &[u8]) -> Option<String> {
+/// rather than camera originals. Returned as the UTC instant it is; the
+/// caller converts it to the local wall clock (`capture_date::wall_clock`),
+/// which is right whenever the clip was taken in the machine's zone. Prefer
+/// the Apple key whenever it exists, and a Takeout sidecar over this.
+fn parse_mvhd_unix(p: &[u8]) -> Option<i64> {
     let version = *p.first()?;
     let secs = if version == 1 {
         be64(p, 4)? as i64
@@ -142,8 +150,7 @@ fn parse_mvhd_date(p: &[u8]) -> Option<String> {
     if unix <= 0 {
         return None;
     }
-    let dt = chrono::DateTime::from_timestamp(unix, 0)?;
-    Some(dt.format("%Y-%m-%dT%H:%M:%S").to_string())
+    Some(unix)
 }
 
 /// Width and height from `tkhd`, stored as 16.16 fixed point.
@@ -292,6 +299,9 @@ pub(crate) fn from_moov(moov: &[u8]) -> VideoMeta {
 
     if let Some((date, loc)) = apple_keys(moov) {
         m.date = date.as_deref().and_then(parse_apple_date);
+        if m.date.is_some() {
+            m.date_source = Some(crate::capture_date::DateSource::Video);
+        }
         if let Some((lat, lon)) = loc.as_deref().and_then(parse_iso6709) {
             m.gps_lat = Some(lat);
             m.gps_lon = Some(lon);
@@ -301,8 +311,14 @@ pub(crate) fn from_moov(moov: &[u8]) -> VideoMeta {
     // Only when the Apple key is missing: that one carries local time, this one
     // is UTC, and mixing them silently would put some video on a different
     // clock from the photos beside it.
+    // It is converted to the local wall clock, the clock every other date is
+    // on; stored as UTC it sat hours off the photos beside it.
     if m.date.is_none() {
-        m.date = find(moov, b"mvhd").and_then(parse_mvhd_date);
+        if let Some(unix) = find(moov, b"mvhd").and_then(parse_mvhd_unix) {
+            m.date = crate::capture_date::wall_clock(unix);
+            m.mvhd_unix = Some(unix);
+            m.date_source = Some(crate::capture_date::DateSource::Mvhd);
+        }
     }
 
     // Dimensions and codec come from the *video* track, so audio traks must be
@@ -639,8 +655,8 @@ mod mvhd_date_tests {
         // 1970-01-01T00:00:00Z is exactly QT_EPOCH_OFFSET seconds in.
         let one_hour_after_unix_epoch = (QT_EPOCH_OFFSET + 3600) as u32;
         assert_eq!(
-            parse_mvhd_date(&mvhd_v0(one_hour_after_unix_epoch)).as_deref(),
-            Some("1970-01-01T01:00:00")
+            parse_mvhd_unix(&mvhd_v0(one_hour_after_unix_epoch)),
+            Some(3600)
         );
     }
 
@@ -648,7 +664,23 @@ mod mvhd_date_tests {
     fn a_zero_creation_time_is_refused_rather_than_recorded_as_1904() {
         // Common in re-muxed files; recording 1904 as a capture date would put
         // the file at the very top of every chronological sort.
-        assert_eq!(parse_mvhd_date(&mvhd_v0(0)), None);
+        assert_eq!(parse_mvhd_unix(&mvhd_v0(0)), None);
+    }
+
+    /// mvhd is a UTC instant; stored as a wall clock it was hours off the
+    /// photos beside it (a clip named 21:38 stored 19:39). It becomes the
+    /// local wall clock, and says it came from mvhd.
+    #[test]
+    fn an_mvhd_only_clip_gets_a_local_wall_clock_and_its_source() {
+        let mut moov = Vec::new();
+        let p = mvhd_v0((QT_EPOCH_OFFSET + 1_432_928_352) as u32);
+        moov.extend_from_slice(&((p.len() + 8) as u32).to_be_bytes());
+        moov.extend_from_slice(b"mvhd");
+        moov.extend_from_slice(&p);
+        let m = from_moov(&moov);
+        assert_eq!(m.mvhd_unix, Some(1_432_928_352));
+        assert_eq!(m.date_source, Some(crate::capture_date::DateSource::Mvhd));
+        assert_eq!(m.date, crate::capture_date::wall_clock(1_432_928_352));
     }
 
     #[test]
@@ -678,11 +710,13 @@ mod mvhd_date_tests {
         let mut moov = bx(b"mvhd", &mvhd_v0((QT_EPOCH_OFFSET + 3600) as u32));
         moov.extend_from_slice(&bx(b"meta", &meta_body));
 
+        let m = from_moov(&moov);
         assert_eq!(
-            from_moov(&moov).date.as_deref(),
+            m.date.as_deref(),
             Some("2020-05-06T07:08:09"),
             "local Apple time must beat UTC mvhd"
         );
+        assert_eq!(m.date_source, Some(crate::capture_date::DateSource::Video));
     }
 
     fn ilst_wrap(inner: &[u8]) -> Vec<u8> {

@@ -90,20 +90,20 @@ boundary. `--date 2025-05` and `--date 2025-06` never return the same file.
 
 ### Which date it matches
 
-The **EXIF capture date** when the file has one, otherwise the file's
-**modification time**.
+Each file's **capture date**: its EXIF date, a video's own date, the date in its
+Google Takeout sidecar, and only when there is none of those, the file's
+**modification time**, all on this machine's local clock. See
+[where a file's date comes from](/commands/scan/#where-a-files-date-comes-from).
 
 That matters because screenshots, PNGs and most videos carry no EXIF at all. A
 strict EXIF-only filter would make them unreachable by date, including the
 screenshots you are most likely to want to find.
 
-:::caution[The fallback can mislead]
-A photo taken in 2019, copied to a new machine in 2026, with no EXIF date, has a
-2026 modification time and will match `--date 2026`.
-
-Results therefore mix "when it was taken" with "when the file was last written".
-Running [`videre fix-dates`](/commands/fix-dates/) sets modification times from
-EXIF where it exists, which makes the two agree and the fallback more accurate.
+:::caution[The last fallback can mislead]
+A photo taken in 2019, copied to a new machine in 2026, with no EXIF date and no
+sidecar, has a 2026 modification time and will match `--date 2026`.
+[`videre status`](/commands/status/) shows how many dates come from file times
+only.
 :::
 
 ## Sorting

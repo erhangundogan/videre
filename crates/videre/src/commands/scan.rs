@@ -98,6 +98,12 @@ fn run_inner(args: &ScanArgs, ctx: &CommandContext) -> anyhow::Result<ScanJson> 
         videre_core::pipeline_runs::track_in(&conn, &ctx.library, &guard, "scan", || {
             let (records, skipped, _walked) = gather_records(args, ctx, &conn);
             sqlite_output::write_records_in(&conn, &ctx.library, &records)?;
+            // Rows written before capture dates get theirs from what they
+            // already hold; nothing is hashed again.
+            let resolved = sqlite_output::resolve_unresolved(&conn)?;
+            if resolved > 0 && !args.silent {
+                tracing::info!("Resolved the capture date of {resolved} existing file(s)");
+            }
             let precedence = args.xmp.resolve_from(&ctx.library.settings)?;
             // Reconcile XMP incrementally: files this run hashed get a full
             // reconcile, files whose sidecar changed get a sidecar-only read,

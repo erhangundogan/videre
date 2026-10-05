@@ -19,8 +19,8 @@ use std::collections::HashSet;
 /// The `0000%` guard matches `output.rs::best_date`: a camera with an unset
 /// clock writes `0000-00-00T00:00:00`, which must fall back rather than being
 /// treated as year zero.
-pub const EFFECTIVE_DATE_SQL: &str = "CASE WHEN exif_date IS NOT NULL \
-     AND exif_date NOT LIKE '0000%' THEN exif_date ELSE modified_at END";
+pub const EFFECTIVE_DATE_SQL: &str = "COALESCE(capture_date, CASE WHEN exif_date IS NOT NULL \
+     AND exif_date NOT LIKE '0000%' THEN exif_date ELSE modified_at END)";
 
 /// Hashes whose effective date is in `[after, before)`.
 ///
@@ -425,7 +425,7 @@ mod tests {
         conn.execute_batch(
             "CREATE TABLE file_hashes (
                 path TEXT PRIMARY KEY, hash TEXT NOT NULL,
-                size_bytes INTEGER, modified_at TEXT, exif_date TEXT
+                size_bytes INTEGER, modified_at TEXT, exif_date TEXT, capture_date TEXT
             );",
         )
         .unwrap();

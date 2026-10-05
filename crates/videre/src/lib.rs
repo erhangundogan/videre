@@ -8,5 +8,6 @@ pub mod query_lang;
 pub mod scanner;
 pub mod sqlite_output;
 pub mod takeout_names;
+pub mod takeout_sidecar;
 pub mod types;
 pub mod watch_events;

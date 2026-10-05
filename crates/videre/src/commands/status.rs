@@ -98,6 +98,8 @@ fn run_text(args: &StatusArgs, ctx: &CommandContext) -> anyhow::Result<()> {
         }
     }
 
+    print_dates(&report.dates);
+
     println!();
     println!("Pipeline status:");
     for p in &report.pipelines {
@@ -150,6 +152,13 @@ fn run_text(args: &StatusArgs, ctx: &CommandContext) -> anyhow::Result<()> {
             command, coverage.outstanding, when, tag
         );
     }
+    if report.dates.unresolved > 0 {
+        any = true;
+        println!(
+            "  run 'videre scan': {} file(s) still need their capture date resolved",
+            report.dates.unresolved
+        );
+    }
     if !any {
         println!("  nothing outstanding; the library is up to date");
     }
@@ -162,6 +171,21 @@ fn run_text(args: &StatusArgs, ctx: &CommandContext) -> anyhow::Result<()> {
 
 /// The latest run of each command that logged errors or warnings, with the
 /// last error. Nothing is printed when every latest run was clean.
+/// One line on where the dates come from: a library dated by file times
+/// alone (an unpacked export, say) is otherwise invisible.
+fn print_dates(d: &videre_core::status_report::DateSources) {
+    let mut parts = vec![format!("{} from EXIF or video", d.exif + d.video)];
+    if d.sidecar > 0 {
+        parts.push(format!("{} from Takeout sidecars", d.sidecar));
+    }
+    if d.mvhd > 0 {
+        parts.push(format!("{} from video container times", d.mvhd));
+    }
+    parts.push(format!("{} from file times only", d.mtime));
+    println!();
+    println!("Dates: {}", parts.join(", "));
+}
+
 fn print_recent_problems(logs: &[videre_core::error_log::CommandLogSummary]) {
     let problems: Vec<_> = logs.iter().filter(|l| l.errors + l.warnings > 0).collect();
     if problems.is_empty() {

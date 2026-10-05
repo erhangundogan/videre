@@ -72,11 +72,11 @@ fn run_fix_dates(
     conn: &rusqlite::Connection,
 ) -> anyhow::Result<usize> {
     let mut stmt = conn
-        .prepare(
-            "SELECT path, exif_date, modified_at FROM file_hashes \
-             WHERE exif_date IS NOT NULL \
-             ORDER BY path",
-        )
+        .prepare(&format!(
+            "SELECT * FROM (SELECT path, {} AS taken, modified_at FROM file_hashes) \
+                 WHERE taken IS NOT NULL ORDER BY path",
+            videre_core::capture_date::CAPTURE_TIME_SQL
+        ))
         .expect("failed to prepare query");
 
     let all: Vec<(String, String, Option<String>)> = stmt
@@ -99,7 +99,7 @@ fn run_fix_dates(
 
     if !args.dry_run && to_change > 0 && !args.yes {
         let proceed = confirm(&format!(
-            "This will set the modified time on {to_change} file(s) from their exif_date. Continue?"
+            "This will set the modified time on {to_change} file(s) from their capture date. Continue?"
         ))?;
         if !proceed {
             tracing::info!("Aborted; no files modified.");
@@ -191,7 +191,7 @@ fn run_fix_dates(
             String::new()
         };
         tracing::info!(
-            "{} file(s) with exif_date, {} {}, {} already correct, {} error(s){}.",
+            "{} file(s) with a capture date, {} {}, {} already correct, {} error(s){}.",
             total,
             changed,
             if args.dry_run {

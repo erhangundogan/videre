@@ -22,6 +22,9 @@ pub(crate) struct FileRow {
     pub(crate) gps_lon: Option<f64>,
     pub(crate) width: Option<i32>,
     pub(crate) height: Option<i32>,
+    /// The resolved capture date (`videre_core::capture_date`), what the
+    /// browser shows and groups by; NULL until the row is resolved.
+    pub(crate) capture_date: Option<String>,
 }
 
 pub(crate) struct Stats {
@@ -217,8 +220,8 @@ impl FileSort {
 /// outer query, whose FROM is a flat `file_hashes` or the keep-set subquery;
 /// both expose the bare columns. The shared constant is unqualified and is
 /// still used inside the keep set and by the unqualified WHERE clauses.
-const FILE_EFFECTIVE_DATE: &str = "CASE WHEN f.exif_date IS NOT NULL \
-     AND f.exif_date NOT LIKE '0000%' THEN f.exif_date ELSE f.modified_at END";
+const FILE_EFFECTIVE_DATE: &str = "COALESCE(f.capture_date, CASE WHEN f.exif_date IS NOT NULL \
+     AND f.exif_date NOT LIKE '0000%' THEN f.exif_date ELSE f.modified_at END)";
 
 /// The basename of `f.path`. `rtrim(path, replace(path, '/', ''))` strips
 /// every trailing non-slash character (they are all in the set), leaving the
@@ -405,7 +408,8 @@ pub(crate) fn query_files_page_within(
     let sql = format!(
         "SELECT f.path, f.hash, f.size_bytes, COALESCE(f.ext,''), f.created_at, f.modified_at, \
                 f.exif_date, f.gps_lat, f.gps_lon, f.width, f.height, \
-                (SELECT COUNT(*) FROM file_hashes c WHERE c.hash = f.hash) AS copies \
+                (SELECT COUNT(*) FROM file_hashes c WHERE c.hash = f.hash) AS copies, \
+                f.capture_date \
          FROM {from} AS f{join_marks}{where_sql} ORDER BY {} LIMIT ? OFFSET ?",
         sort.order_by()
     );
@@ -435,12 +439,15 @@ pub(crate) fn query_files_page_within(
                     gps_lon: r.get(8)?,
                     width: r.get(9)?,
                     height: r.get(10)?,
+                    capture_date: r.get("capture_date")?,
                 },
                 r.get::<_, i64>(11)?,
             ))
         })
-        .map(|it| it.filter_map(|r| r.ok()).collect::<Vec<_>>())
-        .unwrap_or_default();
+        .and_then(|it| it.collect::<rusqlite::Result<Vec<_>>>())
+        // A row that fails to read must not vanish from the page: that is
+        // the same silent empty page the warning above is about.
+        .map_err(|e| anyhow::Error::new(e).context(format!("/api/files rows failed\n  {sql}")))?;
 
     Ok((rows, total))
 }
@@ -483,7 +490,8 @@ pub(crate) fn query_files_by_hash(
     let sql = format!(
         "SELECT path, hash, size_bytes, COALESCE(ext,''), created_at, modified_at, exif_date, \
                 gps_lat, gps_lon, width, height, \
-                (SELECT COUNT(*) FROM file_hashes c WHERE c.hash = f.hash) AS copies \
+                (SELECT COUNT(*) FROM file_hashes c WHERE c.hash = f.hash) AS copies, \
+                capture_date \
          FROM file_hashes AS f WHERE f.hash IN ({placeholders}) ORDER BY f.path"
     );
     let mut stmt = conn.prepare(&sql)?;
@@ -502,6 +510,7 @@ pub(crate) fn query_files_by_hash(
                     gps_lon: r.get(8)?,
                     width: r.get(9)?,
                     height: r.get(10)?,
+                    capture_date: r.get("capture_date")?,
                 },
                 r.get::<_, i64>(11)?,
             ))
@@ -540,7 +549,8 @@ pub(crate) fn query_event_files(
         let sql = format!(
             "SELECT path, hash, size_bytes, COALESCE(ext,''), created_at, modified_at, exif_date, \
                     gps_lat, gps_lon, width, height, \
-                    (SELECT COUNT(*) FROM file_hashes c WHERE c.hash = f.hash) AS copies \
+                    (SELECT COUNT(*) FROM file_hashes c WHERE c.hash = f.hash) AS copies, \
+                    capture_date \
              FROM file_hashes AS f WHERE f.hash IN ({placeholders})"
         );
         let mut stmt = conn.prepare(&sql)?;
@@ -559,6 +569,7 @@ pub(crate) fn query_event_files(
                         gps_lon: r.get(8)?,
                         width: r.get(9)?,
                         height: r.get(10)?,
+                        capture_date: r.get("capture_date")?,
                     },
                     r.get::<_, i64>(11)?,
                 ))
@@ -799,6 +810,11 @@ pub(crate) fn file_to_json_with_faces(
         .as_deref()
         .map(json_str)
         .unwrap_or_else(|| "null".to_string());
+    let ca = f
+        .capture_date
+        .as_deref()
+        .map(json_str)
+        .unwrap_or_else(|| "null".to_string());
     let lat = f
         .gps_lat
         .map(|v| format!("{:.6}", v))
@@ -856,7 +872,7 @@ pub(crate) fn file_to_json_with_faces(
 
     format!(
         "{{\"hash\":{hash},\"path\":{path},\"ext\":{ext},\"size\":{size},\
-         \"cr\":{cr},\"mo\":{mo},\"ex\":{ex},\
+         \"cr\":{cr},\"mo\":{mo},\"ex\":{ex},\"ca\":{ca},\
          \"lat\":{lat},\"lon\":{lon},\"w\":{w},\"h\":{h},\
          \"tb\":{tb},\"fb\":{fb},\"meta\":{{\"faces\":[{faces}],\"location\":{loc}}}}}",
         hash = json_str(&f.hash),
@@ -951,7 +967,7 @@ pub(crate) fn query_edited_groups(conn: &Connection) -> Vec<Vec<FileRow>> {
     }
     let Ok(mut stmt) = conn.prepare(
         "SELECT path, hash, size_bytes, COALESCE(ext,''), created_at, modified_at, exif_date, \
-                gps_lat, gps_lon, width, height \
+                gps_lat, gps_lon, width, height, capture_date \
          FROM file_hashes WHERE path = ?1",
     ) else {
         return Vec::new();
@@ -970,6 +986,7 @@ pub(crate) fn query_edited_groups(conn: &Connection) -> Vec<Vec<FileRow>> {
                 gps_lon: r.get(8)?,
                 width: r.get(9)?,
                 height: r.get(10)?,
+                capture_date: r.get("capture_date")?,
             })
         })
         .ok()
@@ -984,7 +1001,7 @@ pub(crate) fn query_groups(conn: &Connection) -> Vec<Vec<FileRow>> {
     let mut stmt = conn
         .prepare(
             "SELECT path, hash, size_bytes, COALESCE(ext,''), created_at, modified_at, exif_date, \
-                    gps_lat, gps_lon, width, height \
+                    gps_lat, gps_lon, width, height, capture_date \
              FROM file_hashes \
              WHERE hash IN \
                (SELECT hash FROM file_hashes GROUP BY hash HAVING COUNT(*) > 1) \
@@ -1006,6 +1023,7 @@ pub(crate) fn query_groups(conn: &Connection) -> Vec<Vec<FileRow>> {
                 gps_lon: r.get(8)?,
                 width: r.get(9)?,
                 height: r.get(10)?,
+                capture_date: r.get("capture_date")?,
             })
         })
         .expect("failed to execute query")
@@ -1034,7 +1052,7 @@ pub(crate) fn query_all_files(conn: &Connection) -> Vec<FileRow> {
     let mut stmt = conn
         .prepare(
             "SELECT path, hash, size_bytes, COALESCE(ext,''), created_at, modified_at, exif_date, \
-                    gps_lat, gps_lon, width, height \
+                    gps_lat, gps_lon, width, height, capture_date \
              FROM file_hashes ORDER BY path",
         )
         .expect("failed to prepare query");
@@ -1051,6 +1069,7 @@ pub(crate) fn query_all_files(conn: &Connection) -> Vec<FileRow> {
             gps_lon: r.get(8)?,
             width: r.get(9)?,
             height: r.get(10)?,
+            capture_date: r.get("capture_date")?,
         })
     })
     .expect("failed to execute query")
@@ -1612,7 +1631,7 @@ mod tests {
                 ext TEXT,
                 created_at TEXT,
                 modified_at TEXT,
-                exif_date TEXT,
+                exif_date TEXT, capture_date TEXT,
                 gps_lat REAL,
                 gps_lon REAL,
                 width INTEGER,
@@ -1788,7 +1807,7 @@ mod tests {
                 ext TEXT,
                 created_at TEXT,
                 modified_at TEXT,
-                exif_date TEXT,
+                exif_date TEXT, capture_date TEXT,
                 gps_lat REAL,
                 gps_lon REAL,
                 width INTEGER,

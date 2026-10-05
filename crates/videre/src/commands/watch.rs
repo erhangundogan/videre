@@ -1963,7 +1963,7 @@ mod stage_query_tests {
             "CREATE TABLE file_hashes (
                 path TEXT PRIMARY KEY, hash TEXT NOT NULL, size_bytes INTEGER,
                 created_at TEXT, modified_at TEXT, ext TEXT, mime TEXT, phash INTEGER,
-                exif_date TEXT, gps_lat REAL, gps_lon REAL, width INTEGER, height INTEGER);",
+                exif_date TEXT, capture_date TEXT, gps_lat REAL, gps_lon REAL, width INTEGER, height INTEGER);",
         )
         .unwrap();
         for (path, hash, ext) in rows {
