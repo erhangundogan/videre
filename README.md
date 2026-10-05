@@ -139,7 +139,13 @@ videre search "golden gate bridge at sunset"
 videre faces                  # detect and group faces
 videre gallery                # name the groups in your browser
 videre search --person "Alice"
+
+# Words to search by meaning, filters, OR, NOT and grouping, in one query
+videre search '"sunset over the sea" (person:Alice OR person:Bob) place:lisbon rating:>=4 -tag:screenshot' --after 2022-06-01
 ```
+
+Queries follow the familiar Gmail and GitHub search style:
+[docs.videre.sh/reference/query-syntax](https://docs.videre.sh/reference/query-syntax/)
 
 The first `videre embed` downloads about 1.5 GB of model data, and `videre
 faces` a separate 180 MB. Nothing is downloaded until you run a command that

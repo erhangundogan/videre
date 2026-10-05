@@ -6,6 +6,14 @@ description: Combine filters and dates in one query, and control the order of re
 Every filter on [`videre search`](/commands/search/) composes. Give several and
 they AND together, each one narrowing further.
 
+Flags only AND. For OR, NOT and grouping, write the filters into the query
+itself, in the [query syntax](/reference/query-syntax/), and keep using flags
+beside it: the query and the flags narrow together.
+
+```bash
+videre search '"at the beach" (person:Alice OR person:Bob) -tag:screenshot' --date 2024
+```
+
 ## The filters you can combine
 
 | Flag | Selects |
@@ -150,12 +158,13 @@ error: --sort distance needs --location <place>
 videre search "a dog" --image photo.jpg    # error
 ```
 
-**OR and NOT.** Filters only ever AND. There is no way to ask for "screenshots
-or documents", or "anything except memes". Run two searches and combine the
-output yourself:
+**OR and NOT as flags.** Flags only ever AND, so "screenshots or documents"
+or "anything except memes" cannot be said with flags. Say it in the
+[query](/reference/query-syntax/) instead, alongside any flags:
 
 ```bash
-{ videre search --category screenshot; videre search --category document; } | sort -u
+videre search 'category:screenshot OR category:document' --before 2024-01-01
+videre search 'NOT category:meme' --date 2023
 ```
 
 **A bare search.** With no ranker and no filter there is nothing to narrow, so
@@ -204,6 +213,21 @@ Photos of a person, ranked by how well they match a description:
 
 ```bash
 videre search "at the beach" --person "Alice" --after 2020-01-01
+```
+
+Two people, either city, the good ones, without screenshots, ranked by a
+description:
+
+```bash
+videre search '"sunset over the sea" (person:Alice OR person:Bob)
+  (place:lisbon OR place:porto) rating:>=4 -tag:screenshot' --after 2022-06-01
+```
+
+The same set without a description, oldest first:
+
+```bash
+videre search '(person:Alice OR person:Bob) (place:lisbon OR place:porto)
+  rating:>=4 -tag:screenshot' --after 2022-06-01 --sort date:asc
 ```
 
 Feed a filtered set to another tool:
