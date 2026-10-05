@@ -359,7 +359,9 @@ it, exactly as with [`videre mark`](/commands/mark/) and
 item to the Trash (the confirmation counts them), each with its XMP sidecar,
 and the library stops
 listing them at once; their marks, tags and faces stay until
-[`videre prune`](/commands/prune/). Prune also withdraws face-learning evidence
+[`videre prune`](/commands/prune/). A Delete is undone with
+[`videre dedupe --undo`](/commands/dedupe/#undoing---trash), which puts back
+the most recent trash run, from the gallery or from `dedupe --trash`. Prune also withdraws face-learning evidence
 that depended on those faces, while keeping the historical journal and person
 names. It waits until no other videre command or
 `watch` stage is working on the library.
