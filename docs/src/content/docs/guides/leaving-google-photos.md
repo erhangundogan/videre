@@ -115,9 +115,10 @@ so removing them loses nothing at all.
 :::caution
 `videre dedupe --trash` deletes immediately once you confirm. Run `videre
 dedupe --html` first to review, or preview with `--trash --dry-run`.
-Changed your mind? `videre dedupe --undo` puts the last run back. Prefer
-`--trash` over a `| xargs trash` pipe, which splits Takeout paths on their
-spaces. See [cautions](/reference/cautions/).
+Changed your mind? `videre dedupe --undo` puts the last run back.
+`--delete` removes the copies permanently instead: faster, with no undo. Use
+either rather than piping the list to another tool, which splits Takeout
+paths on their spaces. See [cautions](/reference/cautions/).
 :::
 
 ### Then the edited copies

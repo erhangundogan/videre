@@ -51,8 +51,10 @@ what actually deletes, moving the copies to the system trash after asking. Add
 :::caution
 `videre dedupe --trash` deletes immediately once you confirm (or with `--yes`).
 Preview with `--trash --dry-run`, or review in a browser with `--html` first.
-Changed your mind? `videre dedupe --undo` puts the last run back. Prefer `--trash` over `| xargs trash`, which splits paths on spaces. See
-[cautions](/reference/cautions/).
+Changed your mind? `videre dedupe --undo` puts the last run back.
+`--delete` removes the copies permanently instead: faster, with no undo. Use
+either rather than piping the list to another tool, which splits paths on
+their spaces. See [cautions](/reference/cautions/).
 :::
 
 ## Search your photos
@@ -107,11 +109,14 @@ videre watch                           # keep everything fresh in the background
 
 ## Working with other tools
 
-`videre dedupe` prints one file path per line, so it pipes into anything:
+`videre dedupe` prints one file path per line, so a script can read the
+list. To remove the copies, use `videre dedupe --trash` or `--delete` rather
+than a pipe; for a script that must, `--print0` writes the paths
+NUL-delimited so a path with a space survives:
 
 ```bash
-videre dedupe --print0 | xargs -0 trash   # space-safe; or just: videre dedupe --trash
-videre dedupe > to-delete.txt
+videre dedupe > to-delete.txt             # the list, to read or feed a script
+videre dedupe --print0 | xargs -0 ls -l   # NUL-delimited, space-safe
 ```
 
 `videre search`, `videre dedupe`, `videre stats` and `videre locations` accept

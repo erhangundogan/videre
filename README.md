@@ -131,7 +131,9 @@ the rest assumes you are still in `~/Photos`; from elsewhere, name it with
 ```bash
 videre dedupe                 # list which copies could go
 videre dedupe --html          # ...or review them visually in a browser first
-videre dedupe | xargs trash   # delete them, once you have looked
+videre dedupe --trash         # move the copies to the trash, once you have looked
+videre dedupe --undo          # ...changed your mind? put the last run back
+videre dedupe --delete        # ...or delete them permanently, faster, no undo
 
 videre embed                  # one-time: prepares photos for search
 videre search "golden gate bridge at sunset"

@@ -11,9 +11,9 @@ situations that surprise people.
 `videre dedupe --trash` moves the duplicate copies to the system trash
 (recoverable), and its plain output is the REMOVE side of each group. `--trash`
 asks before deleting (unless `--yes`), previews with `--dry-run`, and handles
-paths with spaces correctly. Prefer it over a `videre dedupe | xargs trash`
-pipe, which splits every path on its spaces (use `--print0 | xargs -0` if you
-must pipe).
+paths with spaces correctly, as does `--delete`. Use them rather than piping
+`videre dedupe` into another tool, which splits every path on its spaces (a
+script that must pipe uses `--print0 | xargs -0`).
 
 Look before you delete: run [`videre dedupe --html`](/commands/dedupe/) first and review
 the KEEP/REMOVE badges, or use `--trash --dry-run`.

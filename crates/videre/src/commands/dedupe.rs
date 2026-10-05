@@ -59,8 +59,9 @@ pub struct DedupeArgs {
     #[arg(long)]
     edited: bool,
 
-    /// Print duplicate paths NUL-delimited instead of newline-delimited, so
-    /// `videre dedupe --print0 | xargs -0 trash` is safe for paths with spaces.
+    /// Print duplicate paths NUL-delimited instead of newline-delimited, so a
+    /// script reading them (`| xargs -0`) is safe for paths with spaces. To
+    /// remove the copies, use --trash or --delete instead.
     #[arg(long)]
     print0: bool,
 }

@@ -22,10 +22,10 @@ videre --library ~/Photos dedupe       # select a different library
 videre dedupe --json                   # print one JSON object instead
 ```
 
-**Prefer `--trash` over piping.** videre holds the real path strings, so
-`--trash` handles paths containing spaces correctly; a shell pipe like
-`videre dedupe | xargs trash` splits every path on its spaces and mishandles
-any that contain one (common in Google Takeout exports). Both `--trash` and
+**Remove with `--trash` or `--delete`, not a pipe.** videre holds the real
+path strings, so both handle paths containing spaces correctly; piping the
+list into another tool splits every path on its spaces and mishandles any
+that contain one (common in Google Takeout exports). Both `--trash` and
 `--delete` ask before removing anything unless `--yes`, preview with
 `--dry-run`, show their progress, and refuse an implausibly large removal
 unless `--force`. They remove only **exact** duplicates; `--similar` groups are
@@ -169,22 +169,24 @@ REMOVE badges, sizes, dates and paths, sorted by how much space each group
 wastes. It is the same grouping and the same KEEP choice `dedupe` will print, so
 what you see is what will happen.
 
-If you would rather read the list, or drive your own tool, `dedupe` still prints
-the removable paths. Use `--print0` so a path with a space survives the pipe:
+If you would rather read the list first, `dedupe` still prints the removable
+paths, then `--trash` or `--delete` removes exactly those:
 
 ```bash
 videre dedupe > /tmp/remove.txt              # inspect it
 wc -l /tmp/remove.txt
-videre dedupe --print0 | xargs -0 trash      # or pipe it, space-safe
+videre dedupe --trash                        # to the trash; --undo puts it back
+videre dedupe --delete                       # or permanently, faster, no undo
 ```
 
-`--print0` writes the paths NUL-delimited; a plain `videre dedupe | xargs trash`
-splits on spaces and is unsafe. For anything but scripting, `--trash` is
-simpler and safer.
+For a script that has to read the list itself, `--print0` writes the paths
+NUL-delimited so a path with a space survives (`videre dedupe --print0 |
+xargs -0 ...`); a plain newline-delimited pipe splits on spaces and is unsafe.
 
-Step 4 matters more than it looks: until you prune, the database still lists the
-deleted files, and their embeddings and cached thumbnails are still on disk. See
-[`videre prune`](/commands/prune/).
+Both `--trash` and `--delete` clean up the database as they go, and step 4 is
+then a no-op. It matters when copies were removed some other way: until you
+prune, the database still lists the deleted files, and their embeddings and
+cached thumbnails are still on disk. See [`videre prune`](/commands/prune/).
 
 ## What counts as a duplicate
 
