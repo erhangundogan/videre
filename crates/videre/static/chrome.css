@@ -29,7 +29,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
    the controls that change how that page shows its content, such as View,
    Sort or the People layout. One class on every page, so they look alike and
    a new page setting has an obvious home. */
-.gallery-toolbar{padding:8px 16px 8px;display:flex;align-items:baseline;flex-wrap:wrap;gap:12px;background:#AAA;color:#333;}
+.gallery-toolbar{padding:8px 16px 8px;display:flex;align-items:baseline;flex-wrap:wrap;gap:12px;background:#AAA;color:#333;border-bottom:1px solid #999}
+/* The bar sticks under the nav, so Select, Sort and Search and filter stay in
+   reach while the grid scrolls. --secnav-h and --chrome-h (nav plus this bar)
+   are measured by nav.html. A second bar of a page's own settings (People's
+   Recluster row) scrolls away rather than stacking under it. */
+.gallery-toolbar{position:sticky;top:var(--secnav-h,0px);z-index:45}
+.gallery-toolbar.recluster-row{position:static}
 .gallery-toolbar h2{font-size:16px}
 /* Controls inside any settings bar look the same on every page. `:where` keeps
    these at one class of weight, so a control's own state rules (a pressed
@@ -44,6 +50,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .gallery-toolbar button.primary{background:#2a6db5;border-color:#2a6db5;color:#fff}
 .gallery-toolbar button.danger{color:#b91c1c;border-color:#2a2a33;background:#e9e9ed}
 .gallery-toolbar :where(input[type=text]){padding:4px 8px;border:1px solid #2a2a33;border-radius:6px;background:#fff;color:#18181b}
+/* A bar of features (Select, View, Sort, Search and filter, a page's own
+   controls) separates each from the next with a divider. A feature is a direct
+   child that is not a bare button: buttons that belong together sit in one
+   `.toolbar-group`. The "Select enabled" note belongs to Select. */
+.gallery-toolbar:is([data-files],[data-features])>:not(:first-child):not(button):not(.select-state):not(:empty){border-left:1px solid #777;padding-left:12px}
+.toolbar-group{display:inline-flex;gap:6px}
 /* Pushes a control, typically a destructive one, to the bar's right end. */
 .gallery-toolbar .toolbar-end{margin-left:auto}
 .view-toggle{font:500 13px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;display:inline-flex;align-items:center;gap:6px}
@@ -109,6 +121,9 @@ body.select-mode .card[data-hash].selected::after,body.select-mode .tile[data-ha
 #file-sel-bar .sel-dot{width:22px;height:22px;border-radius:50%;padding:0;border:2px solid #fff;box-shadow:0 0 0 1px #d1d5db}
 #file-sel-bar .sel-pop .sel-tag{width:160px}
 /* The query's "N of M" line, or why it could not run, above what a page lists. */
-.query-status{margin:8px 16px 0;font-size:13px;color:#52525b}
+.query-status{margin:0;padding:8px 16px 6px;font-size:13px;color:#52525b}
+/* Sticks under the toolbar with the query it reports, opaque over the grid
+   that scrolls beneath it. */
+.query-status{position:sticky;top:var(--toolbar-bottom,0px);z-index:44;background:#f4f4f5}
 .query-status code{background:#f4f4f5;border-radius:4px;padding:1px 5px;font-size:12px}
 .query-status.query-error{color:#b91c1c}

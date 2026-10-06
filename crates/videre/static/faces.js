@@ -456,20 +456,6 @@ let facesData = { people: [], clusters: [], singletons: [], singles_total: 0, si
       document.body.classList.toggle('sidebar-mode', mode === 'right');
       const select = document.getElementById('layout-select');
       if (select) select.value = mode;
-      measureChrome();
-    }
-
-    // The top strip sticks *below* the nav rather than over it.
-    //
-    // :warning: Measured rather than written as a constant. The nav's height
-    // comes from `chrome.css`, which `faces.css` does not own, so a hardcoded
-    // offset here would be a number that goes stale the first time the nav's
-    // padding or font changes and nobody would notice until the drop zone was
-    // covered again.
-    function measureChrome() {
-      const nav = document.querySelector('.secnav');
-      document.documentElement.style.setProperty(
-        '--secnav-h', (nav ? nav.offsetHeight : 0) + 'px');
     }
 
     // The People list select in the page's settings bar (`.gallery-toolbar`).
@@ -477,8 +463,6 @@ let facesData = { people: [], clusters: [], singletons: [], singles_total: 0, si
       saveSetting('routes.people.align', mode === 'top' ? 'top' : 'right');
       applyLayout();
     }
-
-    window.addEventListener('resize', measureChrome);
 
     async function onDropToPerson(event, personLabel) {
       event.preventDefault();
@@ -824,7 +808,6 @@ let facesData = { people: [], clusters: [], singletons: [], singles_total: 0, si
       row.hidden = !open;
       button.setAttribute('aria-expanded', open ? 'true' : 'false');
       if (open) loadReclusterParams();
-      measureChrome();
     }
 
     function toggleRecluster() {

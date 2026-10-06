@@ -27,10 +27,10 @@
   <button type="button" class="lb-nav lb-next" id="lb-next" aria-label="Next" onclick="event.stopPropagation();lbStep(1)" hidden>&#8250;</button>
 </div>
 {% if show_header || has_groups %}<div class="header"><p class="hmeta"><span class="hlabel">Library:</span> {{ library|safe }}</p>{% if show_header %}<p class="hmeta"><span class="hlabel">Date:</span> {{ generated_at }}</p><p class="hmeta"><span class="hlabel">Files/Embedding Count:</span> {{ total_files }}/{% if let Some(n) = embedded %}{{ n }}{% else %}0{% endif %}</p>{% endif %}{% if has_groups %}<p class="hmeta"><span class="hlabel">Duplicate groups:</span> {{ duplicate_groups }}</p><p class="hmeta"><span class="hlabel">Duplicate files:</span> {{ duplicate_files }}</p><p class="hmeta"><span class="hlabel">Wasted space:</span> {{ wasted }}</p>{% if edited_pairs > 0 %}<p class="hmeta"><span class="hlabel">Google Photos edits:</span> {{ edited_pairs }} ({{ edits_size }})</p>{% endif %}{% endif %}</div>{% endif %}
-{% if has_groups %}<div class="gallery-toolbar"><label class="view-toggle">Sort <select id="sort-select" onchange="sortGroups(this.value)"><option value="waste">Wasted space</option><option value="date-asc">Date kept (oldest first)</option><option value="date-desc">Date kept (newest first)</option></select></label><button onclick="expandAll()">Expand all</button><button onclick="collapseAll()">Collapse all</button><span class="info" id="shown-info">{{ duplicate_groups }} groups</span></div>
+{% if has_groups %}<div class="gallery-toolbar" data-features><label class="view-toggle">Sort <select id="sort-select" onchange="sortGroups(this.value)"><option value="waste">Wasted space</option><option value="date-asc">Date kept (oldest first)</option><option value="date-desc">Date kept (newest first)</option></select></label><span class="toolbar-query" data-query-slot></span><span class="toolbar-group"><button onclick="expandAll()">Expand all</button><button onclick="collapseAll()">Collapse all</button></span><span class="info" id="shown-info">{{ duplicate_groups }} groups</span></div>
 <div class="groups" id="groups-container"></div>
 <div class="more-wrap"><button id="more-btn" onclick="showMore()"></button></div>
-{% endif %}{% if all_files_count.is_some() %}<div class="gallery-toolbar" data-files><label class="view-toggle">View <select class="view-mode-select" onchange="setViewMode(this.value)"><option value="list">List</option><option value="tile">Tile</option></select></label>{% include "sort-control.html" %}</div>
+{% endif %}{% if all_files_count.is_some() %}<div class="gallery-toolbar" data-files><label class="view-toggle">View <select class="view-mode-select" onchange="setViewMode(this.value)"><option value="list">List</option><option value="tile">Tile</option></select></label>{% include "sort-control.html" %}<span class="toolbar-query" data-query-slot></span></div>
 <div class="results-panel" id="results" style="display:none"></div>
 <div class="gallery" id="gallery"></div>
 <div class="more-wrap"><button id="gallery-more" class="primary" onclick="showMoreGallery()"></button></div>
@@ -39,7 +39,7 @@
 <p>Every file in this library has a unique hash, so there is nothing to review here.</p>
 <p class="hint">Visually similar photos are a different question: run <code>videre embed</code>, then <code>videre dedupe --similar</code> lists them.</p>
 </div>
-{% endif %}{% if has_keep_files %}<div class="gallery-toolbar" data-files><label class="view-toggle">View <select class="view-mode-select" onchange="setViewMode(this.value)"><option value="list">List</option><option value="tile">Tile</option></select></label>{% include "sort-control.html" %}</div>
+{% endif %}{% if has_keep_files %}<div class="gallery-toolbar" data-files><label class="view-toggle">View <select class="view-mode-select" onchange="setViewMode(this.value)"><option value="list">List</option><option value="tile">Tile</option></select></label>{% include "sort-control.html" %}<span class="toolbar-query" data-query-slot></span></div>
 <div class="date-view" id="dateView">
 <div class="date-breadcrumb" id="dateBreadcrumb"></div>
 <div class="date-grid date-narrowing" id="dateNarrowing"></div>

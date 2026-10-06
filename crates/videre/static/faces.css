@@ -52,11 +52,12 @@
        narrower card, e.g. the People cards in right-sidebar mode; aspect-ratio
        + height:auto keep them square while they scale down. */
     .face-img { object-fit: cover; border-radius: 3px; background: #ddd; display: block; max-width: 100%; height: auto; aspect-ratio: 1 / 1; }
-    /* Sticks below the nav, not over it. --secnav-h is measured in faces.js.
+    /* Sticks below the nav and the toolbar, not over them. --chrome-h is
+       measured in nav.html.
        Background matches the content body (#f4f4f5 in chrome.css) so the pane
        reads as part of the page, while staying opaque so scrolled content does
        not bleed through the sticky element. */
-    .people-section { position: sticky; top: var(--secnav-h, 0px); background: #f4f4f5; z-index: 40; padding-bottom: 8px; }
+    .people-section { position: sticky; top: var(--chrome-h, 0px); background: #f4f4f5; z-index: 40; padding-bottom: 8px; }
     .people-scroll { max-height: 45vh; overflow-y: auto; padding-bottom: 4px; }
     .drag-handle { display: flex; align-items: center; gap: 6px; cursor: grab; color: #aaa; padding: 2px 0 6px; user-select: none; }
     .drag-handle .drag-dots { font-size: 16px; letter-spacing: 2px; flex-shrink: 0; }
@@ -78,12 +79,12 @@
     .singleton-card .extra-count { color: var(--orange-text); }
     /* Right-hand People pane: a sticky column inside the content, below the nav
        and header, not a fixed panel over the whole viewport. It keeps the base
-       `position: sticky; top: --secnav-h`, so it never overlaps the chrome
+       `position: sticky; top: --chrome-h`, so it never overlaps the chrome
        (toggled, remembered in the library's gallery settings). */
     body.sidebar-mode .page-body { display: flex; gap: 24px; align-items: flex-start; }
     body.sidebar-mode .labeling-main { order: 1; flex: 1; min-width: 0; }
     body.sidebar-mode .people-section { order: 2; width: 300px; flex-shrink: 0; border-left: 1px solid #eee; padding-left: 16px; }
-    body.sidebar-mode .people-scroll { max-height: calc(100vh - var(--secnav-h, 0px) - 40px); }
+    body.sidebar-mode .people-scroll { max-height: calc(100vh - var(--chrome-h, 0px) - 40px); }
     body.sidebar-mode #people-grid { grid-template-columns: repeat(auto-fill, 132px); gap: 8px; }
     body.sidebar-mode #people-grid .card { width: 132px; padding: 8px; }
     /* Singleton multi-select. */

@@ -1706,8 +1706,9 @@ function toggleSelectMode(){ setSelectMode(!selectMode); }
     state.className='select-state';
     state.hidden=true;
     state.textContent='Select enabled';
-    bar.appendChild(b);
-    bar.appendChild(state);
+    // First in the bar: selecting is what acts on the files the rest arrange.
+    bar.insertBefore(state,bar.firstChild);
+    bar.insertBefore(b,state);
   });
 })();
 
