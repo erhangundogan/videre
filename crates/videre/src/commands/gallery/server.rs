@@ -2386,6 +2386,8 @@ struct SearchQuery {
     /// A hash already in this library: "more like this one".
     like: Option<String>,
     limit: Option<usize>,
+    /// Where this page starts in the ranking, so the Search page can show more.
+    offset: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -2448,7 +2450,14 @@ async fn handle_search(
             Ok(_) => {}
         }
     }
-    let top_k = sq.limit.unwrap_or(24).clamp(1, MAX_LIMIT);
+    let limit = sq.limit.unwrap_or(24).clamp(1, MAX_LIMIT);
+    let offset = sq.offset.unwrap_or(0);
+    // Ranked through the end of this page, plus one for the example, which
+    // ranks itself first and is dropped below (without it a page of one `like`
+    // result came back empty), plus one more to tell whether a next page
+    // exists. A ranked search's `total` counts only what was ranked, so it
+    // cannot answer that.
+    let top_k = offset.saturating_add(limit).saturating_add(2);
     // Kept out of the closure: needed again below to drop the example from its
     // own results.
     let example = sq.like.clone();
@@ -2504,13 +2513,18 @@ async fn handle_search(
     // itself, and "things like this one" that begins with this one wastes the
     // first and best slot. The in-page version skipped its own index for the
     // same reason; the UI shows the query separately.
-    let results: Vec<_> = hits
+    let ranked: Vec<_> = hits
         .results
         .iter()
         .filter(|h| h.hash.as_deref() != example.as_deref())
         .collect();
+    let more = ranked.len() > offset.saturating_add(limit);
+    let results: Vec<_> = ranked.into_iter().skip(offset).take(limit).collect();
 
-    let mut out = format!("{{\"total\":{},\"results\":[", hits.total_matches);
+    let mut out = format!(
+        "{{\"total\":{},\"more\":{more},\"results\":[",
+        hits.total_matches
+    );
     for (i, hit) in results.iter().enumerate() {
         if i > 0 {
             out.push(',');

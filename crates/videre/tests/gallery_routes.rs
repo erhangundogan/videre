@@ -1331,6 +1331,34 @@ fn the_example_is_absent_from_its_own_results() {
     );
 }
 
+/// The Search page shows more by asking for the next page of one ranking, so
+/// pages must continue each other: no gap, no repeat, and never the example.
+#[test]
+fn search_pages_continue_one_ranking() {
+    let lib = search_fixture();
+    let server = Server::start(&lib);
+    let hashes = |body: &str| -> Vec<String> {
+        body.split("\"hash\":\"")
+            .skip(1)
+            .map(|s| s.split('"').next().unwrap().to_string())
+            .collect()
+    };
+    let mut paged = Vec::new();
+    let mut more = Vec::new();
+    for offset in 0..4 {
+        let (status, body) = server.get(&format!("/api/search?like=aaaa&limit=1&offset={offset}"));
+        assert_eq!(status, 200, "{body}");
+        paged.extend(hashes(&body));
+        more.push(body.contains("\"more\":true"));
+    }
+    assert_eq!(paged, vec!["bbbb", "cccc", "dddd"]);
+    // A next page exists after the first and second, not after the last.
+    assert_eq!(more, vec![true, true, false, false]);
+
+    let (_, body) = server.get("/api/search?like=aaaa&limit=2&offset=1");
+    assert_eq!(hashes(&body), vec!["cccc", "dddd"], "{body}");
+}
+
 #[test]
 fn a_search_needs_exactly_one_ranker() {
     let lib = search_fixture();
