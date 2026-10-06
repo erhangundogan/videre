@@ -87,6 +87,19 @@
 .toolbar-query .qbox-caret{margin-left:6px;padding:4px 10px;background:#e9e9ed;color:#18181b;font-size:13px}
 .toolbar-query .qbox-caret:hover,.toolbar-query .qbox-caret[aria-expanded=true]{background:#d4d4d8;color:#18181b}
 .toolbar-query .qbox-suggest,.toolbar-query .qbox-options{left:0;right:auto}
+/* Its suggestions and Filter panel are light too, hanging off a light bar:
+   white like the field, the bar's border, and the bar's pressed blue for what
+   is chosen. In the nav they stay dark. */
+.toolbar-query .qbox-suggest,.toolbar-query .qbox-options{background:#fff;border-color:#2a2a33;color:#18181b;box-shadow:0 8px 24px rgba(0,0,0,.18)}
+.toolbar-query .qbox-opt,.toolbar-query .qopt-val{color:#18181b}
+.toolbar-query .qopt-val:hover{background:#f4f4f5}
+.toolbar-query .qbox-opt[aria-selected=true],.toolbar-query .qopt-val[aria-pressed=true]{background:#2a6db5;color:#fff}
+.toolbar-query :is(.qbox-opt[aria-selected=true],.qopt-val[aria-pressed=true]) :is(.qbox-opt-value,.qbox-opt-count){color:#dbeafe}
+.toolbar-query .qbox-opt-value,.toolbar-query .qopt-sub,.toolbar-query .qopt-none{color:#71717a}
+.toolbar-query .qbox-opt-count,.toolbar-query .qopt-col h3,.toolbar-query .qopt-date{color:#52525b}
+.toolbar-query .qopt-date input{border-color:#2a2a33;background:#fff;color:#18181b;color-scheme:light}
+.toolbar-query .qopt-apply{background:#2a6db5}
+.toolbar-query .qopt-apply:hover{background:#1f5a99}
 .qopt-cols{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px}
 .qopt-col h3{margin:0 0 6px;font-size:12px;font-weight:600;color:#9a9aa8;text-transform:uppercase;letter-spacing:.04em}
 .qopt-sub{margin:6px 0 2px;color:#71717a;font-size:11px}
