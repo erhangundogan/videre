@@ -616,9 +616,10 @@ function lbVisibleTiles(){
   return out;
 }
 // The view's "Show more" control, if present and visible: #more-btn for the
-// grid/duplicates views, #gallery-more for the paged gallery.
+// grid/duplicates views, #gallery-more for the paged gallery, #date-more for
+// a date's files.
 function lbMoreButton(){
-  var ids=['more-btn','gallery-more'];
+  var ids=['more-btn','gallery-more','date-more'];
   for(var i=0;i<ids.length;i++){
     var b=document.getElementById(ids[i]);
     if(b&&b.offsetParent!==null)return b;
@@ -690,8 +691,9 @@ function showPeriodCount(n){
   document.getElementById('dateBreadcrumb').insertAdjacentHTML('beforeend',
     ' <span class="date-period-count">'+n+' item'+(n===1?'':'s')+'</span>');
 }
-// The files last rendered into #dateGrid, so a mode switch re-renders without a
-// refetch. Date galleries are one-shot (no paging).
+// The files loaded into #dateGrid so far, so a mode switch re-renders without a
+// refetch. A day, month or range loads routes.date.pageSize files at a time;
+// #date-more loads the next page.
 var dateFiles=null;
 function dateKeepFiles(){ return (typeof KEEPFILES!=='undefined') ? KEEPFILES : []; }
 
@@ -761,6 +763,7 @@ function groupInlined(len,parent){
 }
 
 function buildYearView(){
+  resetDatePaging();
   rerunDateView=function(){buildYearView();};
   dateState={level:'year',year:null,month:null};
   document.getElementById('dateBreadcrumb').innerHTML='All Dates';
@@ -783,6 +786,7 @@ function buildYearView(){
   if(dateInlined())draw(groupInlined(4,null)); else fetchBuckets('year',null,draw);
 }
 function buildMonthView(year){
+  resetDatePaging();
   rerunDateView=function(){buildMonthView(year);};
   dateState={level:'month',year:year,month:null};
   document.getElementById('dateBreadcrumb').innerHTML=
@@ -797,6 +801,7 @@ function buildMonthView(year){
   if(dateInlined())draw(groupInlined(7,year)); else fetchBuckets('month',year,draw);
 }
 function buildDayView(month){
+  resetDatePaging();
   rerunDateView=function(){buildDayView(month);};
   dateState={level:'day',year:dateState.year||month.slice(0,4),month:month};
   document.getElementById('dateBreadcrumb').innerHTML=
@@ -813,6 +818,7 @@ function buildDayView(month){
   if(dateInlined())draw(groupInlined(10,month)); else fetchBuckets('day',month,draw);
 }
 function buildDayGallery(day){
+  resetDatePaging();
   rerunDateView=function(){buildDayGallery(day);};
   document.getElementById('dateBreadcrumb').innerHTML=
     dateRootCrumb()+' &gt; '+
@@ -831,17 +837,65 @@ function buildDayGallery(day){
   }
   fetchDateFiles('date='+encodeURIComponent(day),'No files for '+day+'.');
 }
+// A large day (a wedding, a trip, a Takeout import) can hold thousands of
+// files, so a date loads a page at a time like the Library does, and the
+// period count is the server's total, not what is loaded.
+var DPAGE=settingIntInRange('routes.date.pageSize',1,500);
+var dateParams=null,dateEmptyText='',dateTotal=0,dateRequest=0,dateLoading=false;
+// Every date view starts here: a reply still in flight for the previous view is
+// dropped, and the button belongs to no view until a date's files load.
+function resetDatePaging(){
+  dateRequest++;
+  dateParams=null;
+  dateFiles=null;
+  dateTotal=0;
+  dateLoading=false;
+  updateDateMore();
+}
 function fetchDateFiles(params,emptyText){
-  var grid=document.getElementById('dateGrid');
-  grid.innerHTML='<p class="muted">Loading...</p>';
-  fetch('/api/files?view=date&'+params+'&limit=500'+sortQuery()+galleryQueryParam())
+  resetDatePaging();
+  dateParams=params;
+  dateEmptyText=emptyText;
+  dateFiles=[];
+  document.getElementById('dateGrid').innerHTML='<p class="muted">Loading...</p>';
+  loadDatePage(dateRequest);
+}
+function moreDateFiles(){
+  if(dateParams!==null&&!dateLoading)loadDatePage(dateRequest);
+}
+function loadDatePage(request){
+  var first=!dateFiles.length;
+  var btn=document.getElementById('date-more');
+  dateLoading=true;
+  if(!first&&btn)btn.textContent='Loading\u2026';
+  fetch('/api/files?view=date&'+dateParams+'&offset='+dateFiles.length+'&limit='+DPAGE+
+        sortQuery()+galleryQueryParam())
     .then(queryJson)
     .then(function(d){
-      if(d.bad){ queryErrorStatus(d); grid.innerHTML=''; return; }
-      showPeriodCount(d.total!=null?d.total:(d.files||[]).length);
-      renderDateFiles(d.files||[],emptyText);
+      if(request!==dateRequest)return;
+      dateLoading=false;
+      var grid=document.getElementById('dateGrid');
+      if(d.bad){ queryErrorStatus(d); grid.innerHTML=''; dateParams=null; updateDateMore(); return; }
+      var files=dateFiles.concat(d.files||[]);
+      dateTotal=d.total!=null?d.total:files.length;
+      if(first)showPeriodCount(dateTotal);
+      renderDateFiles(files,dateEmptyText);
+      updateDateMore();
     })
-    .catch(function(){ grid.innerHTML='<p class="muted">Could not load that date.</p>'; });
+    .catch(function(){
+      if(request!==dateRequest)return;
+      dateLoading=false;
+      if(first){ document.getElementById('dateGrid').innerHTML='<p class="muted">Could not load that date.</p>'; return; }
+      // Say so, rather than leaving a button that silently does nothing.
+      if(btn)btn.textContent='Could not load more. Click to retry.';
+    });
+}
+function updateDateMore(){
+  var btn=document.getElementById('date-more');
+  if(!btn)return;
+  var rem=dateParams!==null&&dateFiles?dateTotal-dateFiles.length:0;
+  if(rem>0){btn.style.display='inline-block';btn.textContent='Show more ('+rem+' remaining)';}
+  else btn.style.display='none';
 }
 function renderDateBreadcrumb(prefix){
   var parts=prefix.split('-');
@@ -874,6 +928,7 @@ function renderDateNarrowing(prefix){
   },narrowing);
 }
 function buildPrefixGallery(prefix){
+  resetDatePaging();
   rerunDateView=function(){buildPrefixGallery(prefix);};
   var parts=prefix.split('-');
   dateState.year=parts[0]||null;
@@ -883,6 +938,7 @@ function buildPrefixGallery(prefix){
   fetchDateFiles('date='+encodeURIComponent(prefix),'No files for '+prefix+'.');
 }
 function buildRangeGallery(range){
+  resetDatePaging();
   rerunDateView=function(){buildRangeGallery(range);};
   document.getElementById('dateBreadcrumb').innerHTML=dateRootCrumb()+' &gt; Date range';
   var narrowing=document.getElementById('dateNarrowing');
@@ -1233,8 +1289,8 @@ function renderCurrentMode(){
   if(grid && dateFiles){ renderDateFiles(dateFiles); }
 }
 // The one place the Date galleries render their files, so List and Tile modes
-// and a later mode switch share a path. Date galleries are one-shot, so this
-// replaces the grid contents wholesale.
+// and a later mode switch share a path. It re-renders every loaded file, so a
+// page appended by Show more lays out with the ones before it.
 function renderDateFiles(files,emptyText){
   dateFiles=files;
   var grid=document.getElementById('dateGrid');
@@ -1857,7 +1913,13 @@ function selectionDelete(){
         galleryFiles=galleryFiles.filter(function(f){ return !gone[f.hash]; });
         // The next Show more pages from the server's shorter list.
         gShown=Math.max(0,gShown-(before-galleryFiles.length));
-        if(typeof dateFiles!=='undefined'&&dateFiles)dateFiles=dateFiles.filter(function(f){ return !gone[f.hash]; });
+        if(typeof dateFiles!=='undefined'&&dateFiles){
+          var dateBefore=dateFiles.length;
+          dateFiles=dateFiles.filter(function(f){ return !gone[f.hash]; });
+          // Likewise the date's next page comes from its shorter list.
+          dateTotal-=dateBefore-dateFiles.length;
+          updateDateMore();
+        }
         renderCurrentMode();
         fileSelection.remove(r.trashed||[]);
         var text='Moved '+(r.trashed||[]).length+' item(s) to the Trash';
