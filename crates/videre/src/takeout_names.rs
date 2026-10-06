@@ -1,26 +1,33 @@
-//! Google Takeout's file names: an `-edited` render sits beside its original.
+//! Google Takeout's file names: a creation sits beside its original.
 //!
-//! Google Photos exports both the photo it was given and every edit made to
-//! it, as `a.jpg` and `a-edited.jpg` in the same folder. The bytes differ, so
-//! content identity never pairs them; the name is Google's own statement that
-//! one is an edit of the other. Used by `import` (the sidecar of an edit is its
-//! original's, and the hint after a Takeout import), `dedupe --edited`, and the
-//! gallery's duplicate review.
+//! Google Photos exports both the photo it was given and what it made from
+//! it, in the same folder: `a-edited.jpg` (an edit), `a-EFFECTS.jpg` (a
+//! filter or crop it suggested) and `a-SMILE.jpg` (a face pasted smiling).
+//! The bytes differ, and the pixels can be far apart, so neither content
+//! identity nor a pixel comparison pairs them; the name is Google's own
+//! statement that one was made from the other. Used by `import` (the sidecar
+//! of a creation is its original's, and the hint after a Takeout import),
+//! dedupe's `creation` kind and the `is:creation` query term.
 
 use std::collections::HashMap;
 use std::path::Path;
 
-const EDITED: &str = "-edited";
+/// The suffixes Google writes, in the case it writes them.
+const CREATIONS: [&str; 3] = ["-edited", "-EFFECTS", "-SMILE"];
 
-/// `a-edited.jpg` -> `a.jpg`; `a-edited(1).jpg` -> `a(1).jpg`, since Google's
-/// duplicate counter follows the suffix. `None` for a name that is not an edit.
+/// `a-edited.jpg` -> `a.jpg`; `a-EFFECTS(1).jpg` -> `a(1).jpg`, since Google's
+/// duplicate counter follows the suffix. `None` for a name that is not a
+/// creation.
 pub fn original_name(file_name: &str) -> Option<String> {
     let (stem, ext) = match file_name.rsplit_once('.') {
         Some((stem, ext)) if !stem.is_empty() => (stem, Some(ext)),
         _ => (file_name, None),
     };
     let (stem, counter) = split_counter(stem);
-    let base = stem.strip_suffix(EDITED).filter(|base| !base.is_empty())?;
+    let base = CREATIONS
+        .iter()
+        .find_map(|suffix| stem.strip_suffix(suffix))
+        .filter(|base| !base.is_empty())?;
     Some(match ext {
         Some(ext) => format!("{base}{counter}.{ext}"),
         None => format!("{base}{counter}"),
@@ -38,15 +45,16 @@ fn split_counter(stem: &str) -> (&str, &str) {
     (stem, "")
 }
 
-/// An edit and the original it was made from, in the same folder.
+/// A creation (an edit, effect or smile) and the original it was made from,
+/// in the same folder. `edit` is the creation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditedPair<'a> {
     pub edit: &'a str,
     pub original: &'a str,
 }
 
-/// The same-folder original of `path`, when `path` names an edit.
-fn original_path(path: &str) -> Option<String> {
+/// The same-folder original of `path`, when `path` names a creation.
+pub fn original_path(path: &str) -> Option<String> {
     let path = Path::new(path);
     let name = path.file_name()?.to_str()?;
     let original = original_name(name)?;
@@ -73,7 +81,8 @@ pub fn edited_pairs<'a>(rows: &[(&'a str, &'a str)]) -> Vec<EditedPair<'a>> {
     pairs
 }
 
-/// How many of `paths` are edits whose original is among them, by name alone.
+/// How many of `paths` are creations whose original is among them, by name
+/// alone.
 /// For `import`, which has not hashed anything yet: identical bytes among
 /// these are rare (none of 3,763 pairs in one real export).
 pub fn edited_name_pairs<P: AsRef<Path>>(paths: &[P]) -> usize {
@@ -101,6 +110,24 @@ mod tests {
             original_name("Pazar öğleden sonra-edited.JPG").as_deref(),
             Some("Pazar öğleden sonra.JPG")
         );
+    }
+
+    #[test]
+    fn google_creations_name_their_original() {
+        assert_eq!(
+            original_name("IMG_0001-EFFECTS.jpg").as_deref(),
+            Some("IMG_0001.jpg")
+        );
+        assert_eq!(
+            original_name("IMG_0001-SMILE.jpg").as_deref(),
+            Some("IMG_0001.jpg")
+        );
+        assert_eq!(
+            original_name("Çiçek-EFFECTS(2).jpg").as_deref(),
+            Some("Çiçek(2).jpg")
+        );
+        // Google writes the suffixes in this case only.
+        assert_eq!(original_name("IMG_0001-effects.jpg"), None);
     }
 
     #[test]

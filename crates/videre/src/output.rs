@@ -5,7 +5,7 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 
 // KEEP candidate sort key: exif_date wins; otherwise oldest of created_at / modified_at.
-fn best_date(r: &FileRecord) -> &str {
+pub(crate) fn best_date(r: &FileRecord) -> &str {
     if let Some(d) = r.exif_date.as_deref() {
         if !d.starts_with("0000") {
             return d;
@@ -74,7 +74,7 @@ pub fn edited_losers(records: &[FileRecord]) -> Vec<(String, String)> {
 /// it. Raise it only with measurements; it must not track the threshold.
 const DEGENERATE_BITS: u32 = 6;
 
-fn degenerate_phash(hash: u64) -> bool {
+pub(crate) fn degenerate_phash(hash: u64) -> bool {
     crate::hasher::hamming(hash, 0) <= DEGENERATE_BITS
         || crate::hasher::hamming(hash, u64::MAX) <= DEGENERATE_BITS
 }
