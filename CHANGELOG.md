@@ -16,6 +16,45 @@ version number and are released together.
 ## [Unreleased]
 
 
+## [0.55.0] - 2026-10-06
+
+### Added
+
+- **Search and filter in every tab's toolbar.** On Library, Date, Events,
+  Map, Duplicates, People and Search, the query box sits in the tab's own
+  toolbar beside Sort, with a **Filter** button for the options panel, and
+  acts on what that tab shows. Pages without a toolbar keep it in the nav.
+- **Page sizes per section.** `gallery.json` gains `routes.date.pageSize`,
+  `routes.search.pageSize`, `routes.people.pageSize` and
+  `routes.duplicates.pageSize` beside `routes.files.pageSize`, and the
+  Settings page has a box for each.
+- **`/api/search` takes `offset`** and says whether a next page exists
+  (`more`); `/api/faces` pages singletons (`singles_after`,
+  `singles_limit`, `singles_total`, `singles_next`) and `/api/people/{name}`
+  pages a person's faces (`after`, `limit`, `face_total`, `next`).
+
+### Changed
+
+- **Gallery grids load as you go.** A day, month or range in the Date view
+  no longer stops at 500 files; the Search page shows more than 96 results;
+  `/people` and a person's page load faces as you scroll, and naming or
+  dropping a face updates the page in place instead of reloading every face.
+  The lightbox steps into the next page when it reaches the end.
+- **The gallery toolbar stays in view.** It sticks under the nav, with the
+  query's "N of M" line under it. Select comes first, and a divider sets
+  each feature apart: Select, View, Sort, Search and filter, then the page's
+  own controls. The box, its suggestions and the Filter panel match the
+  toolbar's controls and stay inside the window on a small screen.
+
+### Fixed
+
+- **Expand all on Duplicates no longer loads every image at once.**
+  Opening a group kept its images lazy only until it opened; now they load
+  as they come near the screen.
+- **`/api/search?like=` with `limit=1` returned nothing**, because the example
+  ranked itself first and was then dropped.
+
+
 ## [0.54.0] - 2026-10-05
 
 ### Added
@@ -3024,7 +3063,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.54.0...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.55.0...HEAD
+[0.55.0]: https://github.com/erhangundogan/videre/compare/v0.54.0...v0.55.0
 [0.54.0]: https://github.com/erhangundogan/videre/compare/v0.53.0...v0.54.0
 [0.53.0]: https://github.com/erhangundogan/videre/compare/v0.52.0...v0.53.0
 [0.52.0]: https://github.com/erhangundogan/videre/compare/v0.51.0...v0.52.0
