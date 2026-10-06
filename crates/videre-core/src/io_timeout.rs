@@ -793,6 +793,15 @@ mod tests {
         assert_eq!(pool.stats().active, 1);
         release_tx.send(()).unwrap();
         first.join().unwrap().unwrap();
+        // The worker sends its result, then drops its permit as the closure
+        // exits: the caller can return in between, so wait for the release
+        // rather than read it at once (a race CI hit on Linux).
+        for _ in 0..100 {
+            if pool.stats().active == 0 {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
         assert_eq!(pool.stats().active, 0);
     }
 

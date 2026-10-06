@@ -340,7 +340,8 @@ day in the Date view or a place on the map. Opening the bare address still
 lands on the Library tab.
 
 **The settings page.** The **...** button at the right end of the navigation
-bar opens a menu: **Help** opens this page in a new tab, and **Settings** leads
+bar opens a menu: **Help** opens this page in a new tab, **Feedback** the
+[Feedback](/reference/feedback/) page, and **Settings** leads
 to a page that shows the file's
 location, has a **Page sizes** box for each paged view (a value outside its
 range is refused and not saved), and can:
