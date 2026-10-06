@@ -1,4 +1,4 @@
-let facesData = { people: [], clusters: [], singletons: [] };
+let facesData = { people: [], clusters: [], singletons: [], singles_total: 0, singles_next: null };
 
     // Sub-page prefix, from the server. `videre gallery` puts the labeling UI at
     // /people and its sub-pages beneath it; a labeling-only server serves it at
@@ -34,9 +34,24 @@ let facesData = { people: [], clusters: [], singletons: [] };
       return d.innerHTML;
     }
 
+    // Singles come a page at a time: a library can hold tens of thousands, and
+    // drawing them all made the page slow to open and slower after every
+    // assignment. People and clusters always come whole; they are the targets.
+    const FPAGE = settingIntInRange('routes.people.pageSize', 1, 1000);
+    function facesUrl(params) {
+      const q = new URLSearchParams(params);
+      if (QUERY) q.set('q', QUERY);
+      return '/api/faces?' + q.toString();
+    }
+    // Bumped by every full load, so a page of singles that arrives after one is
+    // dropped instead of appended to the wrong list.
+    let facesGeneration = 0;
+    let singlesLoading = false;
+
     async function loadFaces() {
+      facesGeneration++;
       try {
-        const r = await fetch('/api/faces' + (QUERY ? '?q=' + encodeURIComponent(QUERY) : ''), { priority: 'high' });
+        const r = await fetch(facesUrl({ singles_limit: FPAGE }), { priority: 'high' });
         if (r.status === 400) {
           const e = await r.json();
           const at = (typeof e.at === 'number') ? ` (at character ${e.at + 1})` : '';
@@ -46,8 +61,9 @@ let facesData = { people: [], clusters: [], singletons: [] };
         if (!r.ok) throw new Error(`/api/faces returned ${r.status}`);
         facesData = await r.json();
         render();
+        watchSingles();
         const total = facesData.people.length + facesData.clusters.length +
-                      facesData.singletons.length;
+                      facesData.singles_total;
         if (QUERY && typeof facesData.library_total === 'number') {
           showQueryStatus(`<strong>${facesData.matched.toLocaleString()}</strong> of ` +
             `${facesData.library_total.toLocaleString()} match <code>${escText(QUERY)}</code>` +
@@ -73,7 +89,83 @@ let facesData = { people: [], clusters: [], singletons: [] };
       const put = (id, n) => { const e = document.getElementById(id); if (e) e.textContent = n; };
       put('stat-people', facesData.people.length);
       put('stat-clusters', facesData.clusters.length);
-      put('stat-singletons', facesData.singletons.length);
+      put('stat-singletons', facesData.singles_total);
+    }
+
+    // The next page of singles, appended under the ones already shown, when
+    // the end of the grid comes within a screen of the viewport.
+    async function loadMoreSingles() {
+      if (singlesLoading || facesData.singles_next == null) return;
+      singlesLoading = true;
+      const generation = facesGeneration;
+      try {
+        const r = await fetch(facesUrl({ singles_after: facesData.singles_next, singles_limit: FPAGE }));
+        if (!r.ok) return;
+        const d = await r.json();
+        if (generation !== facesGeneration) return;
+        const shown = new Set(facesData.singletons.map(s => s.face_id));
+        const fresh = d.singletons.filter(s => !shown.has(s.face_id));
+        facesData.singletons.push(...fresh);
+        facesData.singles_next = d.singles_next;
+        facesData.singles_total = d.singles_total;
+        document.getElementById('singleton-grid').insertAdjacentHTML('beforeend',
+          fresh.map(singletonCard).join(''));
+        setSinglesCount();
+        updateSelectionUI();
+      } finally {
+        singlesLoading = false;
+        // Still in view after a short page: observing again fires again.
+        if (singlesObserver) { singlesObserver.disconnect(); watchSingles(); }
+      }
+    }
+
+    let singlesObserver = null;
+    function watchSingles() {
+      const grid = document.getElementById('singleton-grid');
+      if (!grid || !('IntersectionObserver' in window)) return;
+      let sentinel = document.getElementById('singles-sentinel');
+      if (!sentinel) {
+        sentinel = document.createElement('div');
+        sentinel.id = 'singles-sentinel';
+        sentinel.style.height = '1px';
+        grid.after(sentinel);
+      }
+      if (!singlesObserver) {
+        singlesObserver = new IntersectionObserver(entries => {
+          if (entries.some(e => e.isIntersecting)) loadMoreSingles();
+        }, { rootMargin: '100% 0px' });
+      }
+      if (facesData.singles_next != null) singlesObserver.observe(sentinel);
+    }
+
+    function setSinglesCount() {
+      document.getElementById('singleton-count').textContent = facesData.singles_total;
+      setHeaderStats();
+    }
+
+    // After an assignment: the assigned singles' cards go, loaded pages and the
+    // scroll position stay, and only people and clusters are fetched again.
+    async function afterAssign(faceIds) {
+      const gone = new Set(faceIds.map(Number));
+      const before = facesData.singletons.length;
+      facesData.singletons = facesData.singletons.filter(s => !gone.has(s.face_id));
+      gone.forEach(id => {
+        const card = document.querySelector(`#singleton-grid [data-sel-id="${id}"]`);
+        if (card) card.remove();
+      });
+      const removed = before - facesData.singletons.length;
+      const r = await fetch(facesUrl({ singles_limit: 0 }), { priority: 'high' });
+      if (!r.ok) { await loadFaces(); return; }
+      const d = await r.json();
+      facesData.people = d.people;
+      facesData.clusters = d.clusters;
+      // The server's count, when it has one; it already left out the assigned.
+      facesData.singles_total = typeof d.singles_total === 'number'
+        ? d.singles_total : facesData.singles_total - removed;
+      renderPeople(facesData.people);
+      renderClusters(facesData.clusters);
+      setSinglesCount();
+      updateSelectionUI();
     }
 
     function showNothingDetected() {
@@ -232,12 +324,14 @@ let facesData = { people: [], clusters: [], singletons: [] };
       ).join('');
     }
 
+    function singletonCard(s) {
+      return renderAssignableCard([s.face_id], null, 'singleton-card', s.face_id);
+    }
+
     function renderSingletons(singletons) {
       const grid = document.getElementById('singleton-grid');
-      document.getElementById('singleton-count').textContent = singletons.length;
-      grid.innerHTML = singletons.map(s =>
-        renderAssignableCard([s.face_id], null, 'singleton-card', s.face_id)
-      ).join('');
+      document.getElementById('singleton-count').textContent = facesData.singles_total;
+      grid.innerHTML = singletons.map(singletonCard).join('');
     }
 
     function render() {
@@ -343,7 +437,7 @@ let facesData = { people: [], clusters: [], singletons: [] };
         return;
       }
       clearSelection();
-      await loadFaces();
+      await afterAssign(ids);
     }
 
     // ---- People placement toggle (right sidebar vs top bar) ----
@@ -385,7 +479,7 @@ let facesData = { people: [], clusters: [], singletons: [] };
       }
       showLearningToast(await r.json().catch(() => null));
       clearSelection();
-      await loadFaces();
+      await afterAssign(data.face_ids);
       refreshLearning();
       loadQuestion();
     }
@@ -398,7 +492,7 @@ let facesData = { people: [], clusters: [], singletons: [] };
         <input type="text" class="np-input" id="${inputId}" placeholder="Person name" maxlength="${MAX_NAME_LEN}">
         <div class="np-btn-row">
           <button class="np-create-btn" onclick="submitNewPerson('${inputId}', ${faceIdsJson})">Create</button>
-          <button class="new-person-btn" onclick="loadFaces()">Cancel</button>
+          <button class="new-person-btn" onclick="cancelNewPerson(this, ${faceIdsJson})">Cancel</button>
         </div>
       `;
       // The autofocus attribute does nothing on HTML inserted after the page
@@ -408,6 +502,17 @@ let facesData = { people: [], clusters: [], singletons: [] };
         if (e.key === 'Enter') { e.preventDefault(); submitNewPerson(inputId, faceIds); }
       });
       inp.focus();
+    }
+
+    // Puts the New Person button back without reloading the page.
+    function cancelNewPerson(btn, faceIds) {
+      const area = btn.closest('.new-person-area');
+      area.innerHTML = '';
+      const b = document.createElement('button');
+      b.className = 'new-person-btn';
+      b.textContent = 'New Person';
+      b.onclick = function() { showNewPersonInput(b, faceIds); };
+      area.appendChild(b);
     }
 
     async function submitNewPerson(inputId, faceIds) {
@@ -425,7 +530,7 @@ let facesData = { people: [], clusters: [], singletons: [] };
         return;
       }
       showLearningToast(await r.json().catch(() => null));
-      await loadFaces();
+      await afterAssign(faceIds);
       refreshLearning();
       loadQuestion();
     }

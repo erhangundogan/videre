@@ -2386,6 +2386,8 @@ struct SearchQuery {
     /// A hash already in this library: "more like this one".
     like: Option<String>,
     limit: Option<usize>,
+    /// Where this page starts in the ranking, so the Search page can show more.
+    offset: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -2448,7 +2450,14 @@ async fn handle_search(
             Ok(_) => {}
         }
     }
-    let top_k = sq.limit.unwrap_or(24).clamp(1, MAX_LIMIT);
+    let limit = sq.limit.unwrap_or(24).clamp(1, MAX_LIMIT);
+    let offset = sq.offset.unwrap_or(0);
+    // Ranked through the end of this page, plus one for the example, which
+    // ranks itself first and is dropped below (without it a page of one `like`
+    // result came back empty), plus one more to tell whether a next page
+    // exists. A ranked search's `total` counts only what was ranked, so it
+    // cannot answer that.
+    let top_k = offset.saturating_add(limit).saturating_add(2);
     // Kept out of the closure: needed again below to drop the example from its
     // own results.
     let example = sq.like.clone();
@@ -2504,13 +2513,18 @@ async fn handle_search(
     // itself, and "things like this one" that begins with this one wastes the
     // first and best slot. The in-page version skipped its own index for the
     // same reason; the UI shows the query separately.
-    let results: Vec<_> = hits
+    let ranked: Vec<_> = hits
         .results
         .iter()
         .filter(|h| h.hash.as_deref() != example.as_deref())
         .collect();
+    let more = ranked.len() > offset.saturating_add(limit);
+    let results: Vec<_> = ranked.into_iter().skip(offset).take(limit).collect();
 
-    let mut out = format!("{{\"total\":{},\"results\":[", hits.total_matches);
+    let mut out = format!(
+        "{{\"total\":{},\"more\":{more},\"results\":[",
+        hits.total_matches
+    );
     for (i, hit) in results.iter().enumerate() {
         if i > 0 {
             out.push(',');
@@ -3917,12 +3931,36 @@ async fn handle_events_key(
     Ok(render_live_events(&state, &event_json, page_settings(&state).await).into_response())
 }
 
+/// Faces per page on the People pages when the request names none, and the
+/// most one request returns.
+const FACES_PAGE_DEFAULT: usize = 200;
+const FACES_PAGE_MAX: usize = 1000;
+
+fn faces_page(after: Option<i64>, limit: Option<usize>) -> videre_api::Page {
+    videre_api::Page {
+        after,
+        limit: limit.unwrap_or(FACES_PAGE_DEFAULT).min(FACES_PAGE_MAX),
+    }
+}
+
+#[derive(Deserialize)]
+struct FacesQuery {
+    q: Option<String>,
+    singles_after: Option<i64>,
+    /// 0 returns no singles: people and clusters only, with the total.
+    singles_limit: Option<usize>,
+}
+
+/// `GET /api/faces`: people and clusters whole, the singles a page at a
+/// time. A library can hold tens of thousands of singles, and a page that
+/// fetched and drew them all was slow to open and slower after each
+/// assignment.
 async fn handle_get_faces(
     State(state): State<Arc<AppState>>,
-    Query(q): Query<RouteQuery>,
+    Query(q): Query<FacesQuery>,
 ) -> Result<axum::response::Response, ApiError> {
     let conn = state.conn.lock().map_err(poisoned)?;
-    let mut data = videre_api::faces_list(&conn).map_err(api_error)?;
+    let page = faces_page(q.singles_after, q.singles_limit);
     // A query keeps the people, clusters and faces seen in a matching file,
     // each shown whole, and adds the files' N of M.
     let applied = match apply_query(&state, &conn, q.q.as_deref()) {
@@ -3930,12 +3968,14 @@ async fn handle_get_faces(
         Err(response) => return Ok(*response),
     };
     let Some(applied) = applied else {
+        let data = videre_api::faces_list_page(&conn, page, &|_| true).map_err(api_error)?;
         return Ok(AxumJson(data).into_response());
     };
+    let mut data =
+        videre_api::faces_list_page(&conn, page, &|h| applied.matches(h)).map_err(api_error)?;
     let seen = |hashes: &[String]| hashes.iter().any(|h| applied.matches(h));
     data.people.retain(|p| seen(&p.hashes));
     data.clusters.retain(|c| seen(&c.hashes));
-    data.singletons.retain(|s| applied.matches(&s.hash));
     let (matched, library_total) = keep_set_counts(&conn, &applied)?;
     let mut value = serde_json::to_value(&data).map_err(internal)?;
     value["matched"] = matched.into();
@@ -4156,12 +4196,20 @@ async fn handle_person_page(State(state): State<Arc<AppState>>) -> axum::respons
     axum::response::Html(page.render().expect("person template"))
 }
 
+#[derive(Deserialize)]
+struct PersonPageQuery {
+    after: Option<i64>,
+    limit: Option<usize>,
+}
+
+/// `GET /api/people/{name}`: one page of a person's faces, primary first.
 async fn handle_person_api(
     axum::extract::Path(name): axum::extract::Path<String>,
     State(state): State<Arc<AppState>>,
+    Query(q): Query<PersonPageQuery>,
 ) -> Result<AxumJson<PersonDetail>, ApiError> {
     let conn = state.conn.lock().map_err(poisoned)?;
-    videre_api::person_detail(&conn, &name)
+    videre_api::person_detail_page(&conn, &name, faces_page(q.after, q.limit))
         .map(AxumJson)
         .map_err(api_error)
 }
@@ -5595,6 +5643,16 @@ mod settings_api_tests {
         }
         assert!(html.contains(".videre/gallery.json"), "shows the file path");
         assert!(html.contains("id=\"secnav-more\""), "carries the nav menu");
+        for (key, max) in [
+            ("routes.files.pageSize", 500),
+            ("routes.date.pageSize", 500),
+            ("routes.search.pageSize", 200),
+            ("routes.people.pageSize", 1000),
+            ("routes.duplicates.pageSize", 1000),
+        ] {
+            let input = format!("data-setting=\"{key}\" min=\"1\" max=\"{max}\"");
+            assert!(html.contains(&input), "{input}");
+        }
     }
 
     #[tokio::test]

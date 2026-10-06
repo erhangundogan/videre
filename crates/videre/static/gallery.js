@@ -1,5 +1,6 @@
 
-var PAGE=100,sorted=GROUPS.slice(),shown=0;
+// Duplicate groups per Show more: routes.duplicates.pageSize.
+var PAGE=settingIntInRange('routes.duplicates.pageSize',1,1000),sorted=GROUPS.slice(),shown=0;
 
 // Sort state, kept in the library's gallery settings the same way the view
 // mode is, default date desc. File grids mirror the server whitelist (six
@@ -260,20 +261,14 @@ function updateBtn(){
   else btn.style.display='none';
 }
 function showMore(){render(false);}
+// Opening a group leaves its images lazy: they load as they near the screen.
+// Turning them eager made Expand all request every thumbnail on the page at
+// once, a queue that kept later requests waiting.
 function toggle(id){
-  var g=document.getElementById(id);
-  g.classList.toggle('open');
-  if(g.classList.contains('open')){
-    g.querySelectorAll('img').forEach(function(img){if(img.loading==='lazy')img.loading='eager';});
-    g.querySelectorAll('video').forEach(function(v){if(v.preload==='metadata')v.preload='auto';});
-  }
+  document.getElementById(id).classList.toggle('open');
 }
 function expandAll(){
-  document.querySelectorAll('.group').forEach(function(g){
-    g.classList.add('open');
-    g.querySelectorAll('img').forEach(function(img){if(img.loading==='lazy')img.loading='eager';});
-    g.querySelectorAll('video').forEach(function(v){if(v.preload==='metadata')v.preload='auto';});
-  });
+  document.querySelectorAll('.group').forEach(function(g){ g.classList.add('open'); });
 }
 function collapseAll(){document.querySelectorAll('.group').forEach(function(g){g.classList.remove('open');});}
 function copyPath(p){
@@ -616,9 +611,10 @@ function lbVisibleTiles(){
   return out;
 }
 // The view's "Show more" control, if present and visible: #more-btn for the
-// grid/duplicates views, #gallery-more for the paged gallery.
+// grid/duplicates views, #gallery-more for the paged gallery, #date-more for
+// a date's files.
 function lbMoreButton(){
-  var ids=['more-btn','gallery-more'];
+  var ids=['more-btn','gallery-more','date-more'];
   for(var i=0;i<ids.length;i++){
     var b=document.getElementById(ids[i]);
     if(b&&b.offsetParent!==null)return b;
@@ -690,8 +686,9 @@ function showPeriodCount(n){
   document.getElementById('dateBreadcrumb').insertAdjacentHTML('beforeend',
     ' <span class="date-period-count">'+n+' item'+(n===1?'':'s')+'</span>');
 }
-// The files last rendered into #dateGrid, so a mode switch re-renders without a
-// refetch. Date galleries are one-shot (no paging).
+// The files loaded into #dateGrid so far, so a mode switch re-renders without a
+// refetch. A day, month or range loads routes.date.pageSize files at a time;
+// #date-more loads the next page.
 var dateFiles=null;
 function dateKeepFiles(){ return (typeof KEEPFILES!=='undefined') ? KEEPFILES : []; }
 
@@ -761,6 +758,7 @@ function groupInlined(len,parent){
 }
 
 function buildYearView(){
+  resetDatePaging();
   rerunDateView=function(){buildYearView();};
   dateState={level:'year',year:null,month:null};
   document.getElementById('dateBreadcrumb').innerHTML='All Dates';
@@ -783,6 +781,7 @@ function buildYearView(){
   if(dateInlined())draw(groupInlined(4,null)); else fetchBuckets('year',null,draw);
 }
 function buildMonthView(year){
+  resetDatePaging();
   rerunDateView=function(){buildMonthView(year);};
   dateState={level:'month',year:year,month:null};
   document.getElementById('dateBreadcrumb').innerHTML=
@@ -797,6 +796,7 @@ function buildMonthView(year){
   if(dateInlined())draw(groupInlined(7,year)); else fetchBuckets('month',year,draw);
 }
 function buildDayView(month){
+  resetDatePaging();
   rerunDateView=function(){buildDayView(month);};
   dateState={level:'day',year:dateState.year||month.slice(0,4),month:month};
   document.getElementById('dateBreadcrumb').innerHTML=
@@ -813,6 +813,7 @@ function buildDayView(month){
   if(dateInlined())draw(groupInlined(10,month)); else fetchBuckets('day',month,draw);
 }
 function buildDayGallery(day){
+  resetDatePaging();
   rerunDateView=function(){buildDayGallery(day);};
   document.getElementById('dateBreadcrumb').innerHTML=
     dateRootCrumb()+' &gt; '+
@@ -831,17 +832,65 @@ function buildDayGallery(day){
   }
   fetchDateFiles('date='+encodeURIComponent(day),'No files for '+day+'.');
 }
+// A large day (a wedding, a trip, a Takeout import) can hold thousands of
+// files, so a date loads a page at a time like the Library does, and the
+// period count is the server's total, not what is loaded.
+var DPAGE=settingIntInRange('routes.date.pageSize',1,500);
+var dateParams=null,dateEmptyText='',dateTotal=0,dateRequest=0,dateLoading=false;
+// Every date view starts here: a reply still in flight for the previous view is
+// dropped, and the button belongs to no view until a date's files load.
+function resetDatePaging(){
+  dateRequest++;
+  dateParams=null;
+  dateFiles=null;
+  dateTotal=0;
+  dateLoading=false;
+  updateDateMore();
+}
 function fetchDateFiles(params,emptyText){
-  var grid=document.getElementById('dateGrid');
-  grid.innerHTML='<p class="muted">Loading...</p>';
-  fetch('/api/files?view=date&'+params+'&limit=500'+sortQuery()+galleryQueryParam())
+  resetDatePaging();
+  dateParams=params;
+  dateEmptyText=emptyText;
+  dateFiles=[];
+  document.getElementById('dateGrid').innerHTML='<p class="muted">Loading...</p>';
+  loadDatePage(dateRequest);
+}
+function moreDateFiles(){
+  if(dateParams!==null&&!dateLoading)loadDatePage(dateRequest);
+}
+function loadDatePage(request){
+  var first=!dateFiles.length;
+  var btn=document.getElementById('date-more');
+  dateLoading=true;
+  if(!first&&btn)btn.textContent='Loading\u2026';
+  fetch('/api/files?view=date&'+dateParams+'&offset='+dateFiles.length+'&limit='+DPAGE+
+        sortQuery()+galleryQueryParam())
     .then(queryJson)
     .then(function(d){
-      if(d.bad){ queryErrorStatus(d); grid.innerHTML=''; return; }
-      showPeriodCount(d.total!=null?d.total:(d.files||[]).length);
-      renderDateFiles(d.files||[],emptyText);
+      if(request!==dateRequest)return;
+      dateLoading=false;
+      var grid=document.getElementById('dateGrid');
+      if(d.bad){ queryErrorStatus(d); grid.innerHTML=''; dateParams=null; updateDateMore(); return; }
+      var files=dateFiles.concat(d.files||[]);
+      dateTotal=d.total!=null?d.total:files.length;
+      if(first)showPeriodCount(dateTotal);
+      renderDateFiles(files,dateEmptyText);
+      updateDateMore();
     })
-    .catch(function(){ grid.innerHTML='<p class="muted">Could not load that date.</p>'; });
+    .catch(function(){
+      if(request!==dateRequest)return;
+      dateLoading=false;
+      if(first){ document.getElementById('dateGrid').innerHTML='<p class="muted">Could not load that date.</p>'; return; }
+      // Say so, rather than leaving a button that silently does nothing.
+      if(btn)btn.textContent='Could not load more. Click to retry.';
+    });
+}
+function updateDateMore(){
+  var btn=document.getElementById('date-more');
+  if(!btn)return;
+  var rem=dateParams!==null&&dateFiles?dateTotal-dateFiles.length:0;
+  if(rem>0){btn.style.display='inline-block';btn.textContent='Show more ('+rem+' remaining)';}
+  else btn.style.display='none';
 }
 function renderDateBreadcrumb(prefix){
   var parts=prefix.split('-');
@@ -874,6 +923,7 @@ function renderDateNarrowing(prefix){
   },narrowing);
 }
 function buildPrefixGallery(prefix){
+  resetDatePaging();
   rerunDateView=function(){buildPrefixGallery(prefix);};
   var parts=prefix.split('-');
   dateState.year=parts[0]||null;
@@ -883,6 +933,7 @@ function buildPrefixGallery(prefix){
   fetchDateFiles('date='+encodeURIComponent(prefix),'No files for '+prefix+'.');
 }
 function buildRangeGallery(range){
+  resetDatePaging();
   rerunDateView=function(){buildRangeGallery(range);};
   document.getElementById('dateBreadcrumb').innerHTML=dateRootCrumb()+' &gt; Date range';
   var narrowing=document.getElementById('dateNarrowing');
@@ -1233,8 +1284,8 @@ function renderCurrentMode(){
   if(grid && dateFiles){ renderDateFiles(dateFiles); }
 }
 // The one place the Date galleries render their files, so List and Tile modes
-// and a later mode switch share a path. Date galleries are one-shot, so this
-// replaces the grid contents wholesale.
+// and a later mode switch share a path. It re-renders every loaded file, so a
+// page appended by Show more lays out with the ones before it.
 function renderDateFiles(files,emptyText){
   dateFiles=files;
   var grid=document.getElementById('dateGrid');
@@ -1340,7 +1391,14 @@ function renderGallery(){
       if(btn)btn.textContent='Could not load more. Click to retry.';
     });
 }
-function showMoreGallery(){renderGallery();}
+// The Search page pages its ranking, not the library: while it has more, its
+// next page is what Show more loads. Cleared during a load, so a double click
+// cannot append one page twice.
+var SPAGE=settingIntInRange('routes.search.pageSize',1,200),searchMore=null;
+function showMoreGallery(){
+  if(searchMore){ var next=searchMore; searchMore=null; next(); return; }
+  renderGallery();
+}
 // The map page owns the location selection, while the shared gallery owns
 // paging and rendering. Reset all paging state before loading the first page
 // for the selected location; null returns to the complete library.
@@ -1436,31 +1494,50 @@ function runSearchPage(){
   g.parentNode.insertBefore(head,g);
   var btn=document.getElementById('gallery-more');
   if(btn)btn.style.display='none';
-  var url='/api/search?limit=96'+(like?'&like='+encodeURIComponent(like):'')+galleryQueryParam();
-  fetch(url).then(queryJson).then(function(d){
-    if(d.bad){ queryErrorStatus(d); head.innerHTML=''; return; }
-    var scored=d.results||[];
-    var hashes=scored.map(function(s){return s.hash;});
-    if(like)hashes.push(like);
-    var rows=hashes.length?fetch('/api/files?hashes='+encodeURIComponent(hashes.join(','))).then(function(r){return r.json();})
-                          :Promise.resolve({files:[]});
-    return rows.then(function(rd){
-      var by={};
-      (rd.files||[]).forEach(function(f){ if(!by[f.hash])by[f.hash]=f; });
-      var title=like
-        ?'Similar to '+escH(by[like]?(by[like].path.split('/').pop()||by[like].path):like.slice(0,12))
-        :'Results for &ldquo;'+escH(words)+'&rdquo;';
-      head.innerHTML='<h2>'+title+'</h2><span class="results-count">'+scored.length+' result'+(scored.length===1?'':'s')+'</span>';
-      var files=scored.map(function(s){
-        var f=by[s.hash]; if(!f)return null;
-        var copy={}; for(var k in f)copy[k]=f[k];
-        copy._score=s.score;
-        return copy;
-      }).filter(Boolean);
-      if(!files.length){ g.innerHTML='<p class="muted">Nothing ranked.</p>'; return; }
-      appendCards(files,files.length);
+  var base='/api/search?limit='+SPAGE+(like?'&like='+encodeURIComponent(like):'')+galleryQueryParam();
+  // Where the next page starts in the ranking. Kept apart from the cards
+  // shown, since a ranked hash with no row is skipped but still ranked.
+  var offset=0,title=null;
+  function page(){
+    if(btn)btn.textContent='Loading…';
+    return fetch(base+'&offset='+offset).then(queryJson).then(function(d){
+      if(d.bad){ queryErrorStatus(d); head.innerHTML=''; return; }
+      var scored=d.results||[];
+      offset+=scored.length;
+      var hashes=scored.map(function(s){return s.hash;});
+      if(like&&title===null)hashes.push(like);
+      var rows=hashes.length?fetch('/api/files?hashes='+encodeURIComponent(hashes.join(','))).then(function(r){return r.json();})
+                            :Promise.resolve({files:[]});
+      return rows.then(function(rd){
+        var by={};
+        (rd.files||[]).forEach(function(f){ if(!by[f.hash])by[f.hash]=f; });
+        if(title===null)title=like
+          ?'Similar to '+escH(by[like]?(by[like].path.split('/').pop()||by[like].path):like.slice(0,12))
+          :'Results for &ldquo;'+escH(words)+'&rdquo;';
+        var files=scored.map(function(s){
+          var f=by[s.hash]; if(!f)return null;
+          var copy={}; for(var k in f)copy[k]=f[k];
+          copy._score=s.score;
+          return copy;
+        }).filter(Boolean);
+        var shown=gShown+files.length;
+        head.innerHTML='<h2>'+title+'</h2><span class="results-count">'+shown+' result'+(shown===1?'':'s')+'</span>';
+        if(!shown){ g.innerHTML='<p class="muted">Nothing ranked.</p>'; return; }
+        appendCards(files,shown);
+        searchMore=d.more?next:null;
+        if(btn&&d.more){ btn.style.display='inline-block'; btn.textContent='Show more'; }
+      });
     });
-  }).catch(function(){ head.innerHTML='<h2>Search failed</h2>'; });
+  }
+  function next(){
+    page().catch(function(){
+      if(title===null){ head.innerHTML='<h2>Search failed</h2>'; return; }
+      // Say so, rather than leaving a button that silently does nothing.
+      searchMore=next;
+      if(btn)btn.textContent='Could not load more. Click to retry.';
+    });
+  }
+  next();
 }
 function clearResults(){
   var panel=document.getElementById('results');
@@ -1858,7 +1935,13 @@ function selectionDelete(){
         galleryFiles=galleryFiles.filter(function(f){ return !gone[f.hash]; });
         // The next Show more pages from the server's shorter list.
         gShown=Math.max(0,gShown-(before-galleryFiles.length));
-        if(typeof dateFiles!=='undefined'&&dateFiles)dateFiles=dateFiles.filter(function(f){ return !gone[f.hash]; });
+        if(typeof dateFiles!=='undefined'&&dateFiles){
+          var dateBefore=dateFiles.length;
+          dateFiles=dateFiles.filter(function(f){ return !gone[f.hash]; });
+          // Likewise the date's next page comes from its shorter list.
+          dateTotal-=dateBefore-dateFiles.length;
+          updateDateMore();
+        }
         renderCurrentMode();
         fileSelection.remove(r.trashed||[]);
         var text='Moved '+(r.trashed||[]).length+' item(s) to the Trash';

@@ -1,3 +1,5 @@
+import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { Page } from "@playwright/test";
 import { expect, openLibraryDb, preferListView, test, type GallerySession } from "../support/gallery";
 
@@ -33,6 +35,24 @@ test("Similar opens as a page that a bookmark reopens", async ({ page, searchGal
 
   await page.reload();
   await expect(rankedNames(page)).toHaveText(["bahçe.jpg", "deniz.jpg"]);
+});
+
+test("a search page shows more of its ranking, a page at a time", async ({ page, searchGallery }) => {
+  await preferListView(searchGallery);
+  const path = join(searchGallery.libraryRoot, ".videre", "gallery.json");
+  const stored = JSON.parse(await readFile(path, "utf8"));
+  stored.routes.search = { pageSize: 1 };
+  await writeFile(path, JSON.stringify(stored));
+  const hash = await hashOf(page, searchGallery, "çiçek.jpg");
+  const more = page.locator("#gallery-more");
+
+  await page.goto(`${searchGallery.baseURL}/search?like=${hash}`);
+  await expect(rankedNames(page)).toHaveText(["bahçe.jpg"]);
+  await expect(more).toHaveText("Show more");
+  await more.click();
+  await expect(rankedNames(page)).toHaveText(["bahçe.jpg", "deniz.jpg"]);
+  await expect(more).toBeHidden();
+  await expect(page.locator("#search-head .results-count")).toHaveText("2 results");
 });
 
 test("a search page ranks within its query's filters", async ({ page, searchGallery }) => {
