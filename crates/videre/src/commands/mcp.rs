@@ -219,7 +219,7 @@ struct SearchParams {
     /// Query language, as in Gmail or GitHub search: words rank semantically
     /// (requires prior 'videre embed'), and key:value terms filter: person:,
     /// tag:, category:, place:, date:, after:, before:, rating: (rating:>=4),
-    /// pick:, label:, is:liked, type:, ext:, mime:, path:, has:, missing:.
+    /// pick:, label:, is:liked, is:creation, type:, ext:, mime:, path:, has:, missing:.
     /// Combine with OR, - or NOT, and parentheses, e.g.
     /// '(person:özgür OR person:ayşe) date:2023 -tag:ekran gün batımı'.
     /// Words cannot be combined with image_path; filters can.

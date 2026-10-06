@@ -94,6 +94,22 @@ pub fn edited_name_pairs<P: AsRef<Path>>(paths: &[P]) -> usize {
         .count()
 }
 
+/// The content hashes of every creation in the library: `is:creation`.
+pub fn creation_hashes(
+    conn: &rusqlite::Connection,
+) -> rusqlite::Result<std::collections::HashSet<String>> {
+    let mut stmt = conn.prepare("SELECT path, hash FROM file_hashes")?;
+    let rows: Vec<(String, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let refs: Vec<(&str, &str)> = rows.iter().map(|(p, h)| (p.as_str(), h.as_str())).collect();
+    let by_path: HashMap<&str, &str> = refs.iter().copied().collect();
+    Ok(edited_pairs(&refs)
+        .into_iter()
+        .map(|pair| by_path[pair.edit].to_string())
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

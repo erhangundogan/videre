@@ -172,6 +172,9 @@ pub struct RowSelection {
     pub label: Option<String>,
     /// Only liked photos.
     pub liked: bool,
+    /// Only Google Photos creations beside their originals
+    /// (`crate::takeout_names`).
+    pub creation: bool,
     /// Tags that must all be present (AND across multiple --tag values).
     pub tags: Vec<String>,
     /// A `--query`, resolved by the caller.
@@ -222,6 +225,7 @@ impl RowSelection {
             && self.pick.is_none()
             && self.label.is_none()
             && !self.liked
+            && !self.creation
             && self.tags.is_empty()
             && self.query.is_none()
     }
@@ -292,6 +296,9 @@ impl RowSelection {
         }
         if self.liked {
             parts.push("--like".to_string());
+        }
+        if self.creation {
+            parts.push("is:creation".to_string());
         }
         for t in &self.tags {
             parts.push(format!("--tag {t}"));
@@ -410,6 +417,9 @@ impl RowSelection {
         }
         if self.liked {
             narrow(crate::marks::by_liked(conn)?, &mut acc);
+        }
+        if self.creation {
+            narrow(crate::takeout_names::creation_hashes(conn)?, &mut acc);
         }
         for t in &self.tags {
             narrow(crate::tags::by_tag(conn, t)?, &mut acc);

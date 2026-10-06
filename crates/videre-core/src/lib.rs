@@ -47,6 +47,7 @@ pub mod semaphore;
 pub mod shutdown;
 pub mod status_report;
 pub mod tags;
+pub mod takeout_names;
 pub mod thumb_cache;
 pub mod vectors;
 pub mod video_meta;

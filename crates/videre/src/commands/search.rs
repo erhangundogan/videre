@@ -1072,6 +1072,7 @@ mod tests {
             pick: Some(videre_core::marks::Pick::Keep),
             label: Some("Green".into()),
             liked: true,
+            creation: false,
             tags: vec!["beach".into(), "sea".into()],
             query: None,
         };
