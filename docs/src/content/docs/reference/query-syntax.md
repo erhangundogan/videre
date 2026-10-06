@@ -4,8 +4,9 @@ description: One search string for filters and text, in the style of Gmail and G
 ---
 
 [`videre search`](/commands/search/) takes a query: words to search for, and
-filters, in one string. So does the search box in the
-[gallery](/commands/gallery/), whose filters narrow the Library grid.
+filters, in one string. So does the search and filter box in the
+[gallery](/commands/gallery/)'s toolbars, whose filters narrow what each
+section shows.
 
 ```bash
 videre search 'person:özgür "gün batımı" -tag:screenshot (tag:deniz OR tag:plaj) rating:>=4'

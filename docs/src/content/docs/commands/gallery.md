@@ -120,9 +120,15 @@ people or location data yet.
 **Library**, **Duplicates**, **Date**, **Events**, **People** and **Map** sit in a strip along
 the top of every page, so you switch between them without touching the address
 bar. The reserved routes are deliberately not in it; each one appears when it
-renders something. At the right of the strip is a **search** box, on every
-section, that takes a [query](/reference/query-syntax/) and opens the Library
-page with it:
+renders something.
+
+Each section's toolbar sits under the strip and stays there as you scroll. It
+reads, left to right: **Select**, **View**, **Sort**, then a **search and
+filter** box with its **Filter** button, then the section's own controls,
+each set apart by a divider. The box takes a
+[query](/reference/query-syntax/) and applies it to that section (below). On
+a page with no toolbar, such as a person's page or Settings, the box sits at
+the right of the strip instead and opens the Library page with the query:
 
 - **Filters narrow the grid.** `tag:deniz OR tag:plaj`, `person:özgür
   date:2023` or `-tag:ekran` leave only the matching files, with a line above
@@ -167,7 +173,7 @@ In the box, each filter is a **chip**, and words stay as text:
   the box to edit.
 - A part of the query that chips cannot show, such as `tag:deniz OR
   person:ayşe`, stays one chip with its text unchanged.
-- **▾** beside the box opens the options: a column for each kind of filter
+- **Filter** beside the box opens the options: a column for each kind of filter
   (people, a date range, places, tags, rating and marks, type and extension,
   category, and what a file has or is missing), filled with this library's
   values and their counts. Choosing a value writes the same chip typing it
@@ -337,7 +343,7 @@ too.
 
 ## Selecting
 
-**Select** in the toolbar of the Library, Date, Events and Map pages turns on
+**Select**, first in the toolbar of the Library, Date, Events and Map pages, turns on
 select mode ("Select enabled"). While it is on:
 
 - a click on a photo or video selects it instead of opening it;
