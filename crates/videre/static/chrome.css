@@ -49,7 +49,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
    own card buttons with `button.primary`/`button.danger`, which would win. */
 .gallery-toolbar button.primary{background:#2a6db5;border-color:#2a6db5;color:#fff}
 .gallery-toolbar button.danger{color:#b91c1c;border-color:#2a2a33;background:#e9e9ed}
-.gallery-toolbar :where(input[type=text]){padding:4px 8px;border:1px solid #2a2a33;border-radius:6px;background:#fff;color:#18181b}
+.gallery-toolbar :where(input[type=text],input[type=number]){padding:4px 8px;border:1px solid #2a2a33;border-radius:6px;background:#fff;color:#18181b}
 /* A bar of features (Select, View, Sort, Search and filter, a page's own
    controls) separates each from the next with a divider. A feature is a direct
    child that is not a bare button: buttons that belong together sit in one

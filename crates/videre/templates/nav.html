@@ -45,6 +45,12 @@
 .qbox:focus-within{outline:2px solid #3b82f6;outline-offset:1px}
 .qbox input{flex:1;min-width:80px;padding:3px 4px;border:0;background:transparent;color:#d8d8e0;font:500 14px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;outline:none}
 .qbox input::placeholder{color:#71717a}
+.qbox input::-webkit-search-cancel-button{display:none}
+.qbox-clear{flex:none;margin-left:auto;padding:0 4px;border:0;background:transparent;color:#9a9aa8;font:600 16px/1 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;cursor:pointer}
+.qbox-clear:hover{color:#d8d8e0}
+.qbox-clear[hidden]{display:none}
+.toolbar-query .qbox-clear{color:#71717a}
+.toolbar-query .qbox-clear:hover{color:#18181b}
 .qchip{display:inline-flex;align-items:center;gap:2px;flex:none;max-width:260px;padding:1px 2px 1px 4px;border-radius:4px;background:#33333d;color:#d8d8e0;font:500 12px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;white-space:nowrap}
 .qchip-neg{background:#4a2a2e}
 .qchip-text{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
@@ -157,6 +163,7 @@
 <button type="button" id="secnav-more" class="secnav-more" aria-label="More" aria-haspopup="menu" aria-expanded="false" aria-controls="secnav-menu-list">&#8943;</button>
 <div id="secnav-menu-list" class="secnav-menu-list" role="menu" hidden>
 <a role="menuitem" href="/settings"><svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>Settings</a>
+<a role="menuitem" href="https://docs.videre.sh/commands/gallery/" target="_blank" rel="noopener"><svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>Help</a>
 </div>
 </div>
 </nav>

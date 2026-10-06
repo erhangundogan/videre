@@ -98,8 +98,8 @@ one click jumps from a photo to everything else taken then or there.
 
 An info panel sits directly under the media: the labeled people in the photo
 (each links to that person's page), the place name when the file has GPS, and
-the filename, size, and date. It stays visible even when a file has none of the
-people or location data yet.
+the filename, size, and date. The button beside the filename copies it. It
+stays visible even when a file has none of the people or location data yet.
 
 ## What is on each page
 
@@ -179,6 +179,7 @@ In the box, each filter is a **chip**, and words stay as text:
   values and their counts. Choosing a value writes the same chip typing it
   would, choosing it again takes it out, and **Apply** runs the query.
   `rating:4` means four stars or more.
+- The **×** at the end of the box clears every chip and the words at once.
 
 The tall library header (the database path and the scanned-file counts) shows on
 the Library page and on a static export; the other sections drop it, since the strip
@@ -328,7 +329,8 @@ day in the Date view or a place on the map. Opening the bare address still
 lands on the Library tab.
 
 **The settings page.** The **...** button at the right end of the navigation
-bar opens a menu; **Settings** there leads to a page that shows the file's
+bar opens a menu: **Help** opens this page in a new tab, and **Settings** leads
+to a page that shows the file's
 location, has a **Page sizes** box for each paged view (a value outside its
 range is refused and not saved), and can:
 
