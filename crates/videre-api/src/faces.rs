@@ -209,6 +209,19 @@ fn faces_table_exists(conn: &Connection) -> bool {
 /// "Nothing detected yet" is a state, not a failure. It returns empty here and
 /// the page says so.
 pub fn faces_list(conn: &Connection) -> Result<FacesData> {
+    faces_list_page(conn, Page::ALL, &|_| true)
+}
+
+/// `faces_list` with one page of the singles: those whose hash `keep`
+/// accepts, after `page.after` by face id. People and clusters always come
+/// whole (hundreds at most, and every one is a drop target), while a library
+/// can hold tens of thousands of singles. `singles_total` counts every single
+/// `keep` accepts, so the page can say how many there are.
+pub fn faces_list_page(
+    conn: &Connection,
+    page: Page,
+    keep: &dyn Fn(&str) -> bool,
+) -> Result<FacesData> {
     if !faces_table_exists(conn) {
         return Ok(FacesData::default());
     }
@@ -285,9 +298,19 @@ pub fn faces_list(conn: &Connection) -> Result<FacesData> {
         let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
         for row in rows {
             let (id, hash) = row?;
-            singletons.push(SingletonData { face_id: id, hash });
+            if keep(&hash) {
+                singletons.push(SingletonData { face_id: id, hash });
+            }
         }
     }
+    let singles_total = singletons.len();
+    let (singletons, singles_next) = take_page(
+        singletons
+            .into_iter()
+            .filter(|s| page.after.is_none_or(|after| s.face_id > after)),
+        page.limit,
+        |s| s.face_id,
+    );
 
     // Both maps are HashMaps, whose iteration order is arbitrary and differs
     // between instances, so collecting straight from them threw away the
@@ -314,7 +337,24 @@ pub fn faces_list(conn: &Connection) -> Result<FacesData> {
         people,
         clusters,
         singletons,
+        singles_total,
+        singles_next,
     })
+}
+
+/// At most `limit` of `items`, and the id to page after when any remain.
+fn take_page<T>(
+    items: impl Iterator<Item = T>,
+    limit: usize,
+    id: impl Fn(&T) -> i64,
+) -> (Vec<T>, Option<i64>) {
+    let mut items = items.peekable();
+    let page: Vec<T> = items.by_ref().take(limit).collect();
+    let next = match (items.peek(), page.last()) {
+        (Some(_), Some(last)) => Some(id(last)),
+        _ => None,
+    };
+    (page, next)
 }
 
 /// Every face in one unassigned cluster (for the cluster detail page).
@@ -346,6 +386,14 @@ pub fn cluster_detail(conn: &Connection, cluster_id: i64) -> Result<ClusterDetai
 
 /// Every confirmed face for one person, primary first and flagged.
 pub fn person_detail(conn: &Connection, name: &str) -> Result<PersonDetail> {
+    person_detail_page(conn, name, Page::ALL)
+}
+
+/// One page of a person's confirmed faces: the primary first, then by id.
+/// Paging after the primary starts the rest from the lowest id; after any
+/// other face, from the next id above it, so a page holds when an earlier
+/// face is removed.
+pub fn person_detail_page(conn: &Connection, name: &str, page: Page) -> Result<PersonDetail> {
     // Reads normalize too, so `/people/person/Erhan`, `/people/person/erhan` and the original
     // spelling all reach the same person. That is what keeps existing links
     // working across the migration without a redirect table.
@@ -369,6 +417,17 @@ pub fn person_detail(conn: &Connection, name: &str) -> Result<PersonDetail> {
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    let face_total = faces.len();
+    let primary = faces.first().filter(|f| f.is_primary).map(|f| f.face_id);
+    let (faces, next) = take_page(
+        faces.into_iter().filter(|f| match page.after {
+            None => true,
+            Some(after) if Some(after) == primary => !f.is_primary,
+            Some(after) => !f.is_primary && f.face_id > after,
+        }),
+        page.limit,
+        |f| f.face_id,
+    );
     // Falls back to the identity for a person with no row yet, so a library
     // opened before the migration still shows something sensible.
     let full_name: String = conn
@@ -382,6 +441,8 @@ pub fn person_detail(conn: &Connection, name: &str) -> Result<PersonDetail> {
         label: name.to_string(),
         full_name,
         faces,
+        face_total,
+        next,
     })
 }
 
@@ -2270,6 +2331,118 @@ mod tests {
         assert_eq!(
             sizes, want,
             "clusters must be ordered largest first, got {sizes:?}"
+        );
+    }
+
+    /// The seed's single (5) plus six more, 11 to 16, so singles page.
+    fn seven_singles() -> Connection {
+        let conn = seed();
+        for id in 11..=16 {
+            conn.execute(
+                "INSERT INTO file_hashes (hash, path) VALUES (?1, ?2)",
+                rusqlite::params![format!("h{id}"), format!("/p/yüz {id}.jpg")],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO faces (id,hash,bbox,embedding,cluster_id,person_label,confirmed,is_primary) \
+                 VALUES (?1, ?2, '0,0,9,9', X'0000', NULL, NULL, 0, 0)",
+                rusqlite::params![id, format!("h{id}")],
+            )
+            .unwrap();
+        }
+        conn
+    }
+
+    fn single_ids(d: &FacesData) -> Vec<i64> {
+        d.singletons.iter().map(|s| s.face_id).collect()
+    }
+
+    #[test]
+    fn singles_page_by_face_id() {
+        let conn = seven_singles();
+        let all = |_: &str| true;
+        let first = faces_list_page(&conn, Page::first(3), &all).unwrap();
+        assert_eq!(single_ids(&first), vec![5, 11, 12]);
+        assert_eq!((first.singles_total, first.singles_next), (7, Some(12)));
+        // People and clusters stay whole on every page.
+        assert_eq!((first.people.len(), first.clusters.len()), (1, 1));
+
+        let second = faces_list_page(&conn, Page::after(12, 3), &all).unwrap();
+        assert_eq!(single_ids(&second), vec![13, 14, 15]);
+        assert_eq!(second.singles_next, Some(15));
+        let last = faces_list_page(&conn, Page::after(15, 3), &all).unwrap();
+        assert_eq!(single_ids(&last), vec![16]);
+        assert_eq!((last.singles_total, last.singles_next), (7, None));
+    }
+
+    #[test]
+    fn a_singles_page_holds_after_earlier_singles_are_assigned() {
+        let conn = seven_singles();
+        let all = |_: &str| true;
+        assign(&conn, &[5, 11], "Ayşe").unwrap();
+        // The page after 12 is the same faces it was before: keyset, not offset.
+        let page = faces_list_page(&conn, Page::after(12, 3), &all).unwrap();
+        assert_eq!(single_ids(&page), vec![13, 14, 15]);
+        assert_eq!(page.singles_total, 5);
+    }
+
+    #[test]
+    fn a_filter_narrows_singles_before_paging_and_counting() {
+        let conn = seven_singles();
+        let keep = |hash: &str| ["h12", "h14", "h16"].contains(&hash);
+        let page = faces_list_page(&conn, Page::first(2), &keep).unwrap();
+        assert_eq!(single_ids(&page), vec![12, 14]);
+        assert_eq!((page.singles_total, page.singles_next), (3, Some(14)));
+    }
+
+    #[test]
+    fn a_page_of_no_singles_still_carries_people_clusters_and_the_total() {
+        let conn = seven_singles();
+        let page = faces_list_page(&conn, Page::first(0), &|_: &str| true).unwrap();
+        assert!(page.singletons.is_empty());
+        assert_eq!((page.people.len(), page.clusters.len()), (1, 1));
+        assert_eq!((page.singles_total, page.singles_next), (7, None));
+    }
+
+    #[test]
+    fn a_person_pages_primary_first_then_by_id() {
+        let conn = seed();
+        // Alice has 1 (primary) and 2; give her 6, 7 and 8 too.
+        for id in 6..=8 {
+            conn.execute(
+                "INSERT INTO file_hashes (hash, path) VALUES (?1, ?2)",
+                rusqlite::params![format!("h{id}"), format!("/p/çiçek {id}.jpg")],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO faces (id,hash,bbox,embedding,cluster_id,person_label,confirmed,is_primary) \
+                 VALUES (?1, ?2, '0,0,9,9', X'0000', NULL, 'alice', 1, 0)",
+                rusqlite::params![id, format!("h{id}")],
+            )
+            .unwrap();
+        }
+        set_primary(&conn, 7, "alice").unwrap();
+        let ids = |p: &PersonDetail| -> Vec<i64> { p.faces.iter().map(|f| f.face_id).collect() };
+
+        let one = person_detail_page(&conn, "alice", Page::first(2)).unwrap();
+        assert_eq!(ids(&one), vec![7, 1]);
+        assert!(one.faces[0].is_primary);
+        assert_eq!((one.face_total, one.next), (5, Some(1)));
+        let two = person_detail_page(&conn, "alice", Page::after(1, 2)).unwrap();
+        assert_eq!(ids(&two), vec![2, 6]);
+        let three = person_detail_page(&conn, "alice", Page::after(6, 2)).unwrap();
+        assert_eq!(ids(&three), vec![8]);
+        assert_eq!(three.next, None);
+        // A first page of one is the primary alone; the next continues from
+        // the lowest id, not from the primary's.
+        let only = person_detail_page(&conn, "alice", Page::first(1)).unwrap();
+        assert_eq!((ids(&only), only.next), (vec![7], Some(7)));
+        let rest = person_detail_page(&conn, "alice", Page::after(7, 10)).unwrap();
+        assert_eq!(ids(&rest), vec![1, 2, 6, 8]);
+        // The whole list is still one call away.
+        assert_eq!(
+            ids(&person_detail(&conn, "alice").unwrap()),
+            vec![7, 1, 2, 6, 8]
         );
     }
 
