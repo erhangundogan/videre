@@ -75,7 +75,9 @@ pub fn remove_and_forget(
                     sidecar,
                 };
                 if let Err(e) = w.record(&entry) {
-                    tracing::warn!("trashed {path:?} but could not record it for --undo: {e}");
+                    tracing::warn!(
+                        "trashed {path:?} but could not record it for videre dedupe undo: {e}"
+                    );
                 }
             }
             match &outcome {
@@ -128,7 +130,7 @@ fn to_trash(path: &Path) -> Result<Option<PathBuf>, String> {
         .map(|p| PathBuf::from(p.to_string())))
 }
 
-/// Elsewhere the freedesktop.org trash, whose landing `--undo` finds through
+/// Elsewhere the freedesktop.org trash, whose landing `dedupe undo` finds through
 /// the trash's own listing.
 #[cfg(not(target_os = "macos"))]
 fn to_trash(path: &Path) -> Result<Option<PathBuf>, String> {
@@ -326,7 +328,7 @@ mod tests {
                 );
                 let side = e.sidecar.as_ref().expect("the sidecar is recorded");
                 assert_eq!(side.path, sidecar);
-                // Where each landed is recorded on macOS, so --undo needs no
+                // Where each landed is recorded on macOS, so `dedupe undo` needs no
                 // listing of the Trash. Put both back so the test leaves
                 // nothing in it.
                 if cfg!(target_os = "macos") {

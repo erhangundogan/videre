@@ -119,7 +119,7 @@ closing hint adds the two commands that deal with them:
 Next:
   videre scan ~/Takeout/Google Photos
   videre fix-dates                  # set 14143 file time(s) from their sidecar
-  videre dedupe review --kind creation     # review 3763 photo(s) Google Photos made from another
+  videre dedupe review --kind creation   # review 3763 photo(s) Google Photos made from another
   videre dedupe trash --kind creation    # keep the originals, trash the creations
 ```
 
