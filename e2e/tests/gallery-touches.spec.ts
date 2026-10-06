@@ -55,6 +55,9 @@ test("the more menu offers Help, which opens the docs", async ({ page, gallery }
   const help = page.getByRole("menuitem", { name: "Help" });
   await expect(help).toHaveAttribute("href", "https://docs.videre.sh/commands/gallery/");
   await expect(help).toHaveAttribute("target", "_blank");
+  const feedback = page.getByRole("menuitem", { name: "Feedback" });
+  await expect(feedback).toHaveAttribute("href", "https://docs.videre.sh/reference/feedback/");
+  await expect(feedback).toHaveAttribute("target", "_blank");
 });
 
 test("the map's Radius input looks like the toolbar's other controls", async ({ page, isolatedGallery: gallery }) => {
