@@ -369,6 +369,28 @@ error }]` for files that could not be moved, which keep their rows). It needs
 the library to itself: while another videre command or a `watch` stage is
 working, it answers `409 {"error":"library_busy"}` and moves nothing.
 
+### `POST /api/duplicates/trash`
+
+Moves the copies of the Duplicates page's groups to the system Trash, keeping
+each group's first file: the groups, keeper rule and removal of
+[`videre dedupe trash`](/commands/dedupe/), recorded the same way, so
+`videre dedupe undo` puts them back. `kinds` are the page's kinds, `q` its
+query (a group with a matching file, taken whole), and `keepers`, when given,
+picks the groups whose first file is one of these paths (one group's **Trash
+copies**); without it every group goes (**Trash all copies**).
+
+```json
+{ "kinds": ["exact", "creation"], "q": "date:2015", "keepers": ["/Fotoğraflar/IMG_1.jpg"] }
+```
+
+```json
+{ "removed": 1, "already_gone": 0, "failed": [] }
+```
+
+A review-only kind answers `400 {"error":"review_only_kind"}`, a query that
+cannot run `400 {"error":"query"}`, and a library another command holds `409
+{"error":"library_busy"}`; nothing is moved.
+
 ## Dates, search and locations
 
 ### `GET /api/dates`
@@ -1141,6 +1163,7 @@ content-length: 0
 | `GET /api/tags` | List the library's tags with counts |
 | `POST /api/files/rotate` | Rotate a selection a quarter turn |
 | `POST /api/files/delete` | Move a selection's files to the system Trash |
+| `POST /api/duplicates/trash` | Move the Duplicates page's copies to the system Trash |
 | `GET /api/dates` | Read date buckets |
 | `GET /api/events` | List automatic travel trips and an empty reason when none qualify |
 | `GET /api/events/{key}/files` | Exact files of one trip |

@@ -229,6 +229,43 @@ fn take_signatures(files: &[&FileRecord], silent: bool) -> Vec<(String, PixelSig
     taken
 }
 
+/// What removing `groups` takes: every removable group's copies, each path
+/// once, by the kind that chose it. With `check_originals`, a creation goes
+/// only while its original is on disk: the pairing comes from rows, and an
+/// original deleted since the last scan would otherwise leave the creation as
+/// the only file, then take that too. Shared by dedupe and the gallery.
+pub fn removals(groups: &[Group], check_originals: bool) -> Vec<(Kind, std::path::PathBuf)> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for group in groups.iter().filter(|g| g.kind.removable()) {
+        if group.kind == Kind::Creation
+            && check_originals
+            && !std::path::Path::new(&group.keeper().path).exists()
+        {
+            continue;
+        }
+        for copy in group.copies() {
+            if seen.insert(copy.path.clone()) {
+                out.push((group.kind, std::path::PathBuf::from(&copy.path)));
+            }
+        }
+    }
+    out
+}
+
+/// The kinds a stored list names, in kind order; unknown names are left out,
+/// and a list naming none gives `fallback`.
+pub fn parse_kinds(names: &[&str], fallback: &[Kind]) -> Vec<Kind> {
+    let mut kinds: Vec<Kind> = names.iter().filter_map(|n| Kind::parse(n)).collect();
+    kinds.sort();
+    kinds.dedup();
+    if kinds.is_empty() {
+        fallback.to_vec()
+    } else {
+        kinds
+    }
+}
+
 /// The groups a query selects: a group qualifies when any member matches, and
 /// is then kept whole, so its copies are still judged by its keeper rule.
 pub fn filter_groups(groups: Vec<Group>, matches: &dyn Fn(&FileRecord) -> bool) -> Vec<Group> {

@@ -303,7 +303,7 @@ fn run_review(args: &ReviewArgs, ctx: &CommandContext) -> anyhow::Result<()> {
     };
     with_library(ctx, |conn| {
         let found = selected_groups(&args.scope, ctx, conn, true)?;
-        crate::render::write_review_page(conn, &output, &found.groups)?;
+        crate::render::write_review_page(conn, &output, &found)?;
         if !args.scope.silent {
             tracing::info!(
                 "Wrote {} group(s) to {}",
@@ -329,33 +329,17 @@ fn print_paths_delimited(paths: &[std::path::PathBuf], print0: bool) {
     }
 }
 
-/// What a run removes: every removable group's copies, each path once, by
-/// the kind that chose it. A creation goes only while its original is on
-/// disk: the pairing comes from rows, and an original deleted since the last
-/// scan would otherwise leave the creation as the only file, then take that
-/// too.
+/// What a run removes (`videre::duplicates::removals`), with the counts and
+/// wording dedupe reports.
 struct Removals {
     by_kind: Vec<(Kind, std::path::PathBuf)>,
 }
 
 impl Removals {
     fn collect(groups: &[Group], check_originals: bool) -> Removals {
-        let mut seen = std::collections::HashSet::new();
-        let mut by_kind = Vec::new();
-        for group in groups.iter().filter(|g| g.kind.removable()) {
-            if group.kind == Kind::Creation
-                && check_originals
-                && !std::path::Path::new(&group.keeper().path).exists()
-            {
-                continue;
-            }
-            for copy in group.copies() {
-                if seen.insert(copy.path.clone()) {
-                    by_kind.push((group.kind, std::path::PathBuf::from(&copy.path)));
-                }
-            }
+        Removals {
+            by_kind: videre::duplicates::removals(groups, check_originals),
         }
-        Removals { by_kind }
     }
 
     fn all(&self) -> Vec<std::path::PathBuf> {

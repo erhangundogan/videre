@@ -12,7 +12,7 @@
     "search": { "pageSize": 96 },
     "events": { "sort": { "field": "date", "dir": "desc" } },
     "people": { "align": "right", "reclusterOpen": false, "pageSize": 200 },
-    "duplicates": { "pageSize": 100 },
+    "duplicates": { "pageSize": 100, "kinds": ["exact", "resized", "creation"] },
     "map": { "radiusKm": 0, "sort": { "field": "date", "dir": "desc" } }
   }
 }

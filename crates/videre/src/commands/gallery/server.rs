@@ -982,7 +982,7 @@ mod files_sort_tests {
             crate::render::query_all_files(&conn)
         };
         let conn = state.conn.lock().unwrap();
-        crate::render::write_static_page(&conn, &out, &[], &[], Some(&rows)).unwrap();
+        crate::render::write_static_page(&conn, &out, &[], None, Some(&rows)).unwrap();
         let html = std::fs::read_to_string(&out).unwrap();
         assert!(html.contains("var ALLFILES=["), "{html}");
         assert!(html.contains("\"rating\":5"), "{html}");
@@ -2620,43 +2620,65 @@ fn initial_date_filter_json(filter: &InitialDateFilter) -> String {
     }
 }
 
-/// The duplicate and edited groups a query keeps, and what it did for the
-/// page's N of M line (`GQUERY_RESULT`), counted in groups. A refused query
-/// keeps none and says why.
-fn narrow_groups(
+/// What a query did on a page with no groups to count: `null` with none, the
+/// error when it is refused, otherwise no groups of none.
+fn query_json_for(state: &AppState, conn: &Connection, query: Option<&str>) -> String {
+    match resolve_query(state, conn, query) {
+        Ok(None) => "null".to_string(),
+        Ok(Some(_)) => "{\"matched\":0,\"library_total\":0}".to_string(),
+        Err(failure) => query_error_json(failure),
+    }
+}
+
+fn query_error_json(failure: QueryFailure) -> String {
+    let (message, at) = match failure {
+        QueryFailure::Refused(e) => (e.message, e.at),
+        QueryFailure::Internal(_) => ("the query could not be run".to_string(), None),
+    };
+    let at = at.map_or("null".to_string(), |a| a.to_string());
+    format!("{{\"error\":{},\"at\":{at}}}", json_str(&message))
+}
+
+/// The kinds the Duplicates page shows: `routes.duplicates.kinds`, read on
+/// each request so a change applies at once.
+pub(super) fn duplicate_kinds(state: &AppState) -> Vec<videre::duplicates::Kind> {
+    use videre::duplicates::Kind;
+    let effective =
+        super::settings::snapshot(&super::settings::path(&state.context.library.paths.state))
+            .effective;
+    let names: Vec<&str> = effective["routes"]["duplicates"]["kinds"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
+    videre::duplicates::parse_kinds(&names, &[Kind::Exact, Kind::Resized, Kind::Creation])
+}
+
+/// The groups of `kinds` a query keeps, judged whole (the rule `dedupe` uses),
+/// and what the query did for the page's N of M line (`GQUERY_RESULT`),
+/// counted in groups. A refused query keeps none and says why. Never decodes:
+/// resized candidates with no stored signature are counted in `unchecked`.
+pub(super) fn duplicate_groups(
     state: &AppState,
     conn: &Connection,
+    kinds: &[videre::duplicates::Kind],
     query: Option<&str>,
-    mut groups: Vec<Vec<FileRow>>,
-    mut edited_groups: Vec<Vec<FileRow>>,
-) -> (Vec<Vec<FileRow>>, Vec<Vec<FileRow>>, String) {
-    let total = groups.len() + edited_groups.len();
-    match resolve_query(state, conn, query) {
-        Ok(None) => (groups, edited_groups, "null".to_string()),
+) -> anyhow::Result<(videre::duplicates::Found, String)> {
+    let mut found = videre::duplicates::find(conn, kinds, false, true)?;
+    let total = found.groups.len();
+    let query_json = match resolve_query(state, conn, query) {
+        Ok(None) => "null".to_string(),
         Ok(Some(applied)) => {
-            let keep = |g: &Vec<FileRow>| g.iter().any(|f| applied.matches(&f.hash));
-            groups.retain(keep);
-            edited_groups.retain(keep);
-            let matched = groups.len() + edited_groups.len();
-            (
-                groups,
-                edited_groups,
-                format!("{{\"matched\":{matched},\"library_total\":{total}}}"),
-            )
+            found.groups =
+                videre::duplicates::filter_groups(found.groups, &|r| applied.matches(&r.hash));
+            let matched = found.groups.len();
+            format!("{{\"matched\":{matched},\"library_total\":{total}}}")
         }
         Err(failure) => {
-            let (message, at) = match failure {
-                QueryFailure::Refused(e) => (e.message, e.at),
-                QueryFailure::Internal(_) => ("the query could not be run".to_string(), None),
-            };
-            let at = at.map_or("null".to_string(), |a| a.to_string());
-            (
-                Vec::new(),
-                Vec::new(),
-                format!("{{\"error\":{},\"at\":{at}}}", json_str(&message)),
-            )
+            found.groups.clear();
+            query_error_json(failure)
         }
-    }
+    };
+    Ok((found, query_json))
 }
 
 fn render_live_with_date(
@@ -2675,22 +2697,31 @@ fn render_live_with_date(
     // as well, and they are inlined into the page rather than fetched, so the
     // default route grew with the number of duplicates in the library. That is
     // the same fault the file list had, on the one page everybody lands on.
-    let groups = if with_groups {
-        query_groups(&conn)
-    } else {
-        Vec::new()
-    };
-    // The duplicates page always shows Google Takeout edit pairs: it has no
-    // flags, and a library without Takeout names has none.
-    let edited_groups = if with_groups {
-        crate::render::query_edited_groups(&conn)
-    } else {
-        Vec::new()
-    };
     // A query keeps the groups with a matching member, shown whole: the point
     // of the page is choosing among a group's copies.
-    let (groups, edited_groups, query_json) =
-        narrow_groups(state, &conn, query, groups, edited_groups);
+    let (groups, dup, query_json) = if with_groups {
+        let kinds = duplicate_kinds(state);
+        match duplicate_groups(state, &conn, &kinds, query) {
+            Ok((found, query_json)) => (
+                crate::render::group_rows(&conn, &found.groups),
+                crate::render::DupPage {
+                    kinds: found.wanted,
+                    unchecked: found.unchecked,
+                },
+                query_json,
+            ),
+            Err(e) => {
+                tracing::warn!("videre gallery: finding duplicates: {e:#}");
+                (Vec::new(), Default::default(), "null".to_string())
+            }
+        }
+    } else {
+        (
+            Vec::new(),
+            Default::default(),
+            query_json_for(state, &conn, query),
+        )
+    };
     // `all_files` and `keep_files` came from different queries; the view picks
     // one. `with_groups`, `all` and `by_date` are mutually exclusive per route.
     let items = if all {
@@ -2718,7 +2749,6 @@ fn render_live_with_date(
         stats,
         items,
         groups,
-        edited_groups,
         faces_by_hash,
         // Live pages inline no rows, so the marks map is never read.
         marks_by_hash: Default::default(),
@@ -2734,6 +2764,7 @@ fn render_live_with_date(
             event_json: "null".to_string(),
             query_json,
             settings_script,
+            dup,
         },
     };
     axum::response::Html(render(&set))
@@ -3885,7 +3916,6 @@ fn render_live_events(
         stats,
         items: Vec::new(),
         groups: Vec::new(),
-        edited_groups: Vec::new(),
         faces_by_hash,
         marks_by_hash: Default::default(),
         nav: Some(Section::Events),
@@ -3900,6 +3930,7 @@ fn render_live_events(
             event_json: event_json.to_string(),
             query_json: "null".to_string(),
             settings_script,
+            dup: Default::default(),
         },
     };
     axum::response::Html(render(&set))
@@ -4860,6 +4891,10 @@ async fn serve_faces_async(
         .route("/api/files/tags", post(super::bulk::handle_tags))
         .route("/api/files/rotate", post(super::bulk::handle_rotate))
         .route("/api/files/delete", post(super::bulk::handle_delete))
+        .route(
+            "/api/duplicates/trash",
+            post(super::bulk::handle_duplicates_trash),
+        )
         .route("/api/tags", get(super::bulk::handle_list_tags))
         .route("/api/files/{hash}/raw", get(handle_raw_file))
         .route("/api/files/{hash}/rotate", post(handle_rotate_file))

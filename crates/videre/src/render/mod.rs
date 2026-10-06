@@ -29,9 +29,6 @@ pub(crate) struct FileRow {
 
 pub(crate) struct Stats {
     total_files: i64,
-    duplicate_groups: i64,
-    duplicate_files: i64,
-    wasted_bytes: i64,
 }
 
 pub(crate) enum FileDateFilter {
@@ -241,7 +238,7 @@ const FILE_BASENAME: &str = "CASE WHEN instr(f.path, '/') = 0 THEN f.path ELSE \
 /// page of 200 would yield fewer than 200 rows, raggedly, and `total` would
 /// disagree with what the pages actually contain.
 ///
-/// Not filtering also matches `query_groups`, which never filtered, and matches
+/// Not filtering also matches the duplicate groups, which never filtered, and matches
 /// what the docs now say: the database is the source of truth until
 /// `videre prune` removes a row. The consequence to handle when this is wired
 /// up is that an unplugged drive shows files rather than an empty grid, which
@@ -895,20 +892,14 @@ pub(crate) fn file_to_json_with_faces(
 
 fn group_to_json(
     group: &[FileRow],
-    edited: bool,
+    kind: videre::duplicates::Kind,
     heic: bool,
     heic_original: bool,
     faces_by_hash: &videre_core::face_db::LabeledFacesByHash,
     live: bool,
 ) -> String {
     let hash_prefix = &group[0].hash[..group[0].hash.len().min(8)];
-    // An edited pair frees the edit's own size; an exact group frees the
-    // kept size once per extra copy.
-    let waste = if edited {
-        group[1..].iter().map(|f| f.size_bytes).sum()
-    } else {
-        group[0].size_bytes * (group.len() as i64 - 1)
-    };
+    let waste = group_waste(kind, group);
     let keep_date = best_date(&group[0]);
     let date_json = if keep_date.is_empty() {
         "null".to_string()
@@ -931,70 +922,68 @@ fn group_to_json(
         })
         .collect();
     format!(
-        "{{\"hash\":{hash},\"edited\":{edited},\"waste\":{waste},\"date\":{date},\"files\":[{files}]}}",
+        "{{\"hash\":{hash},\"kind\":{kind},\"waste\":{waste},\"date\":{date},\"files\":[{files}]}}",
         hash = json_str(hash_prefix),
-        edited = edited,
+        kind = json_str(kind.name()),
         waste = waste,
         date = date_json,
         files = files_json.join(","),
     )
 }
 
+/// The space removing a group's copies frees: an exact group frees the kept
+/// size once per extra copy, a resized or creation group its copies' own
+/// sizes, and a review-only group nothing.
+fn group_waste(kind: videre::duplicates::Kind, group: &[FileRow]) -> i64 {
+    use videre::duplicates::Kind;
+    match kind {
+        Kind::Exact => group[0].size_bytes * (group.len() as i64 - 1),
+        Kind::Resized | Kind::Creation => group[1..].iter().map(|f| f.size_bytes).sum(),
+        Kind::Similar => 0,
+    }
+}
+
+/// One header line on a duplicates page: a kind, its groups, and what its
+/// copies take.
+pub(crate) struct KindLine {
+    label: &'static str,
+    groups: usize,
+    size: String,
+}
+
+fn kind_lines(groups: &[KindGroup]) -> Vec<KindLine> {
+    use videre::duplicates::Kind;
+    [
+        (Kind::Exact, "Exact copies"),
+        (Kind::Resized, "Resized copies"),
+        (Kind::Creation, "Google Photos creations"),
+        (Kind::Similar, "Similar (review only)"),
+    ]
+    .into_iter()
+    .filter_map(|(kind, label)| {
+        let of_kind: Vec<&KindGroup> = groups.iter().filter(|(k, _)| *k == kind).collect();
+        (!of_kind.is_empty()).then(|| KindLine {
+            label,
+            groups: of_kind.len(),
+            size: videre_core::disk::human_bytes(
+                of_kind
+                    .iter()
+                    .map(|(k, rows)| group_waste(*k, rows).max(0) as u64)
+                    .sum(),
+            ),
+        })
+    })
+    .collect()
+}
+
+/// A duplicate group on a page: its kind and its rows, keeper first.
+pub(crate) type KindGroup = (videre::duplicates::Kind, Vec<FileRow>);
+
 pub(crate) fn query_stats(conn: &Connection) -> Stats {
     let s = videre_core::library_stats::compute(conn).unwrap_or_default();
     Stats {
         total_files: s.total_files,
-        duplicate_groups: s.duplicate_group_count,
-        duplicate_files: s.duplicate_file_count,
-        wasted_bytes: s.wasted_bytes,
     }
-}
-
-/// Google Takeout edits beside their originals, each as `[original, edit]`:
-/// the original is kept. See `videre::takeout_names`.
-pub(crate) fn query_edited_groups(conn: &Connection) -> Vec<Vec<FileRow>> {
-    let Ok(mut stmt) = conn.prepare("SELECT path, hash FROM file_hashes") else {
-        return Vec::new();
-    };
-    let rows: Vec<(String, String)> = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-        .map(|rows| rows.filter_map(|r| r.ok()).collect())
-        .unwrap_or_default();
-    let refs: Vec<(&str, &str)> = rows.iter().map(|(p, h)| (p.as_str(), h.as_str())).collect();
-    let pairs = videre::takeout_names::edited_pairs(&refs);
-    if pairs.is_empty() {
-        return Vec::new();
-    }
-    let Ok(mut stmt) = conn.prepare(
-        "SELECT path, hash, size_bytes, COALESCE(ext,''), created_at, modified_at, exif_date, \
-                gps_lat, gps_lon, width, height, capture_date \
-         FROM file_hashes WHERE path = ?1",
-    ) else {
-        return Vec::new();
-    };
-    let mut row = |path: &str| -> Option<FileRow> {
-        stmt.query_row([path], |r| {
-            Ok(FileRow {
-                path: r.get(0)?,
-                hash: r.get(1)?,
-                size_bytes: r.get(2)?,
-                ext: r.get(3)?,
-                created_at: r.get(4)?,
-                modified_at: r.get(5)?,
-                exif_date: r.get(6)?,
-                gps_lat: r.get(7)?,
-                gps_lon: r.get(8)?,
-                width: r.get(9)?,
-                height: r.get(10)?,
-                capture_date: r.get("capture_date")?,
-            })
-        })
-        .ok()
-    };
-    pairs
-        .iter()
-        .filter_map(|pair| Some(vec![row(pair.original)?, row(pair.edit)?]))
-        .collect()
 }
 
 /// Each group's files as page rows, keeper first, read by path so they carry
@@ -1040,69 +1029,18 @@ pub(crate) fn group_rows(
         .collect()
 }
 
-/// `videre dedupe review`: `groups` as a static page.
+/// `videre dedupe review`: `found`'s groups as a static page.
 pub(crate) fn write_review_page(
     conn: &Connection,
     output: &Path,
-    groups: &[videre::duplicates::Group],
+    found: &videre::duplicates::Found,
 ) -> anyhow::Result<()> {
-    let (creations, others): (Vec<_>, Vec<_>) = group_rows(conn, groups)
-        .into_iter()
-        .partition(|(kind, _)| *kind == videre::duplicates::Kind::Creation);
-    let others: Vec<Vec<FileRow>> = others.into_iter().map(|(_, rows)| rows).collect();
-    let creations: Vec<Vec<FileRow>> = creations.into_iter().map(|(_, rows)| rows).collect();
-    write_static_page(conn, output, &others, &creations, None)
-}
-
-pub(crate) fn query_groups(conn: &Connection) -> Vec<Vec<FileRow>> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT path, hash, size_bytes, COALESCE(ext,''), created_at, modified_at, exif_date, \
-                    gps_lat, gps_lon, width, height, capture_date \
-             FROM file_hashes \
-             WHERE hash IN \
-               (SELECT hash FROM file_hashes GROUP BY hash HAVING COUNT(*) > 1) \
-             ORDER BY hash",
-        )
-        .expect("failed to prepare query");
-
-    let rows: Vec<FileRow> = stmt
-        .query_map([], |r| {
-            Ok(FileRow {
-                path: r.get(0)?,
-                hash: r.get(1)?,
-                size_bytes: r.get(2)?,
-                ext: r.get(3)?,
-                created_at: r.get(4)?,
-                modified_at: r.get(5)?,
-                exif_date: r.get(6)?,
-                gps_lat: r.get(7)?,
-                gps_lon: r.get(8)?,
-                width: r.get(9)?,
-                height: r.get(10)?,
-                capture_date: r.get("capture_date")?,
-            })
-        })
-        .expect("failed to execute query")
-        .filter_map(|r| r.ok())
-        .collect();
-
-    let mut map: HashMap<String, Vec<FileRow>> = HashMap::new();
-    for row in rows {
-        map.entry(row.hash.clone()).or_default().push(row);
-    }
-
-    let mut groups: Vec<Vec<FileRow>> = map.into_values().collect();
-
-    for group in &mut groups {
-        group.sort_by(|a, b| best_date(a).cmp(best_date(b)));
-    }
-    groups.sort_by(|a, b| {
-        let wa = a[0].size_bytes * (a.len() as i64 - 1);
-        let wb = b[0].size_bytes * (b.len() as i64 - 1);
-        wb.cmp(&wa)
-    });
-    groups
+    let groups = group_rows(conn, &found.groups);
+    let dup = DupPage {
+        kinds: found.wanted.clone(),
+        unchecked: found.unchecked,
+    };
+    write_static_page(conn, output, &groups, Some(dup), None)
 }
 
 pub(crate) fn query_all_files(conn: &Connection) -> Vec<FileRow> {
@@ -1137,7 +1075,7 @@ pub(crate) fn query_all_files(conn: &Connection) -> Vec<FileRow> {
 
 /// Per-hash KEEP-only file set: like query_all_files(), but for hashes with
 /// more than one surviving path, only the earliest-by-best_date() row is
-/// kept (mirrors query_groups()'s sort-then-take-first rule). Hashes with a
+/// kept (the exact duplicates' oldest-first keeper rule). Hashes with a
 /// single surviving path are trivially KEEP. Used by --by-date so REMOVE-side
 /// duplicates never appear in the date-grouped gallery.
 pub(crate) fn query_keep_files(conn: &Connection) -> Vec<FileRow> {
@@ -1265,16 +1203,12 @@ struct GalleryPage<'a> {
     total_files: i64,
     embedded: Option<usize>,
     has_groups: bool,
-    duplicate_groups: i64,
-    /// Every file in a duplicate group, and the space taken by the copies
-    /// beyond the one kept, for the duplicates header.
-    duplicate_files: i64,
-    wasted: String,
-    /// Google Takeout edit pairs on the page and the size of their edits, the
-    /// files `dedupe --kind creation` removes. Counted apart from the exact copies
-    /// above, since an edit is not a byte-for-byte duplicate.
-    edited_pairs: usize,
-    edits_size: String,
+    /// The groups on a duplicates page, and a header line per kind with the
+    /// space its copies take.
+    group_count: usize,
+    kind_lines: Vec<KindLine>,
+    /// Resized candidates the page could not check (no stored signature).
+    unchecked: usize,
     all_files_count: Option<usize>,
     has_keep_files: bool,
     /// The current section, or `None` on a page with nowhere to navigate to.
@@ -1323,8 +1257,8 @@ pub(crate) fn rows_for_paths(conn: &Connection, paths: &[String]) -> Vec<FileRow
 pub(crate) fn write_static_page(
     conn: &Connection,
     output: &Path,
-    groups: &[Vec<FileRow>],
-    edited_groups: &[Vec<FileRow>],
+    groups: &[KindGroup],
+    dup: Option<DupPage>,
     flat: Option<&[FileRow]>,
 ) -> anyhow::Result<()> {
     let stats = query_stats(conn);
@@ -1353,7 +1287,6 @@ pub(crate) fn write_static_page(
         stats,
         items,
         groups,
-        edited_groups: edited_groups.to_vec(),
         faces_by_hash,
         marks_by_hash,
         nav: None,
@@ -1368,6 +1301,7 @@ pub(crate) fn write_static_page(
             event_json: "null".to_string(),
             query_json: "null".to_string(),
             settings_script,
+            dup: dup.unwrap_or_default(),
         },
     };
     let html = render(&set);
@@ -1403,6 +1337,17 @@ pub(crate) struct RenderOptions {
     /// Gallery settings for `templates/nav.html`. See
     /// `commands::gallery::settings::page_script`.
     pub settings_script: String,
+    /// On a duplicates page, the kinds it shows and what it could not check.
+    pub dup: DupPage,
+}
+
+/// What a duplicates page shows beyond its groups.
+#[derive(Default, Clone)]
+pub(crate) struct DupPage {
+    /// The kinds asked for (`routes.duplicates.kinds`, or `review --kind`).
+    pub kinds: Vec<videre::duplicates::Kind>,
+    /// Resized candidates with no stored signature: a page never decodes.
+    pub unchecked: usize,
 }
 
 /// One set of files plus everything known about them, ready to render as a
@@ -1412,10 +1357,7 @@ pub(crate) struct RenderOptions {
 pub(crate) struct RenderSet {
     pub stats: Stats,
     pub items: Vec<FileRow>,
-    pub groups: Vec<Vec<FileRow>>,
-    /// Google Takeout edited pairs, `[original, edit]`, shown after `groups`
-    /// on the duplicates page.
-    pub edited_groups: Vec<Vec<FileRow>>,
+    pub groups: Vec<KindGroup>,
     pub faces_by_hash: videre_core::face_db::LabeledFacesByHash,
     /// Marks for the rows a static page inlines, so offline sorting by rating
     /// and liked reads the same fields the live API splices in. Live pages
@@ -1434,7 +1376,7 @@ pub(crate) fn render(set: &RenderSet) -> String {
     // are per-view exclusive; preserve that exactly.
     let db_path: &str = &set.options.db_path;
     let stats = &set.stats;
-    let groups: &[Vec<FileRow>] = &set.groups;
+    let groups: &[KindGroup] = &set.groups;
     let (all_files, keep_files): (Option<&[FileRow]>, Option<&[FileRow]>) = match set.view {
         View::All => (Some(&set.items), None),
         View::Date => (None, Some(&set.items)),
@@ -1466,11 +1408,10 @@ pub(crate) fn render(set: &RenderSet) -> String {
     // works when the active model has embeddings for this library. Tell the
     // client, so it can hide a Similar button that would otherwise fail.
     let has_embeddings = embedded.is_some_and(|n| n > 0);
-    let edited_groups: &[Vec<FileRow>] = &set.edited_groups;
     let data = build_data_block(
         nav,
         groups,
-        edited_groups,
+        &set.options.dup,
         all_files,
         keep_files,
         heic,
@@ -1500,20 +1441,10 @@ pub(crate) fn render(set: &RenderSet) -> String {
         embedded,
         // With a query, an empty page is the query's answer, not the
         // library's: the groups area stays, and the script says so.
-        has_groups: !groups.is_empty()
-            || !edited_groups.is_empty()
-            || (groups_view && set.options.query_json != "null"),
-        duplicate_groups: stats.duplicate_groups,
-        duplicate_files: stats.duplicate_files,
-        wasted: videre_core::disk::human_bytes(stats.wasted_bytes.max(0) as u64),
-        edited_pairs: edited_groups.len(),
-        edits_size: videre_core::disk::human_bytes(
-            edited_groups
-                .iter()
-                .filter_map(|pair| pair.last())
-                .map(|edit| edit.size_bytes.max(0) as u64)
-                .sum(),
-        ),
+        has_groups: !groups.is_empty() || (groups_view && set.options.query_json != "null"),
+        group_count: groups.len(),
+        kind_lines: kind_lines(groups),
+        unchecked: set.options.dup.unchecked,
         all_files_count: all_files.map(|f| f.len()),
         has_keep_files: keep_files.is_some() || set.view == View::Events,
         nav,
@@ -1521,10 +1452,7 @@ pub(crate) fn render(set: &RenderSet) -> String {
         // secondary sections drop it. See `GalleryPage::show_header`.
         show_header: nav.is_none() || nav == Some(Section::All),
         settings_script: &set.options.settings_script,
-        no_duplicates: groups_view
-            && groups.is_empty()
-            && edited_groups.is_empty()
-            && set.options.query_json == "null",
+        no_duplicates: groups_view && groups.is_empty() && set.options.query_json == "null",
         event_sort,
     };
     page.render().expect("gallery template")
@@ -1535,8 +1463,8 @@ pub(crate) fn render(set: &RenderSet) -> String {
 #[allow(clippy::too_many_arguments)]
 fn build_data_block(
     nav: Option<Section>,
-    groups: &[Vec<FileRow>],
-    edited_groups: &[Vec<FileRow>],
+    groups: &[KindGroup],
+    dup: &DupPage,
     all_files: Option<&[FileRow]>,
     keep_files: Option<&[FileRow]>,
     heic: bool,
@@ -1574,19 +1502,19 @@ fn build_data_block(
         event_json,
         query_json,
     ));
-    out.push_str("<script>\nvar GROUPS=[\n");
-    let tagged = groups
-        .iter()
-        .map(|g| (g, false))
-        .chain(edited_groups.iter().map(|g| (g, true)));
-    for (i, (group, edited)) in tagged.enumerate() {
+    let kinds: Vec<String> = dup.kinds.iter().map(|k| json_str(k.name())).collect();
+    out.push_str(&format!(
+        "<script>\nvar DUP_KINDS=[{}];\nvar GROUPS=[\n",
+        kinds.join(",")
+    ));
+    for (i, (kind, group)) in groups.iter().enumerate() {
         if i > 0 {
             out.push(',');
         }
         out.push('\n');
         out.push_str(&group_to_json(
             group,
-            edited,
+            *kind,
             heic,
             heic_original,
             faces_by_hash,

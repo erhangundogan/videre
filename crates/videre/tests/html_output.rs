@@ -78,7 +78,7 @@ fn dedupe_review_shows_creations_only_with_their_kind() {
     lib.scan();
     let html = run_dedupe_html(&lib);
     assert!(
-        !html.contains("\"edited\":true"),
+        !html.contains("\"kind\":\"creation\""),
         "no creations without --kind creation"
     );
 
@@ -91,15 +91,16 @@ fn dedupe_review_shows_creations_only_with_their_kind() {
         .unwrap();
     assert!(status.success());
     let html = std::fs::read_to_string(&out).unwrap();
-    assert!(html.contains("\"edited\":true"), "the pair is shown");
+    assert!(html.contains("\"kind\":\"creation\""), "the pair is shown");
+    assert!(html.contains("var DUP_KINDS=[\"exact\",\"creation\"];"));
     assert!(html.contains("IMG_1-edited.jpg"));
-    // The header counts the pairs it shows, not only exact copies: a Takeout
-    // library whose groups are all edits read "Duplicate groups: 0".
+    // The header counts each kind it shows: a Takeout library whose groups
+    // are all creations once read "Duplicate groups: 0".
     let edit_size = std::fs::metadata(lib.context().paths.root.join("Photos/IMG_1-edited.jpg"))
         .unwrap()
         .len();
     let expected = format!(
-        "Google Photos edits:</span> 1 ({})",
+        "Google Photos creations:</span> 1 ({})",
         videre_core::disk::human_bytes(edit_size)
     );
     assert!(html.contains(&expected), "{expected} in the header");
@@ -160,8 +161,8 @@ fn dedupe_review_contains_the_duplicate_group() {
 
 // :warning: The two renderers disagree about files deleted after the scan, and
 // this pins the disagreement rather than hiding it. `query_all_files`, which fed
-// the old `report --all` gallery, filtered on `Path::exists()`. `query_groups`,
-// which fed `dedupe review`, did not, so a row whose file is gone still
+// the old `report --all` gallery, filtered on `Path::exists()`. The duplicate groups,
+// which feed `dedupe review`, do not, so a row whose file is gone still
 // appears until `videre prune` removes it.
 #[test]
 fn dedupe_review_still_lists_a_file_deleted_after_the_scan() {
