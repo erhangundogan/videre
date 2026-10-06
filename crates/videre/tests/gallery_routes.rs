@@ -2159,6 +2159,52 @@ fn a_heic_rotates_by_irot_and_its_faces_turn_with_it() {
     assert_eq!(keys, 1);
 }
 
+/// A rotation keeps the content key but changes the pixels, so the stored
+/// fingerprint and pixel signature describe a picture that no longer exists:
+/// both go, and the next `embed` fingerprints the upright pixels again.
+#[test]
+fn a_rotation_forgets_the_fingerprint_and_the_pixel_signature() {
+    let lib = TestLibrary::new();
+    lib.copy_fixture("ai-generated-couple.jpg", "çiçek.jpg");
+    lib.scan();
+    let conn = lib.conn();
+    let hash: String = conn
+        .query_row("SELECT hash FROM file_hashes", [], |r| r.get(0))
+        .unwrap();
+    conn.execute("UPDATE file_hashes SET phash = 42 WHERE hash = ?1", [&hash])
+        .unwrap();
+    videre_core::pixel_signatures::put(
+        &conn,
+        &hash,
+        &videre_core::image_decode::PixelSignature {
+            luma: vec![0; 16],
+            aspect: 1.0,
+        },
+    )
+    .unwrap();
+    drop(conn);
+    let server = Server::start(&lib);
+
+    let (status, body) = server.send("POST", &format!("/api/files/{hash}/rotate"), "");
+    assert_eq!(status, 200, "{body}");
+    drop(server);
+
+    let conn = lib.conn();
+    let phash: Option<i64> = conn
+        .query_row(
+            "SELECT phash FROM file_hashes WHERE hash = ?1",
+            [&hash],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(phash, None);
+    assert!(
+        videre_core::pixel_signatures::get_many(&conn, std::slice::from_ref(&hash))
+            .unwrap()
+            .is_empty()
+    );
+}
+
 /// A rotated HEIC must never be served from a conversion cached before the
 /// turn: its content key is unchanged, so every `<hash>_` file would still
 /// match. The user never clears a cache by hand.

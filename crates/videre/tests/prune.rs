@@ -113,6 +113,32 @@ fn seed_face(lib: &TestLibrary, hash: &str) -> i64 {
     conn.last_insert_rowid()
 }
 
+/// A pixel signature describes a hash's pixels; once no path has that hash,
+/// prune drops it like the hash's embeddings. Dry run only counts.
+#[test]
+fn prune_drops_pixel_signatures_of_vanished_files() {
+    let (lib, _a, _b, _phantom) = fixture_library();
+    let sig = videre_core::image_decode::PixelSignature {
+        luma: vec![0; 16],
+        aspect: 1.0,
+    };
+    for hash in ["haaa", "hphantom"] {
+        videre_core::pixel_signatures::put(&lib.conn(), hash, &sig).unwrap();
+    }
+    let stored = |h: &str| {
+        !videre_core::pixel_signatures::get_many(&lib.conn(), &[h.to_string()])
+            .unwrap()
+            .is_empty()
+    };
+
+    run_prune(&lib, true);
+    assert!(stored("hphantom"), "dry run keeps it");
+
+    run_prune(&lib, false);
+    assert!(!stored("hphantom"));
+    assert!(stored("haaa"));
+}
+
 #[test]
 fn prune_removes_orphan_faces_and_keeps_person_name() {
     let (lib, _, _, phantom) = fixture_library();

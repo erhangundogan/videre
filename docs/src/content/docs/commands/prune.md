@@ -48,7 +48,8 @@ videre prune --dry-run
    faces becomes ineligible, pending questions are withdrawn, and an active
    learned profile is retired if an eligible event lost its source
 4. Deletes embeddings whose photo is gone, across **every**
-   [model](/reference/models/)
+   [model](/reference/models/), and the photo's marks and the pixel
+   signature [dedupe](/commands/dedupe/) keeps to confirm resized copies
 5. Deletes [cached thumbnails](/guides/caches/#thumbnail-cache) whose photo is
    gone
 6. Removes any [model database](/reference/models/) the sweep has left with no

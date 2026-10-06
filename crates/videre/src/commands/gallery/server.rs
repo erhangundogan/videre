@@ -3325,7 +3325,9 @@ pub(super) fn rotate_one(state: &AppState, hash: &str, ccw: bool) -> anyhow::Res
 /// notice on its own: cached renderings would keep serving the old
 /// orientation, and `embed` and `classify` would skip a hash they already
 /// hold. Removing them here leaves the library consistent whether or not
-/// watch runs; the next `embed` (or watch's) redoes just this photo.
+/// watch runs; the next `embed` (or watch's) redoes just this photo, its
+/// fingerprint included, and dedupe takes a new pixel signature when the
+/// photo is next a resized-copy candidate.
 fn forget_old_pixels(state: &AppState, hash: &str) -> anyhow::Result<()> {
     invalidate_thumb_cache(&state.context.library.cache, hash);
     {
@@ -3335,6 +3337,13 @@ fn forget_old_pixels(state: &AppState, hash: &str) -> anyhow::Result<()> {
             .map_err(|_| anyhow::anyhow!("the database connection lock is poisoned"))?;
         videre_core::classify::forget(&conn, hash)
             .with_context(|| format!("drop the category of {hash}"))?;
+        conn.execute(
+            "UPDATE file_hashes SET phash = NULL WHERE hash = ?1",
+            [hash],
+        )
+        .with_context(|| format!("drop the fingerprint of {hash}"))?;
+        videre_core::pixel_signatures::forget(&conn, hash)
+            .with_context(|| format!("drop the pixel signature of {hash}"))?;
     }
     videre_core::embeddings_db::forget_in(&state.context.library, hash)
         .with_context(|| format!("drop the embeddings of {hash}"))

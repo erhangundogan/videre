@@ -38,6 +38,7 @@ pub mod mime_probe;
 pub mod person;
 pub mod person_search;
 pub mod pipeline_runs;
+pub mod pixel_signatures;
 pub mod progress;
 pub mod query;
 pub mod recompute_cost;

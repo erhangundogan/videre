@@ -538,6 +538,18 @@ pub(crate) fn run_prune(
         tracing::info!("{tag} {marks_orphans} orphan mark(s)");
     }
 
+    // Pixel signatures (dedupe's resized-copy check) follow the same rule.
+    let signature_orphans =
+        videre_core::pixel_signatures::prune_orphans(conn, args.dry_run).unwrap_or(0);
+    if !args.silent && signature_orphans > 0 {
+        let tag = if args.dry_run {
+            "[dry-run] would remove"
+        } else {
+            "removed"
+        };
+        tracing::info!("{tag} {signature_orphans} orphan pixel signature(s)");
+    }
+
     // Remove orphan thumbnail-cache files: any videre_core::thumb_cache entry
     // (240/1200px thumbnail, face crop, or full-res original) whose content
     // hash has no remaining file_hashes row. Same "shared-hash safety" as the
