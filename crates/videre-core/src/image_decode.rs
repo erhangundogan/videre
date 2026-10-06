@@ -102,34 +102,46 @@ pub fn dhash(image: &image::DynamicImage) -> u64 {
 }
 
 /// What confirms that two images with near fingerprints are one picture: the
-/// upright canvas reduced to 16x16 greyscale, and its width over height. A
-/// resize or recompression barely moves the thumbnail; a different shot of a
-/// burst, which a fingerprint can place a few bits away, differs where the
-/// subject moved. Taken from the image `dhash` reads, already upright.
+/// upright canvas reduced to 64x64 greyscale, and its width over height. A
+/// resize or recompression barely moves it; a different shot, which a
+/// fingerprint can place a few bits away, differs where the subject moved.
+/// Taken from the image `dhash` reads, already upright.
+///
+/// Why 64 and not 16: measured 2026-10-06 on a 14,000-image Takeout library,
+/// 16x16 could not tell a still burst from a copy (two separate shots at MAD
+/// 1.0). At 64x64 the owner's 41 confirmed copies at different sizes were all
+/// at MAD 0.56 or less and every other different-size pair at 0.59 or more.
 pub struct PixelSignature {
-    pub luma: [u8; 256],
+    /// `SIGNATURE_SIDE * SIGNATURE_SIDE` greyscale values, row by row.
+    pub luma: Vec<u8>,
     pub aspect: f32,
 }
 
+/// The side of a signature's greyscale square.
+pub const SIGNATURE_SIDE: usize = 64;
+
 pub fn pixel_signature(image: &image::DynamicImage) -> PixelSignature {
+    let side = SIGNATURE_SIDE as u32;
     let small = image::imageops::resize(
         &image.to_luma8(),
-        16,
-        16,
+        side,
+        side,
         image::imageops::FilterType::Lanczos3,
     );
-    let mut luma = [0u8; 256];
-    luma.copy_from_slice(small.as_raw());
     PixelSignature {
-        luma,
+        luma: small.into_raw(),
         aspect: image.width() as f32 / image.height().max(1) as f32,
     }
 }
 
 /// Mean absolute difference of two signatures' greyscale values, 0 to 255.
-pub fn signature_mad(a: &[u8; 256], b: &[u8; 256]) -> f32 {
-    let sum: u32 = a.iter().zip(b).map(|(x, y)| x.abs_diff(*y) as u32).sum();
-    sum as f32 / 256.0
+/// Signatures of different lengths (another side) are never close.
+pub fn signature_mad(a: &[u8], b: &[u8]) -> f32 {
+    if a.len() != b.len() || a.is_empty() {
+        return f32::INFINITY;
+    }
+    let sum: u64 = a.iter().zip(b).map(|(x, y)| x.abs_diff(*y) as u64).sum();
+    sum as f32 / a.len() as f32
 }
 
 fn apply(
@@ -238,8 +250,8 @@ mod tests {
         let (w, h) = (original.width(), original.height());
         let half = pixel_signature(&reencoded(&original, w / 2, h / 2, 90));
         let rough = pixel_signature(&reencoded(&original, w, h, 60));
-        assert!(signature_mad(&sig.luma, &half.luma) < 2.0, "resize");
-        assert!(signature_mad(&sig.luma, &rough.luma) < 3.0, "recompress");
+        assert!(signature_mad(&sig.luma, &half.luma) < 0.5, "resize");
+        assert!(signature_mad(&sig.luma, &rough.luma) < 1.0, "recompress");
         assert!((sig.aspect - half.aspect).abs() < 0.01);
     }
 
@@ -248,6 +260,21 @@ mod tests {
         let a = pixel_signature(&fixture("ai-generated-couple.jpg"));
         let b = pixel_signature(&fixture("sample_with_exif.jpg"));
         assert!(signature_mad(&a.luma, &b.luma) > 20.0);
+    }
+
+    #[test]
+    fn a_signature_is_64_by_64() {
+        let img = image::DynamicImage::new_rgb8(1600, 1200);
+        assert_eq!(
+            pixel_signature(&img).luma.len(),
+            SIGNATURE_SIDE * SIGNATURE_SIDE
+        );
+        assert_eq!(SIGNATURE_SIDE, 64);
+    }
+
+    #[test]
+    fn signatures_of_different_sizes_never_compare_as_close() {
+        assert_eq!(signature_mad(&[0; 4], &[0; 8]), f32::INFINITY);
     }
 
     #[test]
