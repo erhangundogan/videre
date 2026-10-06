@@ -15,6 +15,9 @@
 .settings-actions button:hover,.settings-import-label:hover{background:#f4f4f5}
 .settings-import-label input{position:absolute;width:1px;height:1px;opacity:0}
 .settings-import-label:focus-within{outline:2px solid #3b82f6;outline-offset:1px}
+.settings-sizes{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px 16px;max-width:760px}
+.settings-sizes label{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.settings-sizes input{width:80px;padding:4px 6px;border:1px solid #d4d4d8;border-radius:6px;font:inherit}
 #settings-status{min-height:1.5em;color:#52525b}
 </style>
 </head>
@@ -23,6 +26,15 @@
 <main class="settings-page">
 <h1>Settings</h1>
 <p>Gallery settings for this library are stored in <code id="settings-path">{{ path }}</code>. Only values that differ from the defaults are saved, and the file can be edited by hand; a change applies on the next page load.</p>
+<h2>Page sizes</h2>
+<p>How many items each view loads at a time; scrolling or Show more loads the next page.</p>
+<div class="settings-sizes">
+<label>Library and Map <input type="number" step="1" data-setting="routes.files.pageSize" min="1" max="500"></label>
+<label>Date <input type="number" step="1" data-setting="routes.date.pageSize" min="1" max="500"></label>
+<label>Search <input type="number" step="1" data-setting="routes.search.pageSize" min="1" max="200"></label>
+<label>People <input type="number" step="1" data-setting="routes.people.pageSize" min="1" max="1000"></label>
+<label>Duplicates <input type="number" step="1" data-setting="routes.duplicates.pageSize" min="1" max="1000"></label>
+</div>
 <h2>Import and export</h2>
 <p>Export saves this library's choices to a file. Import applies a file exported from any library; it does not change which page this library reopens at.</p>
 <div class="settings-actions">

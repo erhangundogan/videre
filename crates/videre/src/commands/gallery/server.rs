@@ -5595,6 +5595,16 @@ mod settings_api_tests {
         }
         assert!(html.contains(".videre/gallery.json"), "shows the file path");
         assert!(html.contains("id=\"secnav-more\""), "carries the nav menu");
+        for (key, max) in [
+            ("routes.files.pageSize", 500),
+            ("routes.date.pageSize", 500),
+            ("routes.search.pageSize", 200),
+            ("routes.people.pageSize", 1000),
+            ("routes.duplicates.pageSize", 1000),
+        ] {
+            let input = format!("data-setting=\"{key}\" min=\"1\" max=\"{max}\"");
+            assert!(html.contains(&input), "{input}");
+        }
     }
 
     #[tokio::test]
