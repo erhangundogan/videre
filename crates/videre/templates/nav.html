@@ -167,18 +167,21 @@
 // another when a library is empty. `body` is the box's inner HTML after the
 // heading. Calling it again replaces the message.
 // The heights of the sticky chrome, for what sticks below it: --secnav-h, the
-// nav's, and --chrome-h, the nav's plus the page's sticky toolbar. Measured, not
-// written as constants: the toolbar wraps on a narrow window and grows with the
-// query's chips.
+// nav's; --toolbar-bottom, the nav's plus the page's sticky toolbar, where the
+// query's "N of M" line sticks; and --chrome-h, all three, for the People list.
+// Measured, not written as constants: the toolbar wraps on a narrow window and
+// grows with the query's chips, and the line appears only once a query runs.
 (function(){
   var nav=document.querySelector('nav.secnav');
+  function visibleHeight(el){ return el&&el.offsetParent!==null?el.offsetHeight:0; }
   function measure(){
     var root=document.documentElement.style;
     var navH=nav?nav.offsetHeight:0;
-    var bar=document.querySelector('.gallery-toolbar:not(.recluster-row)');
-    var barH=bar&&bar.offsetParent!==null?bar.offsetHeight:0;
+    var barH=visibleHeight(document.querySelector('.gallery-toolbar:not(.recluster-row)'));
+    var statusH=visibleHeight(document.getElementById('query-status'));
     root.setProperty('--secnav-h',navH+'px');
-    root.setProperty('--chrome-h',(navH+barH)+'px');
+    root.setProperty('--toolbar-bottom',(navH+barH)+'px');
+    root.setProperty('--chrome-h',(navH+barH+statusH)+'px');
   }
   function watch(){
     measure();
@@ -187,6 +190,14 @@
     if(nav)ro.observe(nav);
     var bar=document.querySelector('.gallery-toolbar:not(.recluster-row)');
     if(bar)ro.observe(bar);
+    // The status line is added by the page's script once its query has run.
+    var status=document.getElementById('query-status');
+    if(status){ ro.observe(status); return; }
+    var mo=new MutationObserver(function(){
+      var s=document.getElementById('query-status');
+      if(s){ mo.disconnect(); ro.observe(s); measure(); }
+    });
+    mo.observe(document.body,{childList:true,subtree:true});
   }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',watch);
   else watch();

@@ -84,3 +84,16 @@ test("the Filter panel and suggestions stay inside the window", async ({ page, g
   await expect(page.locator("#qbox-suggest")).toBeVisible();
   await inside("#qbox-suggest");
 });
+
+test("the query's N of M line sticks under the toolbar", async ({ page, gallery }) => {
+  await page.goto(`${gallery.baseURL}/?q=${encodeURIComponent("type:image")}`);
+  const status = page.locator("#query-status");
+  await expect(status).toContainText("of");
+  await page.evaluate(() => {
+    document.body.style.minHeight = "5000px";
+    window.scrollTo(0, 2000);
+  });
+  const bar = await page.locator(".gallery-toolbar[data-files]").first().boundingBox();
+  const line = await status.boundingBox();
+  expect(Math.abs(line!.y - (bar!.y + bar!.height))).toBeLessThanOrEqual(1);
+});

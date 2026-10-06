@@ -121,6 +121,9 @@ body.select-mode .card[data-hash].selected::after,body.select-mode .tile[data-ha
 #file-sel-bar .sel-dot{width:22px;height:22px;border-radius:50%;padding:0;border:2px solid #fff;box-shadow:0 0 0 1px #d1d5db}
 #file-sel-bar .sel-pop .sel-tag{width:160px}
 /* The query's "N of M" line, or why it could not run, above what a page lists. */
-.query-status{margin:8px 16px 0;font-size:13px;color:#52525b}
+.query-status{margin:0;padding:8px 16px 6px;font-size:13px;color:#52525b}
+/* Sticks under the toolbar with the query it reports, opaque over the grid
+   that scrolls beneath it. */
+.query-status{position:sticky;top:var(--toolbar-bottom,0px);z-index:44;background:#f4f4f5}
 .query-status code{background:#f4f4f5;border-radius:4px;padding:1px 5px;font-size:12px}
 .query-status.query-error{color:#b91c1c}
