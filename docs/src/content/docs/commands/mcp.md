@@ -24,8 +24,11 @@ what [`videre search`](/commands/search/) returns and `find_duplicates` what
 shell commands, such as Claude Code, can use the CLI directly, and that works
 well. MCP is for the other cases:
 
-- **Assistants with no shell.** Claude Desktop, Cursor's chat and most chat
-  apps cannot run `videre`. MCP is the only way they can reach your library.
+- **Assistants with no shell on your machine.** Chat apps such as Claude
+  Desktop's chat, or a local-model app like LM Studio, cannot run `videre`;
+  what code they run, if any, runs elsewhere. MCP is the only way they can
+  reach your library. (Coding agents such as Cursor's agent or Copilot's agent
+  mode can run commands, so the next two points are what MCP adds for them.)
 - **Read-only by construction.** The server offers three tools that read, and
   nothing that trashes, deletes, rotates or tags. You can let an assistant
   search without approving each command, and it cannot remove a photo by
