@@ -34,6 +34,51 @@ pub fn original_name(file_name: &str) -> Option<String> {
     })
 }
 
+/// Every name the original of a creation may have, most likely first:
+/// [`original_name`], then the same without the creation's counter (a second
+/// effect of one photo is `a-EFFECTS(1).jpg` beside `a.jpg`), each with the
+/// extension as written, in upper case, then in lower case (Google writes
+/// `a-SMILE.jpg` beside `a.JPG`). Empty for a name that is not a creation.
+pub fn original_names(file_name: &str) -> Vec<String> {
+    let Some(first) = original_name(file_name) else {
+        return Vec::new();
+    };
+    let (stem, ext) = match file_name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => (stem, Some(ext)),
+        _ => (file_name, None),
+    };
+    let (stem, counter) = split_counter(stem);
+    let base = CREATIONS
+        .iter()
+        .find_map(|suffix| stem.strip_suffix(suffix))
+        .unwrap_or(stem);
+    let mut stems = vec![format!("{base}{counter}")];
+    if !counter.is_empty() {
+        stems.push(base.to_string());
+    }
+    let mut names = vec![first];
+    for stem in stems {
+        let exts = match ext {
+            Some(e) => vec![
+                Some(e.to_string()),
+                Some(e.to_uppercase()),
+                Some(e.to_lowercase()),
+            ],
+            None => vec![None],
+        };
+        for e in exts {
+            let name = match e {
+                Some(e) => format!("{stem}.{e}"),
+                None => stem.clone(),
+            };
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    names
+}
+
 /// `a-edited(1)` -> (`a-edited`, `(1)`); anything else is returned whole.
 fn split_counter(stem: &str) -> (&str, &str) {
     if let Some(open) = stem.strip_suffix(')').and_then(|s| s.rfind('(')) {
@@ -53,12 +98,17 @@ pub struct EditedPair<'a> {
     pub original: &'a str,
 }
 
-/// The same-folder original of `path`, when `path` names a creation.
-pub fn original_path(path: &str) -> Option<String> {
+/// The paths the same-folder original of `path` may have, most likely first,
+/// when `path` names a creation (see [`original_names`]).
+fn original_paths(path: &str) -> Vec<String> {
     let path = Path::new(path);
-    let name = path.file_name()?.to_str()?;
-    let original = original_name(name)?;
-    Some(path.with_file_name(original).to_string_lossy().into_owned())
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return Vec::new();
+    };
+    original_names(name)
+        .into_iter()
+        .map(|n| path.with_file_name(n).to_string_lossy().into_owned())
+        .collect()
 }
 
 /// Every pair among `(path, hash)` rows: the name rule above, same folder,
@@ -72,8 +122,9 @@ pub fn edited_pairs<'a>(rows: &[(&'a str, &'a str)]) -> Vec<EditedPair<'a>> {
     let mut pairs: Vec<EditedPair<'a>> = rows
         .iter()
         .filter_map(|&(edit, edit_hash)| {
-            let wanted = original_path(edit)?;
-            let &(original, original_hash) = by_path.get(wanted.as_str())?;
+            let &(original, original_hash) = original_paths(edit)
+                .iter()
+                .find_map(|wanted| by_path.get(wanted.as_str()))?;
             (original_hash != edit_hash).then_some(EditedPair { edit, original })
         })
         .collect();
@@ -89,8 +140,13 @@ pub fn edited_name_pairs<P: AsRef<Path>>(paths: &[P]) -> usize {
     let present: std::collections::HashSet<&Path> = paths.iter().map(|p| p.as_ref()).collect();
     paths
         .iter()
-        .filter_map(|p| p.as_ref().to_str().and_then(original_path))
-        .filter(|original| present.contains(Path::new(original)))
+        .filter(|p| {
+            p.as_ref().to_str().is_some_and(|p| {
+                original_paths(p)
+                    .iter()
+                    .any(|original| present.contains(Path::new(original)))
+            })
+        })
         .count()
 }
 
@@ -176,6 +232,44 @@ mod tests {
                 edit: "d/a-edited.jpg",
                 original: "d/a.jpg"
             }]
+        );
+    }
+
+    /// Google writes a creation's extension in lower case beside an original
+    /// in upper case, and a second creation of one photo takes a counter its
+    /// original does not have.
+    #[test]
+    fn an_original_is_found_across_extension_case_and_a_creations_counter() {
+        let rows = [
+            ("d/DSC00295.JPG", "h1"),
+            ("d/DSC00295-SMILE.jpg", "h2"),
+            ("d/IMG_1108.JPG", "h3"),
+            ("d/IMG_1108-edited(1).JPG", "h4"),
+            ("d/Çiçek.jpg", "h5"),
+            ("d/Çiçek-EFFECTS.jpg", "h6"),
+            ("d/Çiçek-EFFECTS(1).jpg", "h7"),
+            ("d/a(1).jpg", "h8"),
+            ("d/a.jpg", "h9"),
+            ("d/a-edited(1).jpg", "h10"),
+        ];
+        let pairs: Vec<(&str, &str)> = edited_pairs(&rows)
+            .into_iter()
+            .map(|p| (p.edit, p.original))
+            .collect();
+        assert_eq!(
+            pairs,
+            [
+                ("d/DSC00295-SMILE.jpg", "d/DSC00295.JPG"),
+                ("d/IMG_1108-edited(1).JPG", "d/IMG_1108.JPG"),
+                // Its own counter's original first, when there is one.
+                ("d/a-edited(1).jpg", "d/a(1).jpg"),
+                ("d/Çiçek-EFFECTS(1).jpg", "d/Çiçek.jpg"),
+                ("d/Çiçek-EFFECTS.jpg", "d/Çiçek.jpg"),
+            ]
+        );
+        assert_eq!(
+            edited_name_pairs(&rows.iter().map(|r| r.0).collect::<Vec<_>>()),
+            5
         );
     }
 

@@ -267,7 +267,8 @@ Viber), an export for the web, a phone's reduced copy. The bytes differ, so
 they are not exact duplicates. Two files are one picture when all of these
 hold:
 
-- their pixel sizes differ;
+- their pixel sizes differ, as decoded: a copy can keep its original's size
+  tags, so the stored width and height do not decide;
 - their shapes (width over height, upright) are within 1%;
 - their fingerprints (as for `similar`, below) are at most 4 bits apart;
 - reduced to 64x64 greyscale, their pixels differ by at most 0.5 on average,
@@ -302,7 +303,10 @@ pairs them. In one real export a fifth of all files were such creations.
 
 `--kind creation` pairs them by name: `<name>-edited.<ext>`, `<name>-EFFECTS.<ext>`
 or `<name>-SMILE.<ext>` (or with Google's counter, `<name>-edited(1).<ext>`)
-whose original `<name>.<ext>` is in the same folder. The **original is kept**
+whose original `<name>.<ext>` is in the same folder. The original's extension
+may differ in case (`IMG_1-SMILE.jpg` beside `IMG_1.JPG`), and a second
+creation of one photo (`IMG_1-EFFECTS(1).jpg`) pairs with `IMG_1.jpg` when
+there is no `IMG_1(1).jpg`. The **original is kept**
 and the creations are listed for removal, since the original is the file the
 camera wrote.
 
