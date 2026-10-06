@@ -1,4 +1,4 @@
-//! What each trash run moved, so `dedupe --undo` can put it back.
+//! What each trash run moved, so `dedupe undo` can put it back.
 //!
 //! Every `--trash` run (and every gallery Delete) writes one JSONL manifest
 //! under `<root>/.videre/trash/`, a line per file as it goes, so a run stopped

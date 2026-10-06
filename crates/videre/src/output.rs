@@ -45,24 +45,11 @@ pub fn find_duplicate_groups(records: &[FileRecord]) -> Vec<DuplicateGroup> {
     groups
 }
 
-/// Google Takeout edits beside their originals, as `(kept original, removed
-/// edit)` paths, sorted by the edit. See `crate::takeout_names`.
-pub fn edited_losers(records: &[FileRecord]) -> Vec<(String, String)> {
-    let rows: Vec<(&str, &str)> = records
-        .iter()
-        .map(|r| (r.path.as_str(), r.hash.as_str()))
-        .collect();
-    crate::takeout_names::edited_pairs(&rows)
-        .into_iter()
-        .map(|pair| (pair.original.to_string(), pair.edit.to_string()))
-        .collect()
-}
-
 /// A fingerprint with almost no set bits (or almost nothing but set bits)
 /// carries no image structure: a flat or near-flat opening frame (fade-in,
 /// letterbox, title card) hashes near an extreme, and any two such frames
 /// collide regardless of what the rest of the clip shows. Such
-/// records are excluded from `--similar` grouping entirely; identical copies
+/// records are excluded from `similar` and `resized` grouping entirely; identical copies
 /// are still caught by exact content-hash dedupe. Deliberately no
 /// size-proximity gate alongside this: a genuine re-encode routinely halves
 /// the file size (the testsrc fixture pair measures 2.07x), so a size window

@@ -22,7 +22,7 @@ The examples below use `http://127.0.0.1:7878`, the default address. Without
 before assuming `7878`; an explicit `--port` is used exactly.
 
 :::note
-Static HTML exports from commands such as `videre dedupe --html` and
+Static HTML exports from commands such as `videre dedupe review` and
 `videre search --html` are separate files. They do not keep this server running
 and cannot answer these HTTP requests after the command exits.
 :::

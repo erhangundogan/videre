@@ -1,5 +1,5 @@
 //! The `videre gallery` HTTP server: the axum router, its handlers, and the
-//! face-labeling API. The rendering it shares with `dedupe --html` and
+//! face-labeling API. The rendering it shares with `dedupe review` and
 //! `search --html` lives in `crate::render`; this file is the HTTP layer only.
 
 use crate::render::*;
@@ -2115,7 +2115,7 @@ async fn handle_gallery_all(
 }
 
 /// `videre gallery`'s `/duplicates`: duplicate groups, the review
-/// `dedupe --html` writes to a file.
+/// `dedupe review` writes to a file.
 async fn handle_gallery_duplicates(
     State(state): State<Arc<AppState>>,
     Query(q): Query<RouteQuery>,
@@ -5025,7 +5025,7 @@ async fn serve_faces_async(
 /// route.
 ///
 /// This module is the HTTP layer only. The renderer it shares with
-/// `dedupe --html` and `search --html` lives in `crate::render`.
+/// `dedupe review` and `search --html` lives in `crate::render`.
 pub(crate) fn serve_gallery(
     ctx: &crate::command_context::CommandContext,
     model_id: String,
@@ -6421,8 +6421,8 @@ mod bulk_delete_tests {
         assert_eq!(left, 0);
     }
 
-    /// A gallery Delete is recorded like a `dedupe --trash` run, so
-    /// `dedupe --undo` puts it back.
+    /// A gallery Delete is recorded like a `dedupe trash` run, so
+    /// `dedupe undo` puts it back.
     #[tokio::test]
     async fn a_gallery_delete_is_put_back_by_undo() {
         let dir = tempfile::tempdir().unwrap();

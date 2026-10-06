@@ -202,9 +202,13 @@ fn build_stats(ctx: &crate::command_context::CommandContext) -> anyhow::Result<S
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct FindDuplicatesParams {
-    /// Also return perceptual-hash near-duplicate clusters (review-only)
+    /// Kinds of duplicate to return, default ["exact"]: "exact" (identical
+    /// content), "resized" (the same picture at another pixel size, the
+    /// largest kept), "creation" (a Google Photos -edited, -EFFECTS or -SMILE
+    /// file beside its original, the original kept), "similar" (near
+    /// pictures, review only: different shots of one scene too).
     #[serde(default)]
-    include_similar: bool,
+    kinds: Vec<String>,
 }
 
 /// Every field is optional and every filter is ANDed. The doc comments are the
@@ -398,16 +402,32 @@ impl VidereServer {
         }
     }
 
-    /// Exact-duplicate groups from the database, instantly (no scan).
+    /// Duplicate groups by kind from the database, instantly (no scan).
     #[tool(
-        description = "Exact-duplicate groups from the videre database. Each group has 'keep' (the oldest file, safe to keep) and 'remove' (copies with identical image or video content, safe to delete; their metadata such as EXIF dates may differ). With include_similar=true, also returns review-only near-duplicate clusters ('files' arrays; NOT safe to auto-delete). Results reflect the last scan: verify paths still exist before acting."
+        description = "Duplicate groups from the videre database, by kind ('kinds', default [\"exact\"]). Each group names its 'kind'. A removable kind has 'keep' and 'remove': exact (identical image or video content, the oldest kept; metadata such as EXIF dates may differ), resized (the same picture at another pixel size, the largest kept), creation (a Google Photos edit, effect or smile beside its original, the original kept). A similar group is a review-only 'files' cluster: NOT safe to auto-delete. 'unchecked' counts resized candidates not compared yet; 'videre dedupe --kind resized' checks them. Results reflect the last scan: verify paths still exist before acting."
     )]
     async fn find_duplicates(
         &self,
         Parameters(params): Parameters<FindDuplicatesParams>,
     ) -> Result<CallToolResult, McpError> {
+        let kinds = if params.kinds.is_empty() {
+            vec![videre::duplicates::Kind::Exact]
+        } else {
+            let mut kinds = Vec::new();
+            for name in &params.kinds {
+                match videre::duplicates::Kind::parse(name) {
+                    Some(kind) => kinds.push(kind),
+                    None => {
+                        return Ok(tool_error(&anyhow::anyhow!(
+                            "unknown kind {name:?}; kinds are exact, resized, creation and similar"
+                        )))
+                    }
+                }
+            }
+            kinds
+        };
         let db = self.db.clone();
-        match blocking(move || super::build_find_duplicates(&db, params.include_similar)).await? {
+        match blocking(move || super::build_find_duplicates(&db, &kinds)).await? {
             Ok(doc) => json_result(&doc),
             Err(e) => Ok(tool_error(&e)),
         }

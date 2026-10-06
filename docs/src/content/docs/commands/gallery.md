@@ -107,7 +107,7 @@ people or location data yet.
 |------|--------------|
 | `/` | Every file, with a **Similar** button on each card once the library has embeddings (the grid under the map has it too) |
 | `/search?like=<hash>`, `/search?q=...` | A ranking as a page of its own: files like one, or matching words, within the query's filters. **Open as a page** on a Similar or text-results strip leads here, and a bookmark reopens it. **Show more** continues the ranking |
-| `/duplicates` | Duplicate groups, the same review `dedupe --html` writes, plus Google Takeout edits beside their originals ([`dedupe --edited`](/commands/dedupe/#google-photos-edits---edited)), counted in the header apart from exact copies |
+| `/duplicates` | Duplicate groups, the same review `dedupe review` writes, plus Google Takeout edits beside their originals ([`dedupe --kind creation`](/commands/dedupe/#google-photos-creations)), counted in the header apart from exact copies |
 | `/people` | Face groups, and naming them. Singletons load as you scroll; naming one keeps your place |
 | `/date` | A Year / Month / Day drill-down |
 | `/date/2024`, `/date/2024/09`, `/date/2024/09/26` | The media of that year, month, or day, each with its item count; **Show more** loads the next page |
@@ -374,8 +374,8 @@ item to the Trash (the confirmation counts them), each with its XMP sidecar,
 and the library stops
 listing them at once; their marks, tags and faces stay until
 [`videre prune`](/commands/prune/). A Delete is undone with
-[`videre dedupe --undo`](/commands/dedupe/#undoing---trash), which puts back
-the most recent trash run, from the gallery or from `dedupe --trash`. Prune also withdraws face-learning evidence
+[`videre dedupe undo`](/commands/dedupe/#undoing-a-trash-run), which puts back
+the most recent trash run, from the gallery or from `dedupe trash`. Prune also withdraws face-learning evidence
 that depended on those faces, while keeping the historical journal and person
 names. It waits until no other videre command or
 `watch` stage is working on the library.
@@ -489,7 +489,7 @@ shows it.
 keep or send what a command just found, ask that command for it:
 
 ```bash
-videre dedupe --html            # the duplicate groups, as a file
+videre dedupe review            # the duplicate groups, as a file
 videre search "sunset" --html   # these results, as a file
 ```
 

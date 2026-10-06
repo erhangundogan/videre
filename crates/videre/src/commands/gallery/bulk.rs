@@ -199,7 +199,7 @@ pub(crate) struct DeleteBody {
 /// POST /api/files/delete: move every file of the selected items to the
 /// system Trash (all copies of a hash: leaving one would bring the item
 /// straight back) and forget their rows. `dry_run` only counts, for the
-/// confirmation dialog. Needs the library to itself, like `dedupe --trash`.
+/// confirmation dialog. Needs the library to itself, like `dedupe trash`.
 pub(crate) async fn handle_delete(
     State(state): State<Arc<AppState>>,
     Json(body): Json<DeleteBody>,

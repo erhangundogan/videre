@@ -1,7 +1,7 @@
 //! The gallery renderer and its shared data layer.
 //!
 //! One rendering pipeline (`render` over a [`RenderSet`]) serves both the
-//! static `--html` exports and the live `gallery` page routes; the `live`
+//! static exports (`dedupe review`, `search --html`) and the live `gallery` page routes; the `live`
 //! flag is the only difference. This is the lower layer: `commands::dedupe`,
 //! `commands::search` and `commands::gallery` depend on it, never the reverse.
 
@@ -997,6 +997,63 @@ pub(crate) fn query_edited_groups(conn: &Connection) -> Vec<Vec<FileRow>> {
         .collect()
 }
 
+/// Each group's files as page rows, keeper first, read by path so they carry
+/// what the page shows (the resolved capture date among them). A row gone
+/// since the groups were found is left out, and a group left with one file
+/// is dropped.
+pub(crate) fn group_rows(
+    conn: &Connection,
+    groups: &[videre::duplicates::Group],
+) -> Vec<(videre::duplicates::Kind, Vec<FileRow>)> {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT path, hash, size_bytes, COALESCE(ext,''), created_at, modified_at, exif_date, \
+                gps_lat, gps_lon, width, height, capture_date \
+         FROM file_hashes WHERE path = ?1",
+    ) else {
+        return Vec::new();
+    };
+    let mut row = |path: &str| -> Option<FileRow> {
+        stmt.query_row([path], |r| {
+            Ok(FileRow {
+                path: r.get(0)?,
+                hash: r.get(1)?,
+                size_bytes: r.get(2)?,
+                ext: r.get(3)?,
+                created_at: r.get(4)?,
+                modified_at: r.get(5)?,
+                exif_date: r.get(6)?,
+                gps_lat: r.get(7)?,
+                gps_lon: r.get(8)?,
+                width: r.get(9)?,
+                height: r.get(10)?,
+                capture_date: r.get("capture_date")?,
+            })
+        })
+        .ok()
+    };
+    groups
+        .iter()
+        .filter_map(|g| {
+            let rows: Vec<FileRow> = g.files.iter().filter_map(|f| row(&f.path)).collect();
+            (rows.len() > 1).then_some((g.kind, rows))
+        })
+        .collect()
+}
+
+/// `videre dedupe review`: `groups` as a static page.
+pub(crate) fn write_review_page(
+    conn: &Connection,
+    output: &Path,
+    groups: &[videre::duplicates::Group],
+) -> anyhow::Result<()> {
+    let (creations, others): (Vec<_>, Vec<_>) = group_rows(conn, groups)
+        .into_iter()
+        .partition(|(kind, _)| *kind == videre::duplicates::Kind::Creation);
+    let others: Vec<Vec<FileRow>> = others.into_iter().map(|(_, rows)| rows).collect();
+    let creations: Vec<Vec<FileRow>> = creations.into_iter().map(|(_, rows)| rows).collect();
+    write_static_page(conn, output, &others, &creations, None)
+}
+
 pub(crate) fn query_groups(conn: &Connection) -> Vec<Vec<FileRow>> {
     let mut stmt = conn
         .prepare(
@@ -1214,7 +1271,7 @@ struct GalleryPage<'a> {
     duplicate_files: i64,
     wasted: String,
     /// Google Takeout edit pairs on the page and the size of their edits, the
-    /// files `dedupe --edited` removes. Counted apart from the exact copies
+    /// files `dedupe --kind creation` removes. Counted apart from the exact copies
     /// above, since an edit is not a byte-for-byte duplicate.
     edited_pairs: usize,
     edits_size: String,
@@ -1258,7 +1315,7 @@ pub(crate) fn rows_for_paths(conn: &Connection, paths: &[String]) -> Vec<FileRow
 
 /// Render a set to a self-contained page and write it.
 ///
-/// Shared by `dedupe --html` and `search --html`. `groups` renders a
+/// Shared by `dedupe review` and `search --html`. `groups` renders a
 /// duplicate-review page; `flat` renders a gallery of a result set. Both go
 /// through the same renderer the live gallery uses, with `live: false`, so a
 /// file references originals on disk and embeds only what a browser cannot
@@ -1279,7 +1336,7 @@ pub(crate) fn write_static_page(
         Path::new(&db_path).parent().unwrap_or(Path::new(".")),
         false,
     );
-    // `dedupe --html` passes groups (a duplicates page); `search --html` passes
+    // `dedupe review` passes groups (a duplicates page); `search --html` passes
     // rows (a flat gallery). A static export has no server behind it, so `nav`
     // is None: every section link would be dead when opened from `file://`.
     let (items, groups, view) = match flat {

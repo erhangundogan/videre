@@ -59,67 +59,57 @@ pub struct DuplicateGroup {
 /// bump this; removals or renames would.
 pub const SCHEMA_VERSION: u32 = 1;
 
-/// One exact-duplicate group in `dedupe --json`: files with the same content
-/// key (identical content, metadata aside) split into the one to keep (oldest
-/// by the KEEP rule) and the rest to remove.
+/// The duplicates document's own version, apart from [`SCHEMA_VERSION`]:
+/// version 2 lists groups by kind (`crate::duplicates`).
+pub const DUPLICATES_SCHEMA_VERSION: u32 = 2;
+
+/// One group in `dedupe --json` and MCP `find_duplicates`. A removable kind
+/// splits into `keep` and `remove`; a review-only kind (`similar`) is a flat
+/// `files` cluster, since no deletion is safe without judgment.
 #[derive(Debug, Serialize)]
-pub struct DupGroupJson {
-    pub hash: String,
-    pub keep: FileRecord,
-    pub remove: Vec<FileRecord>,
+pub struct DuplicateGroupJson {
+    pub kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keep: Option<FileRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remove: Option<Vec<FileRecord>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files: Option<Vec<FileRecord>>,
 }
 
-impl From<DuplicateGroup> for DupGroupJson {
-    fn from(group: DuplicateGroup) -> Self {
-        let mut files = group.files.into_iter();
-        let keep = files
-            .next()
-            .expect("duplicate groups always have >= 2 files");
-        DupGroupJson {
-            hash: group.hash,
-            keep,
-            remove: files.collect(),
-        }
-    }
-}
-
-/// One perceptual-hash near-duplicate group in `dedupe --json --similar`.
-/// Deliberately a flat review cluster with no keep/remove split: these files
-/// do NOT share content, so no deletion is safe without human/agent judgment.
-#[derive(Debug, Serialize)]
-pub struct SimilarGroupJson {
-    pub hash: String,
-    pub files: Vec<FileRecord>,
-}
-
-impl From<DuplicateGroup> for SimilarGroupJson {
-    fn from(group: DuplicateGroup) -> Self {
-        SimilarGroupJson {
-            hash: group.hash,
-            files: group.files,
+impl From<crate::duplicates::Group> for DuplicateGroupJson {
+    fn from(group: crate::duplicates::Group) -> Self {
+        let kind = group.kind.name();
+        if group.kind.removable() {
+            let mut files = group.files.into_iter();
+            let keep = files.next();
+            DuplicateGroupJson {
+                kind,
+                keep,
+                remove: Some(files.collect()),
+                files: None,
+            }
+        } else {
+            DuplicateGroupJson {
+                kind,
+                keep: None,
+                remove: None,
+                files: Some(group.files),
+            }
         }
     }
 }
 
 /// Top-level document for `dedupe --json` and the MCP `find_duplicates` tool.
-/// Shared by both so they cannot silently diverge in shape.
+/// Shared by both so they cannot silently diverge in shape. `unchecked`
+/// counts resized candidates not yet compared (MCP never decodes).
 #[derive(Debug, Serialize)]
 pub struct FindDuplicatesJson {
     pub schema_version: u32,
     pub total_files: usize,
-    pub duplicate_groups: Vec<DupGroupJson>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub similar_groups: Option<Vec<SimilarGroupJson>>,
-    /// Google Takeout edits beside their originals, with `dedupe --edited`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub edited_pairs: Option<Vec<EditedPairJson>>,
-}
-
-/// A Google Takeout edit and its original: the original is kept.
-#[derive(Debug, Serialize)]
-pub struct EditedPairJson {
-    pub kept: String,
-    pub removed: String,
+    pub kinds: Vec<&'static str>,
+    pub unchecked: usize,
+    pub groups: Vec<DuplicateGroupJson>,
 }
 
 /// Where `scan --json` wrote records: `"sqlite"` or `"jsonl"`, and the resolved path.
@@ -309,89 +299,40 @@ mod tests {
     }
 
     #[test]
-    fn dup_group_json_splits_keep_and_remove() {
-        let group = DuplicateGroup {
-            hash: "h".to_string(),
-            files: vec![
-                rec("/keep.jpg", "h"),
-                rec("/rm1.jpg", "h"),
-                rec("/rm2.jpg", "h"),
-            ],
+    fn a_removable_group_splits_keep_and_remove() {
+        let group = crate::duplicates::Group {
+            kind: crate::duplicates::Kind::Resized,
+            files: vec![rec("/keep.jpg", "a"), rec("/rm1.jpg", "b")],
         };
-        let json_group = DupGroupJson::from(group);
-        assert_eq!(json_group.keep.path, "/keep.jpg");
-        assert_eq!(json_group.remove.len(), 2);
-        assert_eq!(json_group.remove[0].path, "/rm1.jpg");
+        let json = serde_json::to_value(DuplicateGroupJson::from(group)).unwrap();
+        assert_eq!(json["kind"], "resized");
+        assert_eq!(json["keep"]["path"], "/keep.jpg");
+        assert_eq!(json["remove"][0]["path"], "/rm1.jpg");
+        assert!(json.get("files").is_none());
     }
 
     #[test]
-    fn find_duplicates_json_via_dedupe_omits_similar_groups_when_none() {
+    fn a_similar_group_is_a_flat_cluster() {
+        let group = crate::duplicates::Group {
+            kind: crate::duplicates::Kind::Similar,
+            files: vec![rec("/x.jpg", "111"), rec("/y.jpg", "222")],
+        };
+        let json = serde_json::to_value(DuplicateGroupJson::from(group)).unwrap();
+        assert_eq!(json["files"].as_array().unwrap().len(), 2);
+        assert!(json.get("keep").is_none() && json.get("remove").is_none());
+    }
+
+    #[test]
+    fn the_duplicates_document_is_version_2() {
         let doc = FindDuplicatesJson {
-            schema_version: SCHEMA_VERSION,
+            schema_version: DUPLICATES_SCHEMA_VERSION,
             total_files: 3,
-            duplicate_groups: vec![],
-            similar_groups: None,
-            edited_pairs: None,
+            kinds: vec!["exact"],
+            unchecked: 0,
+            groups: vec![],
         };
         let json = serde_json::to_string(&doc).unwrap();
-        assert!(json.starts_with("{\"schema_version\":1"));
-        assert!(!json.contains("similar_groups"));
-    }
-
-    #[test]
-    fn find_duplicates_json_via_dedupe_includes_similar_groups_when_some() {
-        let doc = FindDuplicatesJson {
-            schema_version: SCHEMA_VERSION,
-            total_files: 2,
-            duplicate_groups: vec![],
-            similar_groups: Some(vec![SimilarGroupJson {
-                hash: "phash:00000000000000ff".to_string(),
-                files: vec![rec("/x.jpg", "111"), rec("/y.jpg", "222")],
-            }]),
-            edited_pairs: None,
-        };
-        let json = serde_json::to_string(&doc).unwrap();
-        assert!(json.contains("\"similar_groups\""));
-        assert!(json.contains("\"files\""));
-        assert!(
-            !json.contains("\"keep\""),
-            "similar groups are flat clusters, not keep/remove"
-        );
-    }
-
-    #[test]
-    fn find_duplicates_json_omits_similar_groups_when_none() {
-        let doc = FindDuplicatesJson {
-            schema_version: SCHEMA_VERSION,
-            total_files: 3,
-            duplicate_groups: vec![],
-            similar_groups: None,
-            edited_pairs: None,
-        };
-        let json = serde_json::to_string(&doc).unwrap();
-        assert!(json.starts_with("{\"schema_version\":1"));
-        assert!(!json.contains("similar_groups"));
-    }
-
-    #[test]
-    fn find_duplicates_json_includes_similar_groups_when_some() {
-        let doc = FindDuplicatesJson {
-            schema_version: SCHEMA_VERSION,
-            total_files: 2,
-            duplicate_groups: vec![],
-            similar_groups: Some(vec![SimilarGroupJson {
-                hash: "phash:00000000000000ff".to_string(),
-                files: vec![rec("/x.jpg", "111"), rec("/y.jpg", "222")],
-            }]),
-            edited_pairs: None,
-        };
-        let json = serde_json::to_string(&doc).unwrap();
-        assert!(json.contains("\"similar_groups\""));
-        assert!(json.contains("\"files\""));
-        assert!(
-            !json.contains("\"keep\""),
-            "similar groups are flat clusters, not keep/remove"
-        );
+        assert!(json.starts_with("{\"schema_version\":2"));
     }
 
     #[test]

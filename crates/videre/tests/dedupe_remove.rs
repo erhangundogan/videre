@@ -1,5 +1,5 @@
-//! `videre dedupe --remove`: videre moves duplicate copies to the system trash
-//! itself, safely, so no shell pipeline word-splits a path with a space.
+//! `videre dedupe trash` and `delete`: videre removes duplicate copies itself,
+//! safely, so no shell pipeline word-splits a path with a space.
 
 mod common;
 use common::TestLibrary;
@@ -52,7 +52,7 @@ fn remove_dry_run_lists_and_deletes_nothing() {
     let (lib, a, b) = lib_with_spaced_duplicate();
     let out = lib
         .cmd()
-        .args(["dedupe", "--trash", "--dry-run"])
+        .args(["dedupe", "trash", "--dry-run"])
         .output()
         .unwrap();
     assert!(
@@ -71,7 +71,7 @@ fn remove_yes_trashes_one_copy_and_keeps_the_other() {
     let (lib, a, b) = lib_with_spaced_duplicate();
     let out = lib
         .cmd()
-        .args(["dedupe", "--trash", "--yes"])
+        .args(["dedupe", "trash", "--yes"])
         .output()
         .unwrap();
     if out.status.success() {
@@ -81,7 +81,7 @@ fn remove_yes_trashes_one_copy_and_keeps_the_other() {
         assert_eq!(
             remaining(&[&a, &b]),
             1,
-            "exactly one copy must remain after --remove"
+            "exactly one copy must remain after trash"
         );
     } else {
         // The platform could not trash in this environment (no XDG/Finder
@@ -94,12 +94,12 @@ fn remove_yes_trashes_one_copy_and_keeps_the_other() {
 #[test]
 fn remove_yes_also_prunes_the_loser_row() {
     // Trashing a duplicate leaves its database row behind: the row describes
-    // a file that no longer exists. `dedupe --remove` must run the same
+    // a file that no longer exists. `dedupe trash` must run the same
     // cleanup `videre prune` would, so the library never shows a ghost.
     let (lib, a, b) = lib_with_spaced_duplicate();
     let out = lib
         .cmd()
-        .args(["dedupe", "--trash", "--yes", "--silent"])
+        .args(["dedupe", "trash", "--yes", "--silent"])
         .output()
         .unwrap();
     if !out.status.success() {
@@ -115,7 +115,7 @@ fn remove_yes_also_prunes_the_loser_row() {
         .unwrap();
     assert_eq!(
         rows, 1,
-        "the removed copy's row must be pruned automatically after --remove"
+        "the removed copy's row must be pruned automatically after trash"
     );
 }
 
@@ -129,7 +129,7 @@ fn remove_takes_the_copys_sidecar_and_leaves_the_kept_ones() {
 
     let dry = lib
         .cmd()
-        .args(["dedupe", "--trash", "--dry-run"])
+        .args(["dedupe", "trash", "--dry-run"])
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&dry.stderr);
@@ -144,7 +144,7 @@ fn remove_takes_the_copys_sidecar_and_leaves_the_kept_ones() {
 
     let out = lib
         .cmd()
-        .args(["dedupe", "--trash", "--yes", "--silent"])
+        .args(["dedupe", "trash", "--yes", "--silent"])
         .output()
         .unwrap();
     if !out.status.success() {
@@ -162,12 +162,12 @@ fn remove_takes_the_copys_sidecar_and_leaves_the_kept_ones() {
 }
 
 #[test]
-fn remove_rejects_similar_json_and_html() {
+fn remove_rejects_review_only_kinds_and_other_actions_flags() {
     let (lib, _a, _b) = lib_with_spaced_duplicate();
     let combos: [&[&str]; 3] = [
-        &["--trash", "--similar"],
-        &["--trash", "--json"],
-        &["--trash", "--html"],
+        &["trash", "--kind", "exact,similar"],
+        &["trash", "--json", "--print0"],
+        &["review", "--yes"],
     ];
     for extra in combos {
         let mut args = vec!["dedupe"];
@@ -207,7 +207,7 @@ fn edited_pairs_are_listed_only_with_edited() {
     let out = dedupe(&lib, &[]);
     assert!(String::from_utf8_lossy(&out.stdout).trim().is_empty());
 
-    let out = dedupe(&lib, &["--edited"]);
+    let out = dedupe(&lib, &["--kind", "exact,creation"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("IMG_1-edited.jpg"), "{stdout}");
     assert!(
@@ -215,7 +215,10 @@ fn edited_pairs_are_listed_only_with_edited() {
         "the original is kept: {stdout}"
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("1 edited pair(s)"), "{stderr}");
+    assert!(
+        stderr.contains("1 creation group(s), 1 file(s) to remove"),
+        "{stderr}"
+    );
 }
 
 #[test]
@@ -224,7 +227,7 @@ fn an_edit_in_another_folder_is_not_paired() {
     lib.copy_fixture("tiny.jpg", "Photos from 2015/IMG_1.jpg");
     lib.copy_fixture("sample_with_exif.jpg", "Album/IMG_1-edited.jpg");
     lib.scan();
-    let out = dedupe(&lib, &["--edited"]);
+    let out = dedupe(&lib, &["--kind", "exact,creation"]);
     assert!(String::from_utf8_lossy(&out.stdout).trim().is_empty());
 }
 
@@ -233,7 +236,7 @@ fn edited_remove_trashes_the_edit_and_keeps_the_original() {
     let (lib, original, edit) = lib_with_edited_pair();
     let out = lib
         .cmd()
-        .args(["dedupe", "--edited", "--trash", "--yes"])
+        .args(["dedupe", "trash", "--kind", "exact,creation", "--yes"])
         .output()
         .unwrap();
     if !out.status.success() {
@@ -266,7 +269,7 @@ fn an_edit_that_is_also_an_exact_duplicate_is_removed_once() {
     // exact-duplicate loser too.
     let album = lib.copy_fixture("sample_with_exif.jpg", "Album/IMG_1-edited.jpg");
     lib.scan();
-    let out = dedupe(&lib, &["--edited", "--trash", "--dry-run"]);
+    let out = dedupe(&lib, &["trash", "--kind", "exact,creation", "--dry-run"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     let listed = stdout.lines().filter(|l| !l.trim().is_empty()).count();
     let unique: std::collections::HashSet<&str> =
@@ -280,18 +283,22 @@ fn an_edit_that_is_also_an_exact_duplicate_is_removed_once() {
 }
 
 #[test]
-fn edited_json_carries_the_pairs() {
+fn creation_json_keeps_the_original() {
     let (lib, _original, _edit) = lib_with_edited_pair();
     let out = dedupe(&lib, &["--json"]);
     let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert!(doc.get("edited_pairs").is_none(), "{doc}");
+    assert!(doc["groups"].as_array().unwrap().is_empty(), "{doc}");
 
-    let out = dedupe(&lib, &["--json", "--edited"]);
+    let out = dedupe(&lib, &["--json", "--kind", "exact,creation"]);
     let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    let pairs = doc["edited_pairs"].as_array().expect("edited_pairs");
-    assert_eq!(pairs.len(), 1, "{doc}");
-    assert!(pairs[0]["kept"].as_str().unwrap().ends_with("IMG_1.jpg"));
-    assert!(pairs[0]["removed"]
+    let groups = doc["groups"].as_array().expect("groups");
+    assert_eq!(groups.len(), 1, "{doc}");
+    assert_eq!(groups[0]["kind"], "creation");
+    assert!(groups[0]["keep"]["path"]
+        .as_str()
+        .unwrap()
+        .ends_with("IMG_1.jpg"));
+    assert!(groups[0]["remove"][0]["path"]
         .as_str()
         .unwrap()
         .ends_with("IMG_1-edited.jpg"));
@@ -311,11 +318,11 @@ fn edited_pairs_do_not_trip_the_bulk_guard() {
         std::fs::write(dir.join(format!("IMG_{i}-edited.jpg")), format!("edit {i}")).unwrap();
     }
     lib.scan();
-    let out = dedupe(&lib, &["--edited", "--trash", "--dry-run"]);
+    let out = dedupe(&lib, &["trash", "--kind", "exact,creation", "--dry-run"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!stderr.contains("refusing"), "{stderr}");
     assert!(
-        stderr.contains("110 Google Photos edit(s) would be moved to the trash"),
+        stderr.contains("110 Google Photos creation(s) would be moved to the trash"),
         "{stderr}"
     );
 }
@@ -326,13 +333,13 @@ fn edited_pairs_do_not_trip_the_bulk_guard() {
 fn an_edit_whose_original_is_gone_from_disk_is_kept() {
     let (lib, original, edit) = lib_with_edited_pair();
     std::fs::remove_file(&original).unwrap();
-    let out = dedupe(&lib, &["--edited", "--trash", "--dry-run"]);
+    let out = dedupe(&lib, &["trash", "--kind", "exact,creation", "--dry-run"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(!stdout.contains("IMG_1-edited.jpg"), "{stdout}");
 
     let out = lib
         .cmd()
-        .args(["dedupe", "--edited", "--trash", "--yes"])
+        .args(["dedupe", "trash", "--kind", "exact,creation", "--yes"])
         .output()
         .unwrap();
     assert!(
@@ -362,7 +369,7 @@ fn an_edit_kept_by_exact_dedupe_does_not_take_its_copy_with_it() {
         "fixture: the edit must be the exact group's keeper"
     );
 
-    let out = dedupe(&lib, &["--edited", "--trash", "--dry-run"]);
+    let out = dedupe(&lib, &["trash", "--kind", "exact,creation", "--dry-run"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("Photos/B-edited.jpg"), "{stdout}");
     assert!(
@@ -382,7 +389,7 @@ fn the_old_remove_flag_is_gone_and_trash_and_delete_exclude_each_other() {
     assert!(!out.status.success());
     let out = lib
         .cmd()
-        .args(["dedupe", "--trash", "--delete", "--yes"])
+        .args(["dedupe", "trash", "--delete", "--yes"])
         .output()
         .unwrap();
     assert!(!out.status.success());
@@ -395,12 +402,12 @@ fn delete_removes_the_copy_and_its_sidecar_permanently() {
     for p in [&a, &b] {
         std::fs::write(format!("{}.xmp", p.display()), "<x:xmpmeta/>").unwrap();
     }
-    let dry = dedupe(&lib, &["--delete", "--dry-run"]);
+    let dry = dedupe(&lib, &["delete", "--dry-run"]);
     let stderr = String::from_utf8_lossy(&dry.stderr);
     assert!(stderr.contains("would be permanently deleted"), "{stderr}");
     assert_eq!(remaining(&[&a, &b]), 2, "dry run");
 
-    let out = dedupe(&lib, &["--delete", "--yes"]);
+    let out = dedupe(&lib, &["delete", "--yes"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("Deleted 1 file(s)"), "{stderr}");
     // The clean-up that follows says what it is, so its line is not a puzzle
@@ -425,16 +432,16 @@ fn delete_removes_the_copy_and_its_sidecar_permanently() {
 fn a_file_an_earlier_run_removed_is_already_gone_not_a_failure() {
     let (lib, original, edit) = lib_with_edited_pair();
     std::fs::remove_file(&edit).unwrap();
-    for method in ["--trash", "--delete"] {
+    for method in ["trash", "delete"] {
         let out = lib
             .cmd()
-            .args(["dedupe", "--edited", method, "--yes"])
+            .args(["dedupe", method, "--kind", "exact,creation", "--yes"])
             .output()
             .unwrap();
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(out.status.success(), "{method}: {stderr}");
         assert!(!stderr.contains("could not"), "{method}: {stderr}");
-        if method == "--trash" {
+        if method == "trash" {
             assert!(stderr.contains("1 already gone"), "{stderr}");
         }
     }

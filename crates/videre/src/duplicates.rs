@@ -91,6 +91,11 @@ pub const SIMILAR_MAX_BITS: u32 = 10;
 pub struct Found {
     pub groups: Vec<Group>,
     pub unchecked: usize,
+    /// How many files have a fingerprint (`videre embed` takes them); the
+    /// resized and similar kinds see only those.
+    pub fingerprinted: usize,
+    /// The kinds asked for, in kind order, once each.
+    pub wanted: Vec<Kind>,
 }
 
 /// Every group of `kinds` among `records`, given the stored `signatures`.
@@ -150,7 +155,12 @@ pub fn find_in(
             }
         }
     }
-    Found { groups, unchecked }
+    Found {
+        groups,
+        unchecked,
+        fingerprinted: records.iter().filter(|r| r.phash.is_some()).count(),
+        wanted: kinds,
+    }
 }
 
 /// Every group of `kinds` in the library. With `decode`, the resized

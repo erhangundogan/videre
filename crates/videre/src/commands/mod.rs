@@ -45,7 +45,7 @@ pub(crate) fn confirm(prompt: &str) -> anyhow::Result<bool> {
 /// Share of a set whose removal is implausible enough to stop for. Both
 /// conditions must hold: a percentage alone would block a tiny fixture where a
 /// few files were legitimately removed, and a raw count alone would never trip
-/// on a small library. Shared by prune (row cleanup) and dedupe --trash (file
+/// on a small library. Shared by prune (row cleanup) and dedupe trash (file
 /// deletion) so one guard governs every bulk removal.
 pub(crate) const BULK_DELETE_FRACTION: f64 = 0.20;
 pub(crate) const BULK_DELETE_MIN_ROWS: usize = 100;
@@ -54,47 +54,34 @@ pub(crate) fn is_bulk_delete(to_remove: usize, total: usize) -> bool {
     to_remove >= BULK_DELETE_MIN_ROWS && (to_remove as f64) > (total as f64) * BULK_DELETE_FRACTION
 }
 
-/// Shared by `dedupe --json` and the MCP `find_duplicates` tool so the two
-/// surfaces cannot silently diverge in shape.
+/// The MCP `find_duplicates` tool's document: the same one `dedupe --json`
+/// prints, so the two surfaces cannot silently diverge in shape. Never
+/// decodes; unchecked resized candidates are counted instead.
 pub(crate) fn build_find_duplicates(
     db: &std::path::Path,
-    include_similar: bool,
+    kinds: &[videre::duplicates::Kind],
 ) -> anyhow::Result<videre::types::FindDuplicatesJson> {
     let conn = videre_core::db::open_wal(db)?;
-    build_find_duplicates_from(&conn, include_similar, false)
+    let found = videre::duplicates::find(&conn, kinds, false, true)?;
+    duplicates_document(&conn, kinds, found)
 }
 
-/// The connection-based twin, for directory-local commands that already hold a
-/// validated connection to the selected library and must not reopen the file.
-pub(crate) fn build_find_duplicates_from(
+/// `found` as the versioned duplicates document.
+pub(crate) fn duplicates_document(
     conn: &rusqlite::Connection,
-    include_similar: bool,
-    include_edited: bool,
+    kinds: &[videre::duplicates::Kind],
+    found: videre::duplicates::Found,
 ) -> anyhow::Result<videre::types::FindDuplicatesJson> {
-    let records = videre::sqlite_output::load_records_from(conn)?;
-    let total_files = records.len();
-    let duplicate_groups = videre::output::find_duplicate_groups(&records)
-        .into_iter()
-        .map(videre::types::DupGroupJson::from)
-        .collect();
-    let similar_groups = include_similar.then(|| {
-        videre::output::find_similar_groups(&records, 10)
-            .into_iter()
-            .map(videre::types::SimilarGroupJson::from)
-            .collect()
-    });
-    let edited_pairs = include_edited.then(|| {
-        videre::output::edited_losers(&records)
-            .into_iter()
-            .map(|(kept, removed)| videre::types::EditedPairJson { kept, removed })
-            .collect()
-    });
+    let total_files: i64 = conn.query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))?;
+    let mut kinds = kinds.to_vec();
+    kinds.sort();
+    kinds.dedup();
     Ok(videre::types::FindDuplicatesJson {
-        schema_version: videre::types::SCHEMA_VERSION,
-        total_files,
-        duplicate_groups,
-        similar_groups,
-        edited_pairs,
+        schema_version: videre::types::DUPLICATES_SCHEMA_VERSION,
+        total_files: total_files.max(0) as usize,
+        kinds: kinds.iter().map(|k| k.name()).collect(),
+        unchecked: found.unchecked,
+        groups: found.groups.into_iter().map(Into::into).collect(),
     })
 }
 

@@ -149,3 +149,47 @@ fn config_set_model_completes_the_provided_models() {
         );
     }
 }
+
+/// The words the dynamic completer offers for the last of `words`.
+fn complete(lib: &TestLibrary, words: &[&str]) -> Vec<String> {
+    let output = std::process::Command::new(env_binary())
+        .current_dir(lib.context().paths.root.clone())
+        .env("COMPLETE", "bash")
+        .env("_CLAP_COMPLETE_INDEX", words.len().to_string())
+        .env("_CLAP_COMPLETE_SPACE", "false")
+        .args(["videre", "--", "videre"])
+        .args(words)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|l| l.split('\t').next().unwrap_or_default().to_string())
+        .collect()
+}
+
+#[test]
+fn dedupe_completes_its_actions_and_kinds() {
+    let lib = TestLibrary::new();
+    let actions = complete(&lib, &["dedupe", ""]);
+    for action in ["list", "review", "trash", "delete", "undo"] {
+        assert!(
+            actions.iter().any(|w| w == action),
+            "{action} in {actions:?}"
+        );
+    }
+    let kinds = complete(&lib, &["dedupe", "trash", "--kind", ""]);
+    for kind in ["exact", "resized", "creation", "similar"] {
+        assert!(kinds.iter().any(|w| w == kind), "{kind} in {kinds:?}");
+    }
+    let undo = complete(&lib, &["dedupe", "undo", "--"]);
+    assert!(undo.iter().any(|w| w == "--dry-run"), "{undo:?}");
+    assert!(
+        !undo.iter().any(|w| w == "--kind" || w == "--query"),
+        "{undo:?}"
+    );
+}

@@ -38,21 +38,23 @@ you are still in `~/Photos`. From anywhere else, name it explicitly with
 
 ```bash
 videre dedupe                # list which copies could go
-videre dedupe --html         # ...or review them in a browser first
-videre dedupe --trash        # move the copies to the trash (asks first)
+videre dedupe review         # ...or review them in a browser first
+videre dedupe trash        # move the copies to the trash (asks first)
 videre prune                 # tidy the database afterwards
 ```
 
-By default `videre dedupe` only prints a list for you to check; `--trash` is
-what actually deletes, moving the copies to the system trash after asking. Add
-`--similar` to also flag photos and videos that merely *look* alike (after
-`videre embed`); those are reported for review only, never removed.
+By default `videre dedupe` only prints a list for you to check; `trash` is
+what actually deletes, moving the copies to the system trash after asking.
+`--kind` picks other kinds: `resized` for the same picture at another size,
+`creation` for Google Photos edits beside their originals, and `similar` for
+photos and videos that merely *look* alike (after `videre embed`), which are
+reported for review only, never removed.
 
 :::caution
-`videre dedupe --trash` deletes immediately once you confirm (or with `--yes`).
-Preview with `--trash --dry-run`, or review in a browser with `--html` first.
-Changed your mind? `videre dedupe --undo` puts the last run back.
-`--delete` removes the copies permanently instead: faster, with no undo. Use
+`videre dedupe trash` deletes immediately once you confirm (or with `--yes`).
+Preview with `trash --dry-run`, or review in a browser with `videre dedupe review` first.
+Changed your mind? `videre dedupe undo` puts the last run back.
+`delete` removes the copies permanently instead: faster, with no undo. Use
 either rather than piping the list to another tool, which splits paths on
 their spaces. See [cautions](/reference/cautions/).
 :::
@@ -110,7 +112,7 @@ videre watch                           # keep everything fresh in the background
 ## Working with other tools
 
 `videre dedupe` prints one file path per line, so a script can read the
-list. To remove the copies, use `videre dedupe --trash` or `--delete` rather
+list. To remove the copies, use `videre dedupe trash` or `delete` rather
 than a pipe; for a script that must, `--print0` writes the paths
 NUL-delimited so a path with a space survives:
 

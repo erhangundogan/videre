@@ -131,7 +131,7 @@ fn dedupe_groups_the_same_image_with_different_metadata() {
         String::from_utf8_lossy(&out.stderr)
     );
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    let groups = json["duplicate_groups"].as_array().unwrap();
+    let groups = json["groups"].as_array().unwrap();
     assert_eq!(groups.len(), 1, "{json}");
     let names: Vec<&str> = std::iter::once(&groups[0]["keep"])
         .chain(groups[0]["remove"].as_array().unwrap())

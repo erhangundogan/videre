@@ -22,6 +22,10 @@ The fish script also completes `videre config set`: its keys, then the
 choices for the key you typed (the three provided models for `model`, `db`,
 `file` or `newest` for `xmp`, and so on), with no dynamic completer needed.
 
+Subcommands and fixed values complete in every shell: `videre dedupe` offers
+its actions (`list`, `review`, `trash`, `delete`, `undo`), and `--kind` its
+kinds (`exact`, `resized`, `creation`, `similar`).
+
 The script is generated per binary, not per library: `--library` is accepted
 here as on every command, but the output is identical either way.
 

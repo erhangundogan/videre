@@ -103,16 +103,17 @@ fn dedupe_similar_reports_empty_when_no_phash_data() {
     // no embed run: no fingerprints in the db
     scan(&lib, &[]);
 
-    let out = dedupe(&lib, &["--similar", "--json"]);
+    let out = dedupe(&lib, &["--kind", "similar", "--json"]);
     assert!(out.status.success());
     let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    let similar = doc["similar_groups"]
-        .as_array()
-        .expect("similar_groups key must be present (an array) with --similar");
-    assert!(similar.is_empty());
+    assert!(doc["groups"].as_array().unwrap().is_empty(), "{doc}");
 
     // The text report says where the fingerprints come from.
-    let out = lib.cmd().args(["dedupe", "--similar"]).output().unwrap();
+    let out = lib
+        .cmd()
+        .args(["dedupe", "--kind", "similar"])
+        .output()
+        .unwrap();
     assert!(
         String::from_utf8_lossy(&out.stderr).contains("videre embed"),
         "{}",
@@ -138,7 +139,7 @@ fn dedupe_similar_groups_a_video_and_its_recompressed_variant() {
     scan(&lib, &[]);
     fingerprint(&lib);
 
-    let out = dedupe(&lib, &["--similar", "--json"]);
+    let out = dedupe(&lib, &["--kind", "similar", "--json"]);
     assert!(
         out.status.success(),
         "{}",
@@ -147,19 +148,17 @@ fn dedupe_similar_groups_a_video_and_its_recompressed_variant() {
 
     let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
 
-    // The two files have different BLAKE3 hashes (different bitrate/bytes), so
-    // this must NOT be caught by exact-duplicate detection, only by --similar.
-    let duplicate_groups = doc["duplicate_groups"]
-        .as_array()
-        .expect("duplicate_groups key must always be present");
+    // The two files have different content keys (different bitrate/bytes),
+    // so this must NOT be caught by exact-duplicate detection, only as
+    // similar.
+    let exact = dedupe(&lib, &["--json"]);
+    let exact: serde_json::Value = serde_json::from_slice(&exact.stdout).unwrap();
     assert!(
-        duplicate_groups.is_empty(),
-        "a recompressed variant must not be a BLAKE3 exact duplicate: {doc}"
+        exact["groups"].as_array().unwrap().is_empty(),
+        "a recompressed variant must not be an exact duplicate: {exact}"
     );
 
-    let similar = doc["similar_groups"]
-        .as_array()
-        .expect("similar_groups key must be present with --similar");
+    let similar = doc["groups"].as_array().unwrap();
     assert_eq!(
         similar.len(),
         1,
@@ -191,7 +190,7 @@ fn dedupe_similar_does_not_group_two_visually_different_videos() {
     scan(&lib, &[]);
     fingerprint(&lib);
 
-    let out = dedupe(&lib, &["--similar", "--json"]);
+    let out = dedupe(&lib, &["--kind", "similar", "--json"]);
     assert!(
         out.status.success(),
         "{}",
@@ -199,9 +198,7 @@ fn dedupe_similar_does_not_group_two_visually_different_videos() {
     );
 
     let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    let similar = doc["similar_groups"]
-        .as_array()
-        .expect("similar_groups key must be present with --similar");
+    let similar = doc["groups"].as_array().unwrap();
     assert!(
         similar.is_empty(),
         "a flat-color clip and a structured-pattern clip must not be grouped as similar: {doc}"
@@ -220,10 +217,12 @@ fn json_output_reports_duplicate_groups() {
     assert!(out.status.success());
     let doc: serde_json::Value =
         serde_json::from_slice(&out.stdout).expect("stdout must be one valid JSON object");
-    assert_eq!(doc["schema_version"], 1);
+    assert_eq!(doc["schema_version"], 2);
     assert_eq!(doc["total_files"], 3);
+    assert_eq!(doc["kinds"], serde_json::json!(["exact"]));
 
-    let groups = doc["duplicate_groups"].as_array().unwrap();
+    let groups = doc["groups"].as_array().unwrap();
+    assert_eq!(groups[0]["kind"], "exact");
     assert_eq!(groups.len(), 1, "one exact-duplicate group expected");
     let keep = groups[0]["keep"]["path"].as_str().unwrap();
     let remove = groups[0]["remove"].as_array().unwrap();
@@ -237,28 +236,6 @@ fn json_output_reports_duplicate_groups() {
         "keep+remove must be exactly the identical pair, got {pair:?}"
     );
     assert!(keep != removed);
-
-    assert!(
-        doc.get("similar_groups").is_none(),
-        "similar_groups key must be absent without --similar"
-    );
-}
-
-#[test]
-fn json_with_similar_flag_includes_similar_groups_key() {
-    let lib = TestLibrary::new();
-    // Not decodable as images, so no phash -> similar_groups is present but empty
-    std::fs::write(lib.root.join("a.jpg"), b"content one").unwrap();
-    std::fs::write(lib.root.join("b.jpg"), b"content two").unwrap();
-    scan(&lib, &[]);
-
-    let out = dedupe(&lib, &["--similar", "--json"]);
-    assert!(out.status.success());
-    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    let similar = doc["similar_groups"]
-        .as_array()
-        .expect("similar_groups key must be present (an array) with --similar");
-    assert!(similar.is_empty());
 }
 
 #[test]

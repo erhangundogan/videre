@@ -1,5 +1,5 @@
 //! Removing library files: to the operating system's trash (recoverable), or
-//! permanently. The primitive behind `dedupe --trash`/`--delete` and the
+//! permanently. The primitive behind `dedupe trash`/`delete` and the
 //! gallery's Delete. Isolated here so the `trash` crate has a single import
 //! site and the flow can be exercised without driving a whole command.
 
@@ -41,7 +41,7 @@ impl Outcome {
 /// at once.
 ///
 /// With `Method::Trash` and a `manifest`, each file moved to the trash is
-/// recorded there as it goes: its content hash and size, so `dedupe --undo`
+/// recorded there as it goes: its content hash and size, so `dedupe undo`
 /// can prove a trash copy is the same file, and where it landed when the
 /// platform says.
 pub fn remove_and_forget(

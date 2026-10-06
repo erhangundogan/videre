@@ -83,7 +83,7 @@ Copying into a clean destination tree is designed but not built. Passing
 videre import ~/Takeout                # see what the export holds
 videre --library ~/Takeout scan        # record it, dates and places from the sidecars
 videre --library ~/Takeout fix-dates   # set those dates as the files' times
-videre dedupe --trash                  # collapse the copies albums created
+videre dedupe trash                  # collapse the copies albums created
 ```
 
 Import deliberately does not scan for you, keeping each command to one job.
@@ -119,12 +119,12 @@ closing hint adds the two commands that deal with them:
 Next:
   videre scan ~/Takeout/Google Photos
   videre fix-dates                  # set 14143 file time(s) from their sidecar
-  videre dedupe --edited --html     # review 3763 photo(s) Google Photos exported twice
-  videre dedupe --edited --trash    # keep the originals, trash the edits
+  videre dedupe review --kind creation     # review 3763 photo(s) Google Photos made from another
+  videre dedupe trash --kind creation    # keep the originals, trash the creations
 ```
 
 `--json` reports the count as `edited_pairs`. See
-[`dedupe --edited`](/commands/dedupe/#google-photos-edits---edited).
+[`dedupe --kind creation`](/commands/dedupe/#google-photos-creations).
 
 Point it at whichever level you have: the folder you extracted into, the
 `Takeout/` folder, or `Google Photos/` itself all work.
