@@ -106,22 +106,22 @@ first. See [`fix-dates`](/commands/fix-dates/).
 ## 6. Remove the album duplicates
 
 ```bash
-videre dedupe --html                  # look at what would go
-videre dedupe --trash                 # move the copies to the trash, once you agree
+videre dedupe review                  # look at what would go
+videre dedupe trash                 # move the copies to the trash, once you agree
 videre prune                          # tidy the database afterwards
 ```
 
-`videre dedupe --html` opens a page in your browser showing every duplicate group, with
+`videre dedupe review` opens a page in your browser showing every duplicate group, with
 KEEP and REMOVE badges. Look before you delete.
 
 This is where the album duplication disappears. Those copies are byte-identical,
 so removing them loses nothing at all.
 
 :::caution
-`videre dedupe --trash` deletes immediately once you confirm. Run `videre
-dedupe --html` first to review, or preview with `--trash --dry-run`.
-Changed your mind? `videre dedupe --undo` puts the last run back.
-`--delete` removes the copies permanently instead: faster, with no undo. Use
+`videre dedupe trash` deletes immediately once you confirm. Run `videre
+dedupe review` first to review, or preview with `trash --dry-run`.
+Changed your mind? `videre dedupe undo` puts the last run back.
+`delete` removes the copies permanently instead: faster, with no undo. Use
 either rather than piping the list to another tool, which splits Takeout
 paths on their spaces. See [cautions](/reference/cautions/).
 :::
@@ -132,14 +132,14 @@ The `-edited` renders are not byte-identical to their originals, so the step
 above leaves them. `videre import` counts them and says so; remove them with:
 
 ```bash
-videre dedupe --edited --html         # each original beside its edit
-videre dedupe --edited --trash        # keep the originals, trash the edits
-videre dedupe --undo                  # changed your mind? put the edits back
+videre dedupe review --kind creation         # each original beside its edit
+videre dedupe trash --kind creation        # keep the originals, trash the creations
+videre dedupe undo                  # changed your mind? put the edits back
 ```
 
 The original is kept because it is the file the camera wrote; the edit is
 Google's re-encoded copy. Faces you named on an edit are not moved to its
-original. See [`dedupe --edited`](/commands/dedupe/#google-photos-edits---edited).
+original. See [`dedupe --kind creation`](/commands/dedupe/#google-photos-creations).
 
 ## 7. Make it searchable
 

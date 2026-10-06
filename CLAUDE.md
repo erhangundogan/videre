@@ -532,6 +532,32 @@ on the unpack date until scan read their sidecars.
 Takeout sidecars are matched by `videre::takeout_sidecar`, shared by scan and
 import; a sidecar's `geoData` fills a row with no GPS (`gps_source`).
 
+### A resized copy is confirmed by pixels, at different sizes only
+
+`videre::duplicates` defines every kind of duplicate once, for dedupe, the
+gallery's Duplicates page, the static review page and MCP. `resized` takes a
+pair within 4 fingerprint bits, at different decoded pixel sizes, aspect within 1%,
+and 64x64 greyscale mean absolute difference at most 0.5. Measured 2026-10-06
+on a 14,000-image Takeout library: 16x16 could not tell a still burst from a
+copy (MAD 1.0 between two separate shots); at 64x64 every owner-confirmed copy
+at a different size was at 0.56 or less and every other different-size pair at
+0.59 or more.
+
+:warning: **Never let a same-size pair be a resized copy.** At one size, burst
+frames (0.16) and messenger copies (0.01-0.1) overlap, and capture time cannot
+split them either (iPhone burst frames share the second). Which burst frame to
+keep is a choice, not a rule.
+
+Image-model similarity is not a substitute: it scores different shots of one
+scene alike. Google's `-EFFECTS`/`-SMILE` creations are matched by name
+(`videre_core::takeout_names`), since their pixels range from 0.04 to over 9
+from the original. Signatures are decoded only for candidates and kept in
+`pixel_signatures`; a gallery rotation forgets them with the fingerprint.
+
+:warning: **The size comes from the decoded pixels, never the row.** A copy
+can keep its original's size tags: two Takeout rows read 1932x2576 while one
+file's pixels were 1536x2048, and comparing the rows hid that copy.
+
 ### Probe videos before invoking QuickLook
 
 `qlmanage -t` does not fail on a container with no video track, it **hangs**, so
@@ -808,6 +834,8 @@ above.
   deletes the WAL under a live connection -> `videre_core::library_db::is_sqlite_file`
 - Errors logged once, at boundaries; per-command log layout and reader -> `videre_core::error_log`, `videre_core::error_kind`, `crates/videre/src/logging.rs`
 - File identity is the content key, metadata excluded -> `videre::content_key`
+- Duplicate kinds, keepers and the whole-group query rule, shared by dedupe,
+  the gallery and MCP -> `videre::duplicates`
 - One capture date per row, every date a local wall clock; schema 5 adds it in
   place and the next scan resolves old rows without rehashing ->
   `videre_core::capture_date`, `videre::sqlite_output::resolve_unresolved`

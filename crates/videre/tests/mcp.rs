@@ -298,7 +298,7 @@ fn the_protocol_and_tool_schemas_clients_see_are_pinned() {
     assert_eq!(
         shape,
         [
-            "find_duplicates(include_similar:\"boolean\")".to_string(),
+            "find_duplicates(kinds:\"array\")".to_string(),
             format!("search({search})"),
             "stats()".to_string(),
         ]
@@ -375,11 +375,13 @@ fn find_duplicates_tool_returns_keep_remove_groups() {
 
     let resp = client.call_tool(3, "find_duplicates", json!({}));
     let doc = &resp["result"]["structuredContent"];
-    assert_eq!(doc["schema_version"], 1, "full response: {resp}");
+    assert_eq!(doc["schema_version"], 2, "full response: {resp}");
     assert_eq!(doc["total_files"], 4);
-    let groups = doc["duplicate_groups"].as_array().unwrap();
+    assert_eq!(doc["kinds"], json!(["exact"]));
+    let groups = doc["groups"].as_array().unwrap();
     assert_eq!(groups.len(), 1);
-    assert_eq!(groups[0]["hash"], "hash1");
+    assert_eq!(groups[0]["kind"], "exact");
+    assert_eq!(groups[0]["keep"]["hash"], "hash1");
     assert!(
         groups[0]["keep"]["path"]
             .as_str()
@@ -393,17 +395,18 @@ fn find_duplicates_tool_returns_keep_remove_groups() {
         .as_str()
         .unwrap()
         .ends_with("alice1_copy.jpg"));
-    assert!(
-        doc.get("similar_groups").is_none(),
-        "absent without include_similar"
+
+    let resp2 = client.call_tool(4, "find_duplicates", json!({"kinds": ["exact", "similar"]}));
+    let doc2 = &resp2["result"]["structuredContent"];
+    assert_eq!(doc2["kinds"], json!(["exact", "similar"]), "{resp2}");
+    assert_eq!(
+        doc2["groups"].as_array().unwrap().len(),
+        1,
+        "no fingerprints"
     );
 
-    let resp2 = client.call_tool(4, "find_duplicates", json!({"include_similar": true}));
-    let doc2 = &resp2["result"]["structuredContent"];
-    assert!(doc2["similar_groups"]
-        .as_array()
-        .expect("similar_groups present")
-        .is_empty());
+    let resp3 = client.call_tool(5, "find_duplicates", json!({"kinds": ["benzer"]}));
+    assert_eq!(resp3["result"]["isError"], true, "{resp3}");
     client.shutdown();
 }
 

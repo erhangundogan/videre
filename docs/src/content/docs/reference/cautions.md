@@ -6,27 +6,27 @@ description: The parts of videre that change something, and the situations that 
 Most of videre is read-only. These are the parts that are not, plus the
 situations that surprise people.
 
-## `videre dedupe --trash` deletes files
+## `videre dedupe trash` deletes files
 
-`videre dedupe --trash` moves the duplicate copies to the system trash
-(recoverable), and its plain output is the REMOVE side of each group. `--trash`
+`videre dedupe trash` moves the duplicate copies to the system trash
+(recoverable), and its plain output is the REMOVE side of each group. `trash`
 asks before deleting (unless `--yes`), previews with `--dry-run`, and handles
-paths with spaces correctly, as does `--delete`. Use them rather than piping
+paths with spaces correctly, as does `delete`. Use them rather than piping
 `videre dedupe` into another tool, which splits every path on its spaces (a
 script that must pipe uses `--print0 | xargs -0`).
 
-Look before you delete: run [`videre dedupe --html`](/commands/dedupe/) first and review
-the KEEP/REMOVE badges, or use `--trash --dry-run`.
+Look before you delete: run [`videre dedupe review`](/commands/dedupe/) first and review
+the KEEP/REMOVE badges, or use `trash --dry-run`.
 
-Changed your mind? [`videre dedupe --undo`](/commands/dedupe/#undoing---trash)
-puts back the most recent `--trash` run, newest first, one run per call, until
+Changed your mind? [`videre dedupe undo`](/commands/dedupe/#undoing-a-trash-run)
+puts back the most recent `trash` run, newest first, one run per call, until
 the trash is emptied.
 
-`videre dedupe --delete` removes the same copies **permanently**: nothing goes
-to the trash, and it cannot be undone, not even by `--undo`. It asks with that wording before it
-starts; use it only once a `--trash --dry-run` lists what you expect.
+`videre dedupe delete` removes the same copies **permanently**: nothing goes
+to the trash, and it cannot be undone, not even by `undo`. It asks with that wording before it
+starts; use it only once a `trash --dry-run` lists what you expect.
 
-Near-duplicate groups from `--similar` are deliberately kept out of this output,
+Near-duplicate groups from `--kind similar` are deliberately kept out of this output,
 because they are for review by eye, not for automatic deletion.
 
 ## Keep your photos connected when running `prune`

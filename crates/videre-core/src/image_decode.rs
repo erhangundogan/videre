@@ -101,6 +101,64 @@ pub fn dhash(image: &image::DynamicImage) -> u64 {
     hash
 }
 
+/// What confirms that two images with near fingerprints are one picture: the
+/// upright canvas reduced to 64x64 greyscale, and its width over height. A
+/// resize or recompression barely moves it; a different shot, which a
+/// fingerprint can place a few bits away, differs where the subject moved.
+/// Taken from the image `dhash` reads, already upright.
+///
+/// Why 64 and not 16: measured 2026-10-06 on a 14,000-image Takeout library,
+/// 16x16 could not tell a still burst from a copy (two separate shots at MAD
+/// 1.0). At 64x64 the owner's 41 confirmed copies at different sizes were all
+/// at MAD 0.56 or less and every other different-size pair at 0.59 or more.
+pub struct PixelSignature {
+    /// `SIGNATURE_SIDE * SIGNATURE_SIDE` greyscale values, row by row.
+    pub luma: Vec<u8>,
+    /// The upright canvas's size, as decoded. Not the row's `width` and
+    /// `height`: a copy can keep its original's size tags.
+    pub width: u32,
+    pub height: u32,
+}
+
+impl PixelSignature {
+    /// Width over height.
+    pub fn aspect(&self) -> f32 {
+        self.width as f32 / self.height.max(1) as f32
+    }
+
+    pub fn pixels(&self) -> u64 {
+        self.width as u64 * self.height as u64
+    }
+}
+
+/// The side of a signature's greyscale square.
+pub const SIGNATURE_SIDE: usize = 64;
+
+pub fn pixel_signature(image: &image::DynamicImage) -> PixelSignature {
+    let side = SIGNATURE_SIDE as u32;
+    let small = image::imageops::resize(
+        &image.to_luma8(),
+        side,
+        side,
+        image::imageops::FilterType::Lanczos3,
+    );
+    PixelSignature {
+        luma: small.into_raw(),
+        width: image.width(),
+        height: image.height(),
+    }
+}
+
+/// Mean absolute difference of two signatures' greyscale values, 0 to 255.
+/// Signatures of different lengths (another side) are never close.
+pub fn signature_mad(a: &[u8], b: &[u8]) -> f32 {
+    if a.len() != b.len() || a.is_empty() {
+        return f32::INFINITY;
+    }
+    let sum: u64 = a.iter().zip(b).map(|(x, y)| x.abs_diff(*y) as u64).sum();
+    sum as f32 / a.len() as f32
+}
+
 fn apply(
     mut img: image::DynamicImage,
     orientation: image::metadata::Orientation,
@@ -169,6 +227,75 @@ mod tests {
     fn top_left_is_white(img: &image::DynamicImage) -> bool {
         let rgb = img.to_rgb8();
         rgb.get_pixel(0, 0)[0] > 128
+    }
+
+    fn fixture(name: &str) -> image::DynamicImage {
+        decode_oriented_file(Path::new(&format!(
+            "{}/../videre/tests/fixtures/{name}",
+            env!("CARGO_MANIFEST_DIR")
+        )))
+        .unwrap()
+    }
+
+    fn reencoded(img: &image::DynamicImage, w: u32, h: u32, quality: u8) -> image::DynamicImage {
+        let resized = img.resize_exact(w, h, image::imageops::FilterType::Lanczos3);
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, quality)
+            .encode_image(&resized.to_rgb8())
+            .unwrap();
+        decode_oriented_bytes(&jpeg).unwrap()
+    }
+
+    #[test]
+    fn a_pixel_signature_is_taken_from_the_upright_canvas() {
+        // The o6 fixture is the original tagged Orientation 6 (90 CW): its
+        // signature is the rotated original's, as its fingerprint is.
+        let rotated = image::DynamicImage::ImageRgb8(image::imageops::rotate90(
+            &fixture("ai-generated-couple.jpg").to_rgb8(),
+        ));
+        let tagged = pixel_signature(&fixture("ai-generated-couple_o6.jpg"));
+        assert!(signature_mad(&tagged.luma, &pixel_signature(&rotated).luma) < 1.0);
+        assert!((tagged.aspect() - rotated.width() as f32 / rotated.height() as f32).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_resized_or_recompressed_copy_keeps_its_signature() {
+        let original = fixture("ai-generated-couple.jpg");
+        let sig = pixel_signature(&original);
+        let (w, h) = (original.width(), original.height());
+        let half = pixel_signature(&reencoded(&original, w / 2, h / 2, 90));
+        let rough = pixel_signature(&reencoded(&original, w, h, 60));
+        assert!(signature_mad(&sig.luma, &half.luma) < 0.5, "resize");
+        assert!(signature_mad(&sig.luma, &rough.luma) < 1.0, "recompress");
+        assert!((sig.aspect() - half.aspect()).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_different_picture_has_a_distant_signature() {
+        let a = pixel_signature(&fixture("ai-generated-couple.jpg"));
+        let b = pixel_signature(&fixture("sample_with_exif.jpg"));
+        assert!(signature_mad(&a.luma, &b.luma) > 20.0);
+    }
+
+    #[test]
+    fn a_signature_is_64_by_64() {
+        let img = image::DynamicImage::new_rgb8(1600, 1200);
+        assert_eq!(
+            pixel_signature(&img).luma.len(),
+            SIGNATURE_SIDE * SIGNATURE_SIDE
+        );
+        assert_eq!(SIGNATURE_SIDE, 64);
+    }
+
+    #[test]
+    fn signatures_of_different_sizes_never_compare_as_close() {
+        assert_eq!(signature_mad(&[0; 4], &[0; 8]), f32::INFINITY);
+    }
+
+    #[test]
+    fn aspect_is_width_over_height() {
+        let img = image::DynamicImage::new_rgb8(1600, 1200);
+        assert!((pixel_signature(&img).aspect() - 4.0 / 3.0).abs() < 1e-6);
     }
 
     #[test]

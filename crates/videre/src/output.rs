@@ -5,7 +5,7 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 
 // KEEP candidate sort key: exif_date wins; otherwise oldest of created_at / modified_at.
-fn best_date(r: &FileRecord) -> &str {
+pub(crate) fn best_date(r: &FileRecord) -> &str {
     if let Some(d) = r.exif_date.as_deref() {
         if !d.starts_with("0000") {
             return d;
@@ -45,24 +45,11 @@ pub fn find_duplicate_groups(records: &[FileRecord]) -> Vec<DuplicateGroup> {
     groups
 }
 
-/// Google Takeout edits beside their originals, as `(kept original, removed
-/// edit)` paths, sorted by the edit. See `crate::takeout_names`.
-pub fn edited_losers(records: &[FileRecord]) -> Vec<(String, String)> {
-    let rows: Vec<(&str, &str)> = records
-        .iter()
-        .map(|r| (r.path.as_str(), r.hash.as_str()))
-        .collect();
-    crate::takeout_names::edited_pairs(&rows)
-        .into_iter()
-        .map(|pair| (pair.original.to_string(), pair.edit.to_string()))
-        .collect()
-}
-
 /// A fingerprint with almost no set bits (or almost nothing but set bits)
 /// carries no image structure: a flat or near-flat opening frame (fade-in,
 /// letterbox, title card) hashes near an extreme, and any two such frames
 /// collide regardless of what the rest of the clip shows. Such
-/// records are excluded from `--similar` grouping entirely; identical copies
+/// records are excluded from `similar` and `resized` grouping entirely; identical copies
 /// are still caught by exact content-hash dedupe. Deliberately no
 /// size-proximity gate alongside this: a genuine re-encode routinely halves
 /// the file size (the testsrc fixture pair measures 2.07x), so a size window
@@ -74,7 +61,7 @@ pub fn edited_losers(records: &[FileRecord]) -> Vec<(String, String)> {
 /// it. Raise it only with measurements; it must not track the threshold.
 const DEGENERATE_BITS: u32 = 6;
 
-fn degenerate_phash(hash: u64) -> bool {
+pub(crate) fn degenerate_phash(hash: u64) -> bool {
     crate::hasher::hamming(hash, 0) <= DEGENERATE_BITS
         || crate::hasher::hamming(hash, u64::MAX) <= DEGENERATE_BITS
 }

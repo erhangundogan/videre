@@ -1,5 +1,5 @@
-//! `videre dedupe --undo`: every `--trash` run records what it moved, and
-//! `--undo` puts the newest run back, one run per call.
+//! `videre dedupe undo`: every `dedupe trash` run records what it moved, and
+//! `undo` puts the newest run back, one run per call.
 
 mod common;
 use common::TestLibrary;
@@ -50,20 +50,20 @@ fn a_trash_run_writes_one_manifest_and_delete_writes_none() {
     let lib = TestLibrary::new();
     let edits = lib_with_edits(&lib, "Fotoğraflar", 2);
     lib.scan();
-    dedupe(&lib, &["--edited", "--delete", "--yes"]);
+    dedupe(&lib, &["delete", "--kind", "exact,creation", "--yes"]);
     assert!(edits.iter().all(|e| !e.exists()));
-    assert!(manifests(&lib).is_empty(), "--delete cannot be undone");
+    assert!(manifests(&lib).is_empty(), "delete cannot be undone");
 
     let edits = lib_with_edits(&lib, "Çiçekler_yaz", 2);
     lib.scan();
     let out = lib
         .cmd()
-        .args(["dedupe", "--edited", "--trash", "--yes"])
+        .args(["dedupe", "trash", "--kind", "exact,creation", "--yes"])
         .output()
         .unwrap();
     assert!(
         out.status.success() && edits.iter().all(|e| !e.exists()),
-        "--trash failed: {}",
+        "trash failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     let runs = manifests(&lib);
@@ -77,7 +77,7 @@ fn a_trash_run_writes_one_manifest_and_delete_writes_none() {
         );
     }
     // Leave nothing in the trash.
-    dedupe(&lib, &["--undo", "--yes", "--silent"]);
+    dedupe(&lib, &["undo", "--yes", "--silent"]);
 }
 
 /// Trash the edits of a fresh set of pairs under `folder`. No skip when the
@@ -89,12 +89,19 @@ fn trash_edits(lib: &TestLibrary, folder: &str, n: usize) -> Vec<PathBuf> {
     lib.scan();
     let out = lib
         .cmd()
-        .args(["dedupe", "--edited", "--trash", "--yes", "--silent"])
+        .args([
+            "dedupe",
+            "trash",
+            "--kind",
+            "exact,creation",
+            "--yes",
+            "--silent",
+        ])
         .output()
         .unwrap();
     assert!(
         out.status.success() && edits.iter().all(|e| !e.exists()),
-        "--trash failed: {}",
+        "trash failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     edits
@@ -107,24 +114,11 @@ fn rows(lib: &TestLibrary) -> i64 {
 }
 
 #[test]
-fn undo_cannot_be_combined_with_trash_delete_or_a_selection() {
-    let lib = TestLibrary::new();
-    for flag in ["--trash", "--delete", "--edited"] {
-        let out = lib.cmd().args(["dedupe", "--undo", flag]).output().unwrap();
-        assert_eq!(out.status.code(), Some(2), "{flag}");
-        assert!(
-            String::from_utf8_lossy(&out.stderr).contains("cannot be used with"),
-            "{flag}"
-        );
-    }
-}
-
-#[test]
 fn undo_with_nothing_recorded_says_so_and_succeeds() {
     let lib = TestLibrary::new();
     lib_with_edits(&lib, "Boş", 1);
     lib.scan();
-    let out = dedupe(&lib, &["--undo", "--yes"]);
+    let out = dedupe(&lib, &["undo", "--yes"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("Nothing to undo"), "{stderr}");
 }
@@ -133,14 +127,14 @@ fn undo_with_nothing_recorded_says_so_and_succeeds() {
 fn undo_dry_run_lists_and_changes_nothing() {
     let lib = TestLibrary::new();
     let edits = trash_edits(&lib, "Deneme", 2);
-    let out = dedupe(&lib, &["--undo", "--dry-run"]);
+    let out = dedupe(&lib, &["undo", "--dry-run"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     for e in &edits {
         assert!(!e.exists(), "a dry run restores nothing");
         assert!(stdout.contains(&*e.to_string_lossy()), "{stdout}");
     }
     assert_eq!(manifests(&lib).len(), 1, "still undoable");
-    dedupe(&lib, &["--undo", "--yes", "--silent"]);
+    dedupe(&lib, &["undo", "--yes", "--silent"]);
 }
 
 #[test]
@@ -150,7 +144,7 @@ fn undo_restores_the_newest_run_first_and_back_into_the_library() {
     let second = trash_edits(&lib, "Tatil_son", 1);
     assert_eq!(rows(&lib), 3, "three originals left");
 
-    let out = dedupe(&lib, &["--undo", "--yes"]);
+    let out = dedupe(&lib, &["undo", "--yes"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(second.iter().all(|e| e.exists()), "{stderr}");
     assert!(first.iter().all(|e| !e.exists()), "{stderr}");
@@ -158,7 +152,7 @@ fn undo_restores_the_newest_run_first_and_back_into_the_library() {
     assert!(stderr.contains("1 earlier run(s)"), "{stderr}");
     assert_eq!(rows(&lib), 4, "the restored edit is indexed again");
 
-    let out = dedupe(&lib, &["--undo", "--yes"]);
+    let out = dedupe(&lib, &["undo", "--yes"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(first.iter().all(|e| e.exists()), "{stderr}");
     assert_eq!(rows(&lib), 6);
@@ -188,7 +182,7 @@ fn undo_json_reports_each_outcome_and_never_overwrites() {
     let edits = trash_edits(&lib, "Doğum_günü", 2);
     // One original path is taken again: that file is skipped, never replaced.
     std::fs::write(&edits[0], b"yeni").unwrap();
-    let out = dedupe(&lib, &["--undo", "--yes", "--json"]);
+    let out = dedupe(&lib, &["undo", "--yes", "--json"]);
     let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(doc["restored"].as_array().unwrap().len(), 1, "{doc}");
     // Compared canonically: the library records `/private/var`, the test
@@ -204,7 +198,7 @@ fn undo_json_reports_each_outcome_and_never_overwrites() {
 
     // Clear the way and finish, so nothing is left in the trash.
     std::fs::remove_file(&edits[0]).unwrap();
-    dedupe(&lib, &["--undo", "--yes", "--silent"]);
+    dedupe(&lib, &["undo", "--yes", "--silent"]);
     assert!(edits.iter().all(|e| e.exists()));
 }
 
@@ -228,15 +222,22 @@ fn same_named_copies_from_different_folders_both_come_back() {
     lib.scan();
     let out = lib
         .cmd()
-        .args(["dedupe", "--edited", "--trash", "--yes", "--silent"])
+        .args([
+            "dedupe",
+            "trash",
+            "--kind",
+            "exact,creation",
+            "--yes",
+            "--silent",
+        ])
         .output()
         .unwrap();
     assert!(
         out.status.success() && edits.iter().all(|(e, _)| !e.exists()),
-        "--trash failed: {}",
+        "trash failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    dedupe(&lib, &["--undo", "--yes", "--silent"]);
+    dedupe(&lib, &["undo", "--yes", "--silent"]);
     for (edit, bytes) in &edits {
         assert_eq!(&std::fs::read(edit).unwrap(), bytes, "{edit:?}");
     }
@@ -253,7 +254,14 @@ fn a_sidecar_goes_and_comes_back_with_its_edit() {
     lib.scan();
     let out = lib
         .cmd()
-        .args(["dedupe", "--edited", "--trash", "--yes", "--silent"])
+        .args([
+            "dedupe",
+            "trash",
+            "--kind",
+            "exact,creation",
+            "--yes",
+            "--silent",
+        ])
         .output()
         .unwrap();
     assert!(
@@ -263,7 +271,7 @@ fn a_sidecar_goes_and_comes_back_with_its_edit() {
     );
     assert!(!edits[0].exists() && !sidecar.exists());
 
-    dedupe(&lib, &["--undo", "--yes", "--silent"]);
+    dedupe(&lib, &["undo", "--yes", "--silent"]);
     assert!(edits[0].exists(), "the edit is back");
     assert_eq!(
         std::fs::read_to_string(&sidecar).unwrap(),

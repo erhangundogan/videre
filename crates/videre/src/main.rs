@@ -46,7 +46,7 @@ enum Command {
         #[arg(value_enum)]
         shell: clap_complete::shells::Shell,
     },
-    /// Find duplicate copies, then list them, move them to the trash, delete them, or undo a trash run
+    /// Find duplicates by kind (exact, resized, Google creation, similar), then list, review, trash or delete the copies, or undo a trash run
     Dedupe(commands::dedupe::DedupeArgs),
     /// Browse the library in a local web UI: files, search, duplicates, dates, people, map, events
     Gallery(commands::gallery::GalleryArgs),

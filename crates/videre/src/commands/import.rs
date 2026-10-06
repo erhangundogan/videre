@@ -70,7 +70,7 @@ pub(crate) struct Summary {
     pub errors: usize,
     pub aborted: bool,
     /// Google Takeout only: edits exported beside their originals, counted by
-    /// name (`videre::takeout_names`), for the hint to `dedupe --edited`.
+    /// name (`videre::takeout_names`), for the hint to `dedupe --kind creation`.
     pub edited_pairs: usize,
 }
 
@@ -224,11 +224,11 @@ fn import_one(
         }
         if summary.edited_pairs > 0 {
             tracing::info!(
-                "  videre dedupe --edited --html     # review {} photo(s) Google Photos exported twice",
+                "  videre dedupe review --kind creation   # review {} photo(s) Google Photos made from another",
                 summary.edited_pairs
             );
             tracing::info!(
-                "  videre dedupe --edited --trash    # keep the originals, trash the edits"
+                "  videre dedupe trash --kind creation    # keep the originals, trash the creations"
             );
         }
     }

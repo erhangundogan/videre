@@ -313,9 +313,10 @@ fn term(key: &str, value: &str) -> Result<Expr, QueryError> {
         "label" => leaf(|s| s.label = Some(value)),
         "is" => match value.as_str() {
             "liked" => leaf(|s| s.liked = true),
+            "creation" => leaf(|s| s.creation = true),
             _ => {
                 return Err(refused(format!(
-                    "unknown is:{value}; the only one is is:liked"
+                    "unknown is:{value}; is:liked and is:creation are the ones there are"
                 )))
             }
         },
@@ -665,7 +666,7 @@ pub fn values(conn: &rusqlite::Connection, key: &str, typed: &str) -> Vec<Value>
              WHERE ext IS NOT NULL AND ext != '' GROUP BY ext"),
         "mime" => sql("SELECT mime, mime, COUNT(*), NULL FROM file_hashes
              WHERE mime IS NOT NULL AND mime != '' GROUP BY mime"),
-        "is" => fixed(&["liked"]),
+        "is" => fixed(&["creation", "liked"]),
         "type" => fixed(&["image", "video"]),
         "has" | "missing" => fixed(&["gps", "date"]),
         "pick" => fixed(&["keep", "reject"]),
@@ -896,7 +897,7 @@ mod suggest_tests {
 
     #[test]
     fn fixed_values_are_offered_for_their_keys() {
-        assert_eq!(inserts("is:"), ["is:liked"]);
+        assert_eq!(inserts("is:"), ["is:creation", "is:liked"]);
         assert_eq!(inserts("type:v"), ["type:video"]);
         assert_eq!(inserts("has:"), ["has:gps", "has:date"]);
         assert_eq!(inserts("pick:"), ["pick:keep", "pick:reject"]);
@@ -975,6 +976,28 @@ mod resolve_tests {
         assert_eq!(hashes(&ctx, "tag:deniz is:liked"), ["h_deniz"]);
         assert_eq!(hashes(&ctx, "tag:deniz tag:plaj"), Vec::<String>::new());
         assert_eq!(hashes(&ctx, "type:image -tag:ekran"), ["h_deniz", "h_plaj"]);
+    }
+
+    #[test]
+    fn is_creation_finds_google_creations_beside_their_originals() {
+        let (_t, ctx) = library();
+        let conn = videre_core::library_db::open_existing(&ctx).unwrap();
+        let root = ctx.paths.root.display().to_string();
+        conn.execute_batch(&format!(
+            "INSERT INTO file_hashes (path, hash, ext) VALUES
+               ('{root}/IMG_0001.jpg', 'h_asil', 'jpg'),
+               ('{root}/IMG_0001-EFFECTS.jpg', 'h_efekt', 'jpg'),
+               ('{root}/yalnız-SMILE.jpg', 'h_yalniz', 'jpg');"
+        ))
+        .unwrap();
+        assert_eq!(hashes(&ctx, "is:creation"), ["h_efekt"]);
+        let rest = hashes(&ctx, "-is:creation");
+        assert!(rest.contains(&"h_asil".to_string()), "{rest:?}");
+        assert!(
+            rest.contains(&"h_yalniz".to_string()),
+            "no original beside it"
+        );
+        assert!(!rest.contains(&"h_efekt".to_string()), "{rest:?}");
     }
 
     #[test]

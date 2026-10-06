@@ -107,7 +107,7 @@ people or location data yet.
 |------|--------------|
 | `/` | Every file, with a **Similar** button on each card once the library has embeddings (the grid under the map has it too) |
 | `/search?like=<hash>`, `/search?q=...` | A ranking as a page of its own: files like one, or matching words, within the query's filters. **Open as a page** on a Similar or text-results strip leads here, and a bookmark reopens it. **Show more** continues the ranking |
-| `/duplicates` | Duplicate groups, the same review `dedupe --html` writes, plus Google Takeout edits beside their originals ([`dedupe --edited`](/commands/dedupe/#google-photos-edits---edited)), counted in the header apart from exact copies |
+| `/duplicates` | Duplicate groups by [kind](/commands/dedupe/#kinds), the same groups `dedupe review` writes, with **Trash copies** per group and **Trash all copies** in the toolbar |
 | `/people` | Face groups, and naming them. Singletons load as you scroll; naming one keeps your place |
 | `/date` | A Year / Month / Day drill-down |
 | `/date/2024`, `/date/2024/09`, `/date/2024/09/26` | The media of that year, month, or day, each with its item count; **Show more** loads the next page |
@@ -183,8 +183,18 @@ In the box, each filter is a **chip**, and words stay as text:
 The tall library header (the database path and the scanned-file counts) shows on
 the Library page and on a static export; the other sections drop it, since the strip
 already says where you are. The Duplicates page keeps a header of its own while it
-has duplicates: the number of duplicate groups, the files in them, and the space
-the extra copies take.
+has duplicates: a line per kind with its groups and the space their copies take.
+
+The Duplicates page shows the groups `videre dedupe` finds, by the same rules:
+exact copies, resized copies, Google Photos creations beside their originals,
+and look-alike pictures (review only). **Kinds** in its toolbar picks which,
+and is remembered (`routes.duplicates.kinds`). A query keeps the groups with a
+matching file, whole, as `dedupe --query` does. **Trash copies** on a group, or
+**Trash all copies** for every group on the page, moves the copies to the
+system trash and keeps each group's first file; `videre dedupe undo` puts them
+back. Look-alike groups have no button: which one to keep is yours to decide.
+The page never decodes images, so resized copies appear once `videre dedupe
+--kind resized` has checked them; until then the page says how many wait.
 
 A liked file wears a red heart at the bottom left of its thumbnail. It only
 shows the state: the heart in the lightbox is the one that likes and unlikes.
@@ -287,7 +297,7 @@ These are the defaults every library starts from:
     "search": { "pageSize": 96 },
     "events": { "sort": { "field": "date", "dir": "desc" } },
     "people": { "align": "right", "reclusterOpen": false, "pageSize": 200 },
-    "duplicates": { "pageSize": 100 },
+    "duplicates": { "pageSize": 100, "kinds": ["exact", "resized", "creation"] },
     "map": { "radiusKm": 0, "sort": { "field": "date", "dir": "desc" } }
   }
 }
@@ -304,6 +314,7 @@ These are the defaults every library starts from:
 | `routes.search.pageSize` | a whole number, 1 to 200 | How many results a search page shows at a time, and with each **Show more** |
 | `routes.people.pageSize` | a whole number, 1 to 1000 | How many faces the People page's singletons and a person's page load at a time, as you scroll |
 | `routes.duplicates.pageSize` | a whole number, 1 to 1000 | How many duplicate groups the Duplicates page shows at a time, and with each **Show more** |
+| `routes.duplicates.kinds` | a list of `exact`, `resized`, `creation`, `similar` | The kinds of duplicate the Duplicates page shows |
 | `routes.files.tile.rowHeight` | 80 to 1000 | Target height of a tile row, in pixels |
 | `routes.files.tile.colGap` | 0 to 100 | Space between tiles in a row, in pixels |
 | `routes.files.tile.rowGap` | 0 to 100 | Space between tile rows, in pixels |
@@ -374,8 +385,8 @@ item to the Trash (the confirmation counts them), each with its XMP sidecar,
 and the library stops
 listing them at once; their marks, tags and faces stay until
 [`videre prune`](/commands/prune/). A Delete is undone with
-[`videre dedupe --undo`](/commands/dedupe/#undoing---trash), which puts back
-the most recent trash run, from the gallery or from `dedupe --trash`. Prune also withdraws face-learning evidence
+[`videre dedupe undo`](/commands/dedupe/#undoing-a-trash-run), which puts back
+the most recent trash run, from the gallery or from `dedupe trash`. Prune also withdraws face-learning evidence
 that depended on those faces, while keeping the historical journal and person
 names. It waits until no other videre command or
 `watch` stage is working on the library.
@@ -489,7 +500,7 @@ shows it.
 keep or send what a command just found, ask that command for it:
 
 ```bash
-videre dedupe --html            # the duplicate groups, as a file
+videre dedupe review            # the duplicate groups, as a file
 videre search "sunset" --html   # these results, as a file
 ```
 

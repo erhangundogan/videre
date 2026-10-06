@@ -21,7 +21,7 @@ the configurations below.
 | Tool | Parameters | What it does |
 |---|---|---|
 | `stats` | none | Library summary: files, size, embeddings, faces, people, GPS coverage, date range |
-| `find_duplicates` | `include_similar` | Exact-duplicate groups as `keep` and `remove`, plus review-only look-alikes |
+| `find_duplicates` | `kinds` | Duplicate groups by [kind](/commands/dedupe/#kinds) (`exact` by default; `resized`, `creation`, `similar`): `keep` and `remove`, or a review-only `files` list. The document `dedupe --json` prints |
 | `search` | `query`, `image_path`, `person`, `category`, `location`, `radius_km`, `after`, `before`, `date`, `sort`, `top_k` | Composed search: filters narrow, a ranker orders |
 
 `search` takes **at most one ranker** (`query` or `image_path`) and any number of

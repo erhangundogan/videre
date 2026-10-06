@@ -1,219 +1,321 @@
+//! `videre dedupe [list|review|trash|delete|undo]`: one action per
+//! subcommand, over the kinds in `videre::duplicates`. Every action but
+//! `undo` takes `--kind` and a scope (`--query`, `--path`, `--type`, `--ext`);
+//! a group is selected when any member matches, and is then judged whole.
+
 use crate::command_context::CommandContext;
+use videre::duplicates::{Group, Kind};
 use videre::types::ErrorJson;
 
 #[derive(clap::Args)]
+#[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true)]
 pub struct DedupeArgs {
-    /// Also report perceptual-hash near-duplicate clusters (review-only)
-    #[arg(long)]
-    similar: bool,
+    #[command(subcommand)]
+    action: Option<Action>,
 
-    /// Suppress progress output on stderr (duplicate paths are always written to stdout)
+    /// `videre dedupe` alone is `videre dedupe list`.
+    #[command(flatten)]
+    list: ListArgs,
+}
+
+#[derive(clap::Subcommand)]
+enum Action {
+    /// List the copies each group would remove (the default action)
+    List(ListArgs),
+    /// Write the groups to a review page you can keep and open later
+    Review(ReviewArgs),
+    /// Move the copies to the system trash, keeping each group's keeper.
+    /// Recoverable with videre dedupe undo
+    Trash(RemoveArgs),
+    /// Delete the copies permanently, keeping each group's keeper. Cannot be
+    /// undone
+    Delete(RemoveArgs),
+    /// Put back the files the most recent trash run moved to the trash
+    Undo(UndoArgs),
+}
+
+/// Which duplicates: their kinds, and the files a group must touch.
+#[derive(clap::Args, Clone)]
+struct ScopeArgs {
+    /// Kinds of duplicate: exact (identical content, the oldest kept),
+    /// resized (the same picture at another pixel size, the largest kept),
+    /// creation (a Google Photos -edited, -EFFECTS or -SMILE file beside its
+    /// original, the original kept), similar (near pictures, review only).
+    /// Repeatable, or comma-separated
+    #[arg(
+        long,
+        value_enum,
+        value_delimiter = ',',
+        value_name = "KIND",
+        default_value = "exact"
+    )]
+    kind: Vec<Kind>,
+
+    #[command(flatten)]
+    query: super::selection_args::QueryArg,
+    #[command(flatten)]
+    paths: super::selection_args::PathArgs,
+    #[command(flatten)]
+    media: super::selection_args::MediaArgs,
+
+    /// Suppress progress and summaries on stderr (paths still go to stdout)
     #[arg(long)]
     silent: bool,
+}
 
-    /// Emit a single JSON object on stdout instead of human-readable text
-    #[arg(long)]
+#[derive(clap::Args, Clone)]
+struct ListArgs {
+    #[command(flatten)]
+    scope: ScopeArgs,
+
+    /// Print one JSON document on stdout instead of the copies' paths
+    #[arg(long, conflicts_with = "print0")]
     json: bool,
 
-    /// Also write the duplicate groups to a browsable HTML page.
-    /// Bare --html targets <db>_duplicates.html.
-    #[arg(long, num_args = 0..=1)]
-    html: Option<Option<std::path::PathBuf>>,
-
-    /// Move the duplicate copies to the system trash (recoverable), instead of
-    /// only listing them. videre moves them itself, so no shell pipeline and
-    /// no word-splitting on paths that contain spaces.
-    #[arg(long, conflicts_with = "delete")]
-    trash: bool,
-
-    /// Delete the duplicate copies permanently. Faster than --trash, and
-    /// cannot be undone.
-    #[arg(long)]
-    delete: bool,
-
-    /// Put back the files the most recent --trash run moved to the trash.
-    /// Each call undoes one run, newest first; run it again for the one
-    /// before. Files are matched by content hash, never overwrite an existing
-    /// file, and are scanned back into the library. Runs removed with
-    /// --delete cannot be undone.
-    #[arg(long, conflicts_with_all = ["trash", "delete", "edited", "similar", "html", "print0", "force"])]
-    undo: bool,
-
-    /// With --trash, --delete or --undo, list what would change and change
-    /// nothing.
-    #[arg(long)]
-    dry_run: bool,
-
-    /// With --trash, --delete or --undo, skip the confirmation prompt.
-    #[arg(long)]
-    yes: bool,
-
-    /// With --trash or --delete, proceed even when the count trips the
-    /// bulk-deletion guard.
-    #[arg(long)]
-    force: bool,
-
-    /// Also pair Google Takeout edits with their originals (`a-edited.jpg`
-    /// beside `a.jpg` in one folder). With --trash or --delete, the edits go
-    /// and the originals stay.
-    #[arg(long)]
-    edited: bool,
-
-    /// Print duplicate paths NUL-delimited instead of newline-delimited, so a
-    /// script reading them (`| xargs -0`) is safe for paths with spaces. To
-    /// remove the copies, use --trash or --delete instead.
+    /// Print the paths NUL-delimited, safe for `| xargs -0` with spaces in
+    /// paths. To remove the copies, use videre dedupe trash instead
     #[arg(long)]
     print0: bool,
 }
 
-impl DedupeArgs {
-    /// How copies leave, when this run removes them at all.
-    fn method(&self) -> Option<crate::removal::Method> {
-        match (self.trash, self.delete) {
-            (true, _) => Some(crate::removal::Method::Trash),
-            (_, true) => Some(crate::removal::Method::Delete),
-            _ => None,
-        }
-    }
+#[derive(clap::Args)]
+struct ReviewArgs {
+    /// Where to write the page. Default: hashes_duplicates.html beside the
+    /// library database
+    #[arg(value_hint = clap::ValueHint::FilePath)]
+    page: Option<std::path::PathBuf>,
 
-    /// `--trash` or `--delete`, for messages.
-    fn method_flag(&self) -> &'static str {
-        if self.delete {
-            "--delete"
-        } else {
-            "--trash"
-        }
-    }
+    #[command(flatten)]
+    scope: ScopeArgs,
+}
+
+#[derive(clap::Args)]
+struct RemoveArgs {
+    #[command(flatten)]
+    scope: ScopeArgs,
+
+    /// List what would be removed and remove nothing
+    #[arg(long)]
+    dry_run: bool,
+
+    /// Skip the confirmation prompt
+    #[arg(long)]
+    yes: bool,
+
+    /// Proceed even when the count trips the bulk-deletion guard
+    #[arg(long)]
+    force: bool,
+
+    /// Print one JSON document on stdout: what was (or would be) removed
+    #[arg(long, conflicts_with = "print0")]
+    json: bool,
+
+    /// With --dry-run, print the paths NUL-delimited
+    #[arg(long)]
+    print0: bool,
+}
+
+#[derive(clap::Args)]
+struct UndoArgs {
+    /// List what would be restored and restore nothing
+    #[arg(long)]
+    dry_run: bool,
+
+    /// Skip the confirmation prompt
+    #[arg(long)]
+    yes: bool,
+
+    /// Print the restore report as JSON
+    #[arg(long)]
+    json: bool,
+
+    /// Suppress progress and summaries on stderr
+    #[arg(long)]
+    silent: bool,
 }
 
 pub fn run(args: DedupeArgs, ctx: &CommandContext) -> anyhow::Result<()> {
-    if args.undo {
-        return run_undo(&args, ctx);
-    }
-    // --trash and --delete are the human removal paths; --json and --similar
-    // are report surfaces. Combining them is ambiguous (remove the JSON?
-    // remove the review-only near-duplicates?), so reject rather than guess.
-    if args.method().is_some() {
-        let flag = args.method_flag();
-        if args.json {
-            anyhow::bail!("{flag} cannot be combined with --json; --json only reports");
-        }
-        if args.similar {
-            anyhow::bail!(
-                "{flag} only removes exact duplicates; --similar groups are review-only \
-                 (use 'videre dedupe --similar --html' to review them)"
-            );
-        }
-        if args.html.is_some() {
-            anyhow::bail!(
-                "{flag} cannot be combined with --html; --html writes a review page. \
-                 Review first, then run 'videre dedupe {flag}'"
-            );
-        }
-    }
-    if args.json {
-        match run_json(&args, ctx) {
-            Ok(doc) => {
-                println!("{}", serde_json::to_string(&doc)?);
-                Ok(())
-            }
-            Err(e) => {
-                println!("{}", serde_json::to_string(&ErrorJson::from_err(&e))?);
-                Err(crate::exit::Exit::shown(e).into())
-            }
-        }
-    } else {
-        run_text(args, ctx)
+    match args.action {
+        None => run_list(&args.list, ctx),
+        Some(Action::List(list)) => run_list(&list, ctx),
+        Some(Action::Review(review)) => run_review(&review, ctx),
+        Some(Action::Trash(remove)) => run_remove(&remove, crate::removal::Method::Trash, ctx),
+        Some(Action::Delete(remove)) => run_remove(&remove, crate::removal::Method::Delete, ctx),
+        Some(Action::Undo(undo)) => run_undo(&undo, ctx),
     }
 }
 
-/// `--html`: the same duplicate groups, as a page you can keep.
-///
-/// Static on purpose. `videre gallery` is for browsing a library and writes
-/// nothing; this renders the set the command just produced, so it survives the
-/// process and can be archived or opened later.
-fn write_html(
+/// The groups `scope` selects, in a library already open and locked.
+/// `decode` lets the resized check take the signatures it is missing.
+fn selected_groups(
+    scope: &ScopeArgs,
     ctx: &CommandContext,
     conn: &rusqlite::Connection,
-    arg: Option<&std::path::Path>,
-    edited: bool,
-) -> anyhow::Result<()> {
-    let db = &ctx.library.paths.db;
-    // A bare --html targets a page beside the selected database; an explicit
-    // relative path is an operand, resolved against the launch directory.
-    let output = match arg {
-        Some(p) => ctx.operand(p),
-        None => {
-            let mut p = db.clone();
-            let stem = db
-                .file_stem()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_default();
-            p.set_file_name(format!("{stem}_duplicates.html"));
-            p
+    decode: bool,
+) -> anyhow::Result<videre::duplicates::Found> {
+    use videre_core::selection::SelectionCtx;
+    // A typo in the query fails before anything is decoded.
+    scope.query.compile()?;
+    videre_core::library_guard::validate_paths(&ctx.library, &scope.paths.path)?;
+    let mut found = videre::duplicates::find(conn, &scope.kind, decode, scope.silent)?;
+    let sel = super::selection_args::row_selection(
+        Some(&scope.media),
+        None,
+        None,
+        None,
+        None,
+        Some(&scope.paths),
+        None,
+        None,
+    )?;
+    let sel = super::selection_args::with_query(
+        sel,
+        &scope.query,
+        conn,
+        &SelectionCtx::default(),
+        &ctx.library,
+    )?;
+    let resolved = sel.resolve_in(conn, &SelectionCtx::default(), &ctx.library)?;
+    if let Some(hashes) = resolved.hashes {
+        let before = found.groups.len();
+        found.groups =
+            videre::duplicates::filter_groups(found.groups, &|r| hashes.contains(&r.hash));
+        if !scope.silent {
+            tracing::info!("{} of {before} group(s) match.", found.groups.len());
         }
-    };
-    let groups = crate::render::query_groups(conn);
-    let edited_groups = if edited {
-        crate::render::query_edited_groups(conn)
-    } else {
-        Vec::new()
-    };
-    crate::render::write_static_page(conn, &output, &groups, &edited_groups, None)
+    }
+    Ok(found)
 }
 
-fn run_text(args: DedupeArgs, ctx: &CommandContext) -> anyhow::Result<()> {
+/// Open the library for a dedupe action: shared activity, the dedupe lock,
+/// and the run recorded under `dedupe` whichever action it is.
+fn with_library<T>(
+    ctx: &CommandContext,
+    f: impl FnOnce(&rusqlite::Connection) -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
     let conn = videre_core::library_db::open_existing(&ctx.library)?;
-    let activity = videre_core::library_locks::try_activity(
+    let _activity = videre_core::library_locks::try_activity(
         &ctx.library,
         videre_core::library_locks::ActivityMode::Shared,
     )?;
     let guard = videre_core::library_locks::try_command(&ctx.library, "dedupe")?;
+    videre_core::pipeline_runs::track_in(&conn, &ctx.library, &guard, "dedupe", || f(&conn))
+}
 
-    let moved =
-        videre_core::pipeline_runs::track_in(&conn, &ctx.library, &guard, "dedupe", || match args
-            .method()
-        {
-            Some(method) => run_remove(&args, method, ctx, &conn),
-            None => run_dedupe_text(&args, &conn).map(|_| 0usize),
-        })?;
-
-    // Each removed copy's row was forgotten as it went. What hung off those
-    // rows by hash (marks, tags, faces, embeddings of content no copy holds
-    // any more) is `videre prune`'s cleanup, run here so the library never
-    // shows a ghost. The prune pass needs the exclusive activity lease, which
-    // conflicts with the shared one this command holds, so the shared lease is
-    // released first. Best effort: the removal itself already succeeded, and a
-    // user can always run `videre prune` by hand.
-    if args.method().is_some() && !args.dry_run && moved > 0 {
-        drop(activity);
-        let prune_args = super::prune::PruneArgs::for_watch_stage(args.silent);
-        // Named, so the summary line that follows is not a puzzle, and the
-        // command it stands for is learned.
-        if !args.silent {
-            tracing::info!("Cleaning up the library, as videre prune does:");
+/// A JSON-printing action: the document on success, an error document (and
+/// the failure, once) otherwise.
+fn print_json<T: serde::Serialize>(result: anyhow::Result<T>) -> anyhow::Result<()> {
+    match result {
+        Ok(doc) => {
+            println!("{}", serde_json::to_string(&doc)?);
+            Ok(())
         }
-        match crate::command_context::with_tracked_command(
-            ctx,
-            "prune",
-            videre_core::library_locks::ActivityMode::Exclusive,
-            |conn| super::prune::run_prune(&prune_args, &ctx.library, conn),
-        ) {
-            Ok(0) => {}
-            Ok(errors) => tracing::warn!("prune finished with {errors} error(s)."),
-            Err(e) => {
-                tracing::warn!("automatic prune failed: {e:#}; run 'videre prune' to clean up.")
-            }
+        Err(e) => {
+            println!("{}", serde_json::to_string(&ErrorJson::from_err(&e))?);
+            Err(crate::exit::Exit::shown(e).into())
         }
     }
+}
 
-    if let Some(arg) = args.html.as_ref() {
-        write_html(ctx, &conn, arg.as_deref(), args.edited)?;
+fn run_list(args: &ListArgs, ctx: &CommandContext) -> anyhow::Result<()> {
+    let scope = &args.scope;
+    let found = with_library(ctx, |conn| {
+        let found = selected_groups(scope, ctx, conn, true)?;
+        if args.json {
+            return super::duplicates_document(conn, &scope.kind, found).map(Listed::Json);
+        }
+        Ok(Listed::Groups(found))
+    });
+    let found = match found {
+        Ok(Listed::Groups(found)) => found,
+        Ok(Listed::Json(doc)) => return print_json(Ok(doc)),
+        Err(e) if args.json => return print_json::<()>(Err(e)),
+        Err(e) => return Err(e),
+    };
+    let removals = Removals::collect(&found.groups, false);
+    if !scope.silent {
+        summarize(&found, &removals);
     }
+    print_paths_delimited(&removals.all(), args.print0);
     Ok(())
 }
 
-/// Write the removable loser paths to stdout, NUL-delimited when `print0` so a
+enum Listed {
+    Groups(videre::duplicates::Found),
+    Json(videre::types::FindDuplicatesJson),
+}
+
+fn kinds_need_fingerprints(found: &videre::duplicates::Found) -> bool {
+    found
+        .wanted
+        .iter()
+        .any(|k| matches!(k, Kind::Resized | Kind::Similar))
+}
+
+/// One line per kind on stderr: groups and copies, or what review shows.
+fn summarize(found: &videre::duplicates::Found, removals: &Removals) {
+    for &kind in &found.wanted {
+        let groups = found.groups.iter().filter(|g| g.kind == kind).count();
+        if kind.removable() {
+            tracing::info!(
+                "{groups} {} group(s), {} file(s) to remove.",
+                kind.name(),
+                removals.count(kind)
+            );
+        } else {
+            tracing::info!(
+                "{groups} {} group(s), review only: see them with videre dedupe review --kind {}.",
+                kind.name(),
+                kind.name()
+            );
+        }
+    }
+    if found.fingerprinted == 0 && kinds_need_fingerprints(found) {
+        tracing::info!(
+            "No fingerprints yet, so no resized or similar groups: run videre embed to compute them."
+        );
+    }
+    if found.unchecked > 0 {
+        tracing::info!(
+            "{} possible resized copies could not be checked.",
+            found.unchecked
+        );
+    }
+}
+
+/// `review`: the groups as a page you can keep. Static on purpose: `videre
+/// gallery` is the live review; this survives the process and can be
+/// archived or opened later.
+fn run_review(args: &ReviewArgs, ctx: &CommandContext) -> anyhow::Result<()> {
+    // A bare `review` targets a page beside the selected database; an
+    // explicit relative path is an operand, resolved against the launch
+    // directory.
+    let output = match &args.page {
+        Some(p) => ctx.operand(p),
+        None => {
+            let db = &ctx.library.paths.db;
+            let stem = db
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            db.with_file_name(format!("{stem}_duplicates.html"))
+        }
+    };
+    with_library(ctx, |conn| {
+        let found = selected_groups(&args.scope, ctx, conn, true)?;
+        crate::render::write_review_page(conn, &output, &found)?;
+        if !args.scope.silent {
+            tracing::info!(
+                "Wrote {} group(s) to {}",
+                found.groups.len(),
+                output.display()
+            );
+        }
+        Ok(())
+    })
+}
+
+/// Write the removable copy paths to stdout, NUL-delimited when `print0` so a
 /// `| xargs -0` consumer is safe for paths containing spaces, else one per line.
 fn print_paths_delimited(paths: &[std::path::PathBuf], print0: bool) {
     use std::io::Write;
@@ -227,141 +329,157 @@ fn print_paths_delimited(paths: &[std::path::PathBuf], print0: bool) {
     }
 }
 
-/// What a run removes: the exact-duplicate losers, then, with `--edited`,
-/// each Google Takeout edit not already among them. Kept apart because only
-/// the exact losers count toward the bulk-deletion guard: an edit is paired
-/// only when its original is in the library too, so a large count is what a
-/// Takeout export looks like, not a sign of a mistake.
+/// What a run removes (`videre::duplicates::removals`), with the counts and
+/// wording dedupe reports.
 struct Removals {
-    exact: Vec<std::path::PathBuf>,
-    edits: Vec<std::path::PathBuf>,
+    by_kind: Vec<(Kind, std::path::PathBuf)>,
 }
 
 impl Removals {
-    /// The two decisions are made together, not side by side:
-    ///
-    /// - An edit goes only while its original is still on disk. The pairing
-    ///   comes from rows, and an original deleted since the last scan would
-    ///   otherwise leave the edit as the only file, then take that too.
-    /// - An exact group keeps its first file that is not itself an edit being
-    ///   removed. Exact dedupe alone may keep an edit (the oldest copy), and
-    ///   removing that edit as well would leave its content with no copy.
-    fn collect(records: &[videre::types::FileRecord], edited: bool) -> Removals {
-        use std::path::{Path, PathBuf};
-        let edits: Vec<PathBuf> = if edited {
-            videre::output::edited_losers(records)
-                .into_iter()
-                .filter(|(original, _)| Path::new(original).exists())
-                .map(|(_, edit)| PathBuf::from(edit))
-                .collect()
-        } else {
-            Vec::new()
-        };
-        let going: std::collections::HashSet<&Path> = edits.iter().map(PathBuf::as_path).collect();
-        let mut exact = Vec::new();
-        for group in videre::output::find_duplicate_groups(records) {
-            let paths: Vec<&Path> = group.files.iter().map(|f| Path::new(&f.path)).collect();
-            // Every copy is an edit whose original stays: all of them go.
-            let keeper = paths.iter().position(|p| !going.contains(p));
-            for (i, path) in paths.into_iter().enumerate() {
-                if Some(i) != keeper && !going.contains(path) {
-                    exact.push(path.to_path_buf());
-                }
-            }
+    fn collect(groups: &[Group], check_originals: bool) -> Removals {
+        Removals {
+            by_kind: videre::duplicates::removals(groups, check_originals),
         }
-        Removals { exact, edits }
     }
 
     fn all(&self) -> Vec<std::path::PathBuf> {
-        self.exact.iter().chain(&self.edits).cloned().collect()
+        self.by_kind.iter().map(|(_, p)| p.clone()).collect()
     }
 
-    /// `3 exact duplicate(s) and 2 Google Photos edit(s)`, leaving out a zero part.
+    fn count(&self, kind: Kind) -> usize {
+        self.by_kind.iter().filter(|(k, _)| *k == kind).count()
+    }
+
+    /// What counts toward the bulk-deletion guard. Not creations: one is
+    /// paired only when its original is in the library too, so a large count
+    /// is what a Takeout export looks like, not a sign of a mistake.
+    fn guarded(&self) -> usize {
+        self.by_kind
+            .iter()
+            .filter(|(k, _)| *k != Kind::Creation)
+            .count()
+    }
+
+    /// `3 exact copies and 2 Google Photos creations`, leaving out zeros.
     fn describe(&self) -> String {
-        let mut parts = Vec::new();
-        if !self.exact.is_empty() {
-            parts.push(format!("{} exact duplicate(s)", self.exact.len()));
-        }
-        if !self.edits.is_empty() {
-            parts.push(format!("{} Google Photos edit(s)", self.edits.len()));
-        }
+        let parts: Vec<String> = [
+            (Kind::Exact, "exact duplicate(s)"),
+            (Kind::Resized, "resized copies"),
+            (Kind::Creation, "Google Photos creation(s)"),
+        ]
+        .into_iter()
+        .filter_map(|(kind, noun)| {
+            let n = self.count(kind);
+            (n > 0).then(|| format!("{n} {noun}"))
+        })
+        .collect();
         parts.join(" and ")
     }
 }
 
-/// `--trash` / `--delete`: videre removes the duplicate copies itself, to the
-/// system trash or permanently. Safe by default: refuses on a missing library
-/// volume, refuses an implausibly large removal without --force, confirms
-/// unless --yes, and `--dry-run` only previews. Operates only on what
-/// `Removals` computes, which is also what the report prints: an exact
-/// group's kept copy is never removed, and an edit goes only while its
-/// original is on disk. Returns how many copies left, removed now or found
-/// already gone.
+/// `trash --json` / `delete --json`.
+#[derive(serde::Serialize)]
+struct RemoveJson {
+    action: &'static str,
+    dry_run: bool,
+    removed: Vec<std::path::PathBuf>,
+    already_gone: Vec<std::path::PathBuf>,
+    failed: Vec<std::path::PathBuf>,
+}
+
+/// `trash` / `delete`: videre removes the copies itself, to the system trash
+/// or permanently. Safe by default: refuses a review-only kind, refuses on a
+/// missing library volume, refuses an implausibly large removal without
+/// --force, confirms unless --yes, and `--dry-run` only previews. Operates
+/// only on what `Removals` computes, which is also what `list` prints: a
+/// group's keeper is never removed.
 fn run_remove(
-    args: &DedupeArgs,
+    args: &RemoveArgs,
+    method: crate::removal::Method,
+    ctx: &CommandContext,
+) -> anyhow::Result<()> {
+    if let Some(kind) = args.scope.kind.iter().find(|k| !k.removable()) {
+        anyhow::bail!(
+            "`{0}` is review-only: see it with videre dedupe review --kind {0}",
+            kind.name()
+        );
+    }
+    let silent = args.scope.silent || args.json;
+    let outcome = with_library(ctx, |conn| remove_copies(args, method, ctx, conn, silent));
+    if args.json {
+        return print_json(outcome);
+    }
+    let doc = outcome?;
+    let moved = doc.removed.len() + doc.already_gone.len();
+    if !args.dry_run && moved > 0 {
+        prune_after(ctx, args.scope.silent);
+    }
+    Ok(())
+}
+
+fn remove_copies(
+    args: &RemoveArgs,
     method: crate::removal::Method,
     ctx: &CommandContext,
     conn: &rusqlite::Connection,
-) -> anyhow::Result<usize> {
+    silent: bool,
+) -> anyhow::Result<RemoveJson> {
     use crate::removal::{Method, Outcome};
-    let fate = match method {
-        Method::Trash => "moved to the trash",
-        Method::Delete => "permanently deleted",
+    let (action, fate) = match method {
+        Method::Trash => ("trash", "moved to the trash"),
+        Method::Delete => ("delete", "permanently deleted"),
     };
-    let records = videre::sqlite_output::load_records_from(conn)
-        .map_err(|e| anyhow::anyhow!("reading the library database: {e}"))?;
-    let total = records.len();
+    let mut doc = RemoveJson {
+        action,
+        dry_run: args.dry_run,
+        removed: Vec::new(),
+        already_gone: Vec::new(),
+        failed: Vec::new(),
+    };
     let volume_missing = || {
         anyhow::anyhow!(
             "library root {:?} is not available (is the drive connected?); removed nothing",
             ctx.library.paths.root
         )
     };
-    // Missing-volume refusal: never read "the files are gone" as "everything is
-    // a duplicate to remove". With --edited it comes before anything is
-    // counted, because pairing checks each original on disk: a detached drive
-    // would otherwise empty the set and report "Nothing to remove."
-    if args.edited && !ctx.library.paths.root.is_dir() {
-        return Err(volume_missing());
-    }
-    let removals = Removals::collect(&records, args.edited);
-    let losers = removals.all();
-
-    if losers.is_empty() {
-        if !args.silent {
-            if args.edited {
-                tracing::info!("Nothing to remove.");
-            } else {
-                tracing::info!("No exact duplicates to remove.");
-            }
-        }
-        return Ok(0);
-    }
-
-    // Check before the guard and before any deletion.
+    // Missing-volume refusal: never read "the files are gone" as "everything
+    // is a duplicate to remove". Before anything is counted, because creation
+    // pairing checks each original on disk: a detached drive would otherwise
+    // empty the set and report "Nothing to remove."
     if !ctx.library.paths.root.is_dir() {
         return Err(volume_missing());
     }
+    let mut scope = args.scope.clone();
+    scope.silent = silent;
+    let found = selected_groups(&scope, ctx, conn, true)?;
+    let removals = Removals::collect(&found.groups, true);
+    let losers = removals.all();
+    if losers.is_empty() {
+        if !silent {
+            tracing::info!("Nothing to remove.");
+        }
+        return Ok(doc);
+    }
 
-    // Bulk-deletion guard, shared with prune: an implausibly large share of the
-    // library is more likely a wrong selection or a mounting accident.
-    // Only exact duplicates count: see `Removals`.
-    let exact = removals.exact.len();
-    if !args.force && super::is_bulk_delete(exact, total) {
-        tracing::warn!(
-            "refusing to remove {} of {} file(s) ({:.0}% of the library): \
-             that is more likely a mistake than real duplicates.",
-            exact,
-            total,
-            (exact as f64 / total.max(1) as f64) * 100.0
+    // Bulk-deletion guard, shared with prune: an implausibly large share of
+    // the library is more likely a wrong selection or a mounting accident.
+    let total: i64 = conn.query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))?;
+    let total = total.max(0) as usize;
+    let guarded = removals.guarded();
+    if !args.force && super::is_bulk_delete(guarded, total) {
+        anyhow::bail!(
+            "refusing to remove {guarded} of {total} file(s) ({:.0}% of the library): that is \
+             more likely a mistake than real duplicates. Nothing was removed; re-run with \
+             --force if this is intended",
+            (guarded as f64 / total.max(1) as f64) * 100.0
         );
-        tracing::warn!("  nothing was removed; re-run with --force if this is intended");
-        return Ok(0);
     }
 
     if args.dry_run {
-        print_paths_delimited(&losers, args.print0);
-        if !args.silent {
+        if !args.json {
+            print_paths_delimited(&losers, args.print0);
+        }
+        if !silent {
             tracing::info!("{} would be {fate}.", removals.describe());
             // Stdout stays the media paths alone, for `--print0 | xargs -0`.
             let sidecars = crate::removal::sidecars_of(&losers);
@@ -377,7 +495,8 @@ fn run_remove(
                 );
             }
         }
-        return Ok(0);
+        doc.removed = losers;
+        return Ok(doc);
     }
 
     let question = match method {
@@ -392,7 +511,7 @@ fn run_remove(
     };
     if !args.yes && !super::confirm(&question)? {
         tracing::info!("Aborted; nothing was removed.");
-        return Ok(0);
+        return Ok(doc);
     }
 
     // A bar on a terminal, a line every half minute otherwise, and each
@@ -400,9 +519,9 @@ fn run_remove(
     // Rows go as each file does, so a run stopped halfway leaves the library
     // listing exactly what is still on disk.
     let progress =
-        videre_core::progress::Progress::new_counting(losers.len() as u64, args.silent, "files");
-    // A trash run records what it moved, so `--undo` can put it back.
-    let mut manifest = (method == crate::removal::Method::Trash)
+        videre_core::progress::Progress::new_counting(losers.len() as u64, silent, "files");
+    // A trash run records what it moved, so `undo` can put it back.
+    let mut manifest = (method == Method::Trash)
         .then(|| crate::trash_stack::Writer::new(&ctx.library.paths.state, "dedupe"));
     let results = crate::removal::remove_and_forget(
         Some(conn),
@@ -412,19 +531,18 @@ fn run_remove(
         manifest.as_mut(),
     );
     progress.finish();
-    let removed = results
-        .iter()
-        .filter(|(_, o)| *o == Outcome::Removed)
-        .count();
-    let gone = results
-        .iter()
-        .filter(|(_, o)| *o == Outcome::AlreadyGone)
-        .count();
-    let failed = results.len() - removed - gone;
+    for (path, outcome) in results {
+        match outcome {
+            Outcome::Removed => doc.removed.push(path),
+            Outcome::AlreadyGone => doc.already_gone.push(path),
+            _ => doc.failed.push(path),
+        }
+    }
+    let (removed, gone, failed) = (doc.removed.len(), doc.already_gone.len(), doc.failed.len());
     if removed == 0 && gone == 0 && failed > 0 {
         anyhow::bail!("could not remove any of the {failed} file(s) (is the drive connected?)");
     }
-    if !args.silent {
+    if !silent {
         let done = match method {
             Method::Trash => format!("Moved {removed} file(s) to the trash"),
             Method::Delete => format!("Deleted {removed} file(s)"),
@@ -442,69 +560,38 @@ fn run_remove(
             tracing::info!("{done} ({}).", notes.join(", "));
         }
     }
-    Ok(removed + gone)
+    Ok(doc)
 }
 
-/// The actual dedupe-reporting work, wrapped by `track_in()` above.
-fn run_dedupe_text(args: &DedupeArgs, conn: &rusqlite::Connection) -> anyhow::Result<()> {
-    let records = videre::sqlite_output::load_records_from(conn)
-        .map_err(|e| anyhow::anyhow!("reading the library database: {e}"))?;
-
-    let groups = videre::output::find_duplicate_groups(&records);
-    let removals = Removals::collect(&records, args.edited);
-    if !args.silent {
-        if groups.is_empty() {
-            tracing::info!("No exact duplicates found.");
-        } else {
-            tracing::info!(
-                "{} duplicate group(s), {} file(s) to remove.",
-                groups.len(),
-                groups.iter().map(|g| g.files.len() - 1).sum::<usize>()
-            );
-        }
-        if args.edited {
-            tracing::info!(
-                "{} edited pair(s), {} Google Photos edit(s) to remove.",
-                videre::output::edited_losers(&records).len(),
-                removals.edits.len()
-            );
+/// Each removed copy's row was forgotten as it went. What hung off those rows
+/// by hash (marks, tags, faces, embeddings, signatures of content no copy
+/// holds any more) is `videre prune`'s cleanup, run here so the library never
+/// shows a ghost. Best effort: the removal itself already succeeded, and a
+/// user can always run `videre prune` by hand.
+fn prune_after(ctx: &CommandContext, silent: bool) {
+    let prune_args = super::prune::PruneArgs::for_watch_stage(silent);
+    // Named, so the summary line that follows is not a puzzle, and the
+    // command it stands for is learned.
+    if !silent {
+        tracing::info!("Cleaning up the library, as videre prune does:");
+    }
+    match crate::command_context::with_tracked_command(
+        ctx,
+        "prune",
+        videre_core::library_locks::ActivityMode::Exclusive,
+        |conn| super::prune::run_prune(&prune_args, &ctx.library, conn),
+    ) {
+        Ok(0) => {}
+        Ok(errors) => tracing::warn!("prune finished with {errors} error(s)."),
+        Err(e) => {
+            tracing::warn!("automatic prune failed: {e:#}; run 'videre prune' to clean up.")
         }
     }
-    print_paths_delimited(&removals.all(), args.print0);
-
-    if args.similar {
-        let similar = videre::output::find_similar_groups(&records, 10);
-        if !args.silent && records.iter().all(|r| r.phash.is_none()) {
-            tracing::info!("No near-duplicate fingerprints yet: run videre embed to compute them.");
-        } else if !args.silent && !similar.is_empty() {
-            tracing::info!(
-                "{} visually similar group(s) found: review with videre dedupe --html before deleting.",
-                similar.len()
-            );
-        }
-    }
-
-    Ok(())
 }
 
-fn run_json(
-    args: &DedupeArgs,
-    ctx: &CommandContext,
-) -> anyhow::Result<videre::types::FindDuplicatesJson> {
-    let conn = videre_core::library_db::open_existing(&ctx.library)?;
-    let _activity = videre_core::library_locks::try_activity(
-        &ctx.library,
-        videre_core::library_locks::ActivityMode::Shared,
-    )?;
-    let guard = videre_core::library_locks::try_command(&ctx.library, "dedupe")?;
-    videre_core::pipeline_runs::track_in(&conn, &ctx.library, &guard, "dedupe", || {
-        super::build_find_duplicates_from(&conn, args.similar, args.edited)
-    })
-}
-
-/// `--undo`: put back the newest recorded trash run (dedupe or gallery
+/// `undo`: put back the newest recorded trash run (dedupe or gallery
 /// Delete), one run per call.
-fn run_undo(args: &DedupeArgs, ctx: &CommandContext) -> anyhow::Result<()> {
+fn run_undo(args: &UndoArgs, ctx: &CommandContext) -> anyhow::Result<()> {
     use crate::trash_stack::{self, Step};
     let conn = videre_core::library_db::open_existing(&ctx.library)?;
     let _activity = videre_core::library_locks::try_activity(
@@ -519,7 +606,7 @@ fn run_undo(args: &DedupeArgs, ctx: &CommandContext) -> anyhow::Result<()> {
         if args.json {
             println!("{}", serde_json::json!({ "nothing_to_undo": true }));
         } else {
-            tracing::info!("Nothing to undo: no --trash run is recorded in this library.");
+            tracing::info!("Nothing to undo: no trash run is recorded in this library.");
         }
         return Ok(());
     };

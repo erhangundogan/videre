@@ -64,7 +64,7 @@ pick them up, then `videre embed` again to cover only the new ones.
 ## Near-duplicate fingerprints
 
 Embed also stores each file's near-duplicate fingerprint, which
-[`videre dedupe --similar`](/commands/dedupe/) reads. Files embedded before this
+[`videre dedupe --kind similar`](/commands/dedupe/) reads. Files embedded before this
 was added get theirs on the next run, decoded and hashed without loading the
 model; the summary line counts them as fingerprints added.
 

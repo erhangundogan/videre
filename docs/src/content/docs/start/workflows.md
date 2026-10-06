@@ -21,9 +21,9 @@ the index.
 videre scan                         <- everything starts here
   │
   ├── videre gallery                browse files, duplicates and dates
-  ├── videre dedupe --html          find duplicates and review via static HTML file
+  ├── videre dedupe review          find duplicates and review via static HTML file
   │     │
-  │     └── videre dedupe --trash  move the duplicate copies to the trash
+  │     └── videre dedupe trash  move the duplicate copies to the trash
   │           │
   │           └── videre prune      synchronize the database after cleanup
   │
@@ -80,7 +80,7 @@ videre scan                         <- everything starts here
 | the similarity button in [`gallery`](/commands/gallery/) | [`embed`](/commands/embed/) |
 | [`gallery`](/commands/gallery/) | [`faces`](/commands/faces/) |
 | names shown in [`gallery`](/commands/gallery/) | [`faces`](/commands/faces/) **and** naming done |
-| [`dedupe --similar`](/commands/dedupe/) | [`embed`](/commands/embed/) |
+| [`dedupe --kind similar`](/commands/dedupe/) | [`embed`](/commands/embed/) |
 | [`locations`](/commands/locations/) | GPS in your photos (from `scan`) |
 
 The manual naming step is easy to overlook. `videre faces` groups faces but
@@ -91,7 +91,7 @@ empty until you have opened `videre gallery` and assigned some.
 
 | After you | Run |
 |---|---|
-| Delete files (`dedupe --trash`) | [`prune`](/commands/prune/) |
+| Delete files (`dedupe trash`) | [`prune`](/commands/prune/) |
 | Move or reorganise folders | [`scan`](/commands/scan/), then [`prune`](/commands/prune/) |
 | Add new photos | [`scan`](/commands/scan/), then `embed` / `faces` / `classify` again |
 | Finish chunked `faces --limit` runs | [`faces --recluster`](/commands/faces/) |
@@ -122,7 +122,7 @@ capability. `embed` and `faces` are both resumable, so Ctrl-C is safe.
 videre import ~/Takeout --dry-run   # see what it found
 videre import ~/Takeout             # fix the dates the exporter mangled
 videre --library ~/Takeout scan               # now record them
-videre dedupe --trash               # collapse the copies albums created
+videre dedupe trash               # collapse the copies albums created
 videre prune
 ```
 
@@ -135,13 +135,13 @@ point it at the library and it works out the rest. See
 
 ```bash
 videre --library ~/Photos scan
-videre dedupe --html                  # review groups with KEEP/REMOVE badges
-videre dedupe --trash                 # move the copies to the trash, once you agree
-videre dedupe --undo                  # changed your mind? put the last run back
+videre dedupe review                  # review groups with KEEP/REMOVE badges
+videre dedupe trash                 # move the copies to the trash, once you agree
+videre dedupe undo                  # changed your mind? put the last run back
 videre prune                          # reclaim database rows and derived data
 ```
 
-Add `--similar` to `dedupe` if you also want near-duplicates (it needs
+Use `dedupe --kind exact,similar` if you also want near-duplicates (it needs
 `videre embed`), which are reported for review only and never included in the
 delete list.
 

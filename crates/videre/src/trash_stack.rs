@@ -1,9 +1,10 @@
-//! What each trash run moved, so `dedupe --undo` can put it back.
+//! What each trash run moved, so `dedupe undo` can put it back.
 //!
-//! Every `--trash` run (and every gallery Delete) writes one JSONL manifest
-//! under `<root>/.videre/trash/`, a line per file as it goes, so a run stopped
-//! halfway still records exactly what it moved. The manifests form a stack:
-//! `--undo` restores the newest and removes it, so the next `--undo` reaches
+//! Every `dedupe trash` run (and every gallery Delete or Trash copies) writes
+//! one JSONL manifest under `<root>/.videre/trash/`, a line per file as it
+//! goes, so a run stopped halfway still records exactly what it moved. The
+//! manifests form a stack:
+//! `dedupe undo` restores the newest and removes it, so the next one reaches
 //! the run before.
 
 use std::io::Write as _;
@@ -306,7 +307,7 @@ pub struct UndoReport {
     pub not_in_trash: Vec<PathBuf>,
     pub occupied: Vec<PathBuf>,
     pub failed: Vec<(PathBuf, String)>,
-    /// Runs still recorded after this one, for the next `--undo`.
+    /// Runs still recorded after this one, for the next `dedupe undo`.
     pub runs_left: usize,
 }
 

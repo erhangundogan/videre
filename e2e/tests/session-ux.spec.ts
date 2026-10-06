@@ -36,10 +36,9 @@ test("the duplicates page heads itself with what the duplicates cost", async ({ 
   await page.goto(`${gallery.baseURL}/duplicates`);
   const header = page.locator(".header");
   await expect(header).toContainText("Library:");
-  await expect(header.locator(".hmeta", { hasText: "Duplicate groups:" })).toHaveText("Duplicate groups: 1");
-  await expect(header.locator(".hmeta", { hasText: "Duplicate files:" })).toHaveText("Duplicate files: 2");
+  // A line per kind: its groups, and the space their copies take.
   const wasted = size < 1024 ? `${size} B` : `${(size / 1024).toFixed(1)} KB`;
-  await expect(header.locator(".hmeta", { hasText: "Wasted space:" })).toHaveText(`Wasted space: ${wasted}`);
+  await expect(header.locator(".hmeta", { hasText: "Exact copies:" })).toHaveText(`Exact copies: 1 (${wasted})`);
   // The home-only lines stay on the home page.
   await expect(header).not.toContainText("Files/Embedding Count:");
 });

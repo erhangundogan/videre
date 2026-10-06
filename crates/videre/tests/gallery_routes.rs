@@ -524,7 +524,7 @@ fn a_conversion_waits_for_a_machine_wide_quicklook_slot() {
 #[test]
 fn the_empty_duplicates_page_points_at_the_command_that_finds_similar_photos() {
     // Near-duplicates are never shown on this page: `videre embed` computes
-    // their fingerprints and `videre dedupe --similar` lists them. The hint
+    // their fingerprints and `videre dedupe --kind similar` lists them. The hint
     // must say so, not send anyone to the removed `scan --similar`.
     let lib = fixture();
     let server = Server::start(&lib);
@@ -532,7 +532,7 @@ fn the_empty_duplicates_page_points_at_the_command_that_finds_similar_photos() {
     assert_eq!(status, 200);
     assert!(body.contains("No duplicates"), "{body}");
     assert!(
-        body.contains("<code>videre dedupe --similar</code>"),
+        body.contains("<code>videre dedupe --kind similar</code>"),
         "{body}"
     );
     assert!(!body.contains("appear here"), "{body}");
@@ -1857,10 +1857,149 @@ fn duplicates_page_shows_google_photos_edit_pairs() {
     let server = Server::start(&lib);
     let (status, body) = server.get("/duplicates");
     assert_eq!(status, 200, "{body}");
-    assert!(body.contains("\"edited\":true"), "{body}");
+    assert!(body.contains("\"kind\":\"creation\""), "{body}");
     let original = body.find("IMG_1.jpg").expect("original listed");
     let edit = body.find("IMG_1-edited.jpg").expect("edit listed");
     assert!(original < edit, "the kept original comes first");
+}
+
+/// An exact pair, a Google creation beside its original, and two near
+/// fingerprints at one size (similar, review only).
+fn kinds_library() -> TestLibrary {
+    let lib = TestLibrary::new();
+    lib.copy_fixture("sample_with_exif.jpg", "tatil/deniz.jpg");
+    lib.copy_fixture("sample_with_exif.jpg", "yedek/deniz.jpg");
+    lib.copy_fixture("ai-generated-couple.jpg", "Photos/IMG_1.jpg");
+    lib.copy_fixture("tiny.jpg", "Photos/IMG_1-edited.jpg");
+    lib.copy_fixture("corrupt.jpg", "seri/IMG_1816.jpg");
+    std::fs::write(lib.root.join("seri/IMG_1817.jpg"), b"another burst frame").unwrap();
+    lib.scan();
+    let conn = lib.conn();
+    for (name, phash) in [
+        ("IMG_1816.jpg", 0x0F0F_3C3C_5A5A_6969_i64),
+        ("IMG_1817.jpg", 0x0F0F_3C3C_5A5A_6968),
+    ] {
+        conn.execute(
+            "UPDATE file_hashes SET phash = ?1 WHERE path LIKE '%' || ?2",
+            rusqlite::params![phash, name],
+        )
+        .unwrap();
+    }
+    lib
+}
+
+fn save_kinds(lib: &TestLibrary, kinds: &[&str]) {
+    std::fs::write(
+        lib.root.join(".videre/gallery.json"),
+        serde_json::json!({ "routes": { "duplicates": { "kinds": kinds } } }).to_string(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn duplicates_page_shows_the_saved_kinds() {
+    let lib = kinds_library();
+    let server = Server::start(&lib);
+    let (status, body) = server.get("/duplicates");
+    assert_eq!(status, 200);
+    assert!(body.contains("\"kind\":\"exact\""), "{body}");
+    assert!(body.contains("\"kind\":\"creation\""));
+    assert!(
+        !body.contains("\"kind\":\"similar\""),
+        "similar is off by default"
+    );
+    assert!(body.contains("Exact copies:</span> 1"), "{body}");
+    assert!(body.contains("Google Photos creations:</span> 1"));
+    assert!(body.contains("var DUP_KINDS=[\"exact\",\"resized\",\"creation\"];"));
+
+    save_kinds(&lib, &["similar"]);
+    let (_, body) = server.get("/duplicates");
+    assert!(body.contains("\"kind\":\"similar\""), "{body}");
+    assert!(!body.contains("\"kind\":\"exact\""));
+    assert!(body.contains("Similar (review only):</span> 1"));
+}
+
+#[test]
+fn duplicates_page_says_how_many_resized_candidates_are_unchecked() {
+    let lib = TestLibrary::new();
+    let conn = lib.init_db();
+    let root = lib.context().paths.root;
+    for (name, hash, w, phash) in [
+        ("çiçek.jpg", "hb", 1600, 0x0F0F_3C3C_5A5A_6969_i64),
+        ("çiçek-wa.jpg", "hs", 1280, 0x0F0F_3C3C_5A5A_6968),
+    ] {
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash, size_bytes, ext, mime, width, height, phash)
+             VALUES (?1, ?2, 100, 'jpg', 'image/jpeg', ?3, ?3 * 3 / 4, ?4)",
+            rusqlite::params![root.join(name).to_string_lossy().as_ref(), hash, w, phash],
+        )
+        .unwrap();
+    }
+    drop(conn);
+    let server = Server::start(&lib);
+    let (_, body) = server.get("/duplicates");
+    assert!(
+        body.contains("2 possible resized copies are not checked yet")
+            && body.contains("<code>videre dedupe --kind resized</code>"),
+        "{body}"
+    );
+}
+
+#[test]
+fn trashing_copies_from_the_page_keeps_keepers_and_undo_restores() {
+    let lib = kinds_library();
+    let server = Server::start(&lib);
+    let (status, body) = server.send("POST", "/api/duplicates/trash", r#"{"kinds":["similar"]}"#);
+    assert_eq!(status, 400, "similar is review-only: {body}");
+
+    let keeper = lib.root.join("Photos/IMG_1.jpg");
+    // The page sends the keeper's path as the library stores it.
+    let stored: String = lib
+        .conn()
+        .query_row(
+            "SELECT path FROM file_hashes WHERE path LIKE '%/Photos/IMG_1.jpg'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let (status, body) = server.send(
+        "POST",
+        "/api/duplicates/trash",
+        &serde_json::json!({ "kinds": ["exact", "creation"], "keepers": [stored] }).to_string(),
+    );
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(json(&body)["removed"], 1, "only the chosen group: {body}");
+    assert!(keeper.exists());
+    assert!(!lib.root.join("Photos/IMG_1-edited.jpg").exists());
+    assert!(lib.root.join("tatil/deniz.jpg").exists() && lib.root.join("yedek/deniz.jpg").exists());
+
+    let (status, body) = server.send("POST", "/api/duplicates/trash", r#"{"kinds":["exact"]}"#);
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(json(&body)["removed"], 1, "{body}");
+    let left = [
+        lib.root.join("tatil/deniz.jpg"),
+        lib.root.join("yedek/deniz.jpg"),
+    ]
+    .iter()
+    .filter(|p| p.exists())
+    .count();
+    assert_eq!(left, 1, "the keeper stays");
+    drop(server);
+
+    for _ in 0..2 {
+        let out = lib
+            .cmd()
+            .args(["dedupe", "undo", "--yes", "--silent"])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    assert!(lib.root.join("Photos/IMG_1-edited.jpg").exists());
+    assert!(lib.root.join("tatil/deniz.jpg").exists() && lib.root.join("yedek/deniz.jpg").exists());
 }
 
 // ---- people and faces over HTTP -------------------------------------------
@@ -2157,6 +2296,53 @@ fn a_heic_rotates_by_irot_and_its_faces_turn_with_it() {
         )
         .unwrap();
     assert_eq!(keys, 1);
+}
+
+/// A rotation keeps the content key but changes the pixels, so the stored
+/// fingerprint and pixel signature describe a picture that no longer exists:
+/// both go, and the next `embed` fingerprints the upright pixels again.
+#[test]
+fn a_rotation_forgets_the_fingerprint_and_the_pixel_signature() {
+    let lib = TestLibrary::new();
+    lib.copy_fixture("ai-generated-couple.jpg", "çiçek.jpg");
+    lib.scan();
+    let conn = lib.conn();
+    let hash: String = conn
+        .query_row("SELECT hash FROM file_hashes", [], |r| r.get(0))
+        .unwrap();
+    conn.execute("UPDATE file_hashes SET phash = 42 WHERE hash = ?1", [&hash])
+        .unwrap();
+    videre_core::pixel_signatures::put(
+        &conn,
+        &hash,
+        &videre_core::image_decode::PixelSignature {
+            luma: vec![0; 16],
+            width: 1,
+            height: 1,
+        },
+    )
+    .unwrap();
+    drop(conn);
+    let server = Server::start(&lib);
+
+    let (status, body) = server.send("POST", &format!("/api/files/{hash}/rotate"), "");
+    assert_eq!(status, 200, "{body}");
+    drop(server);
+
+    let conn = lib.conn();
+    let phash: Option<i64> = conn
+        .query_row(
+            "SELECT phash FROM file_hashes WHERE hash = ?1",
+            [&hash],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(phash, None);
+    assert!(
+        videre_core::pixel_signatures::get_many(&conn, std::slice::from_ref(&hash))
+            .unwrap()
+            .is_empty()
+    );
 }
 
 /// A rotated HEIC must never be served from a conversion cached before the
