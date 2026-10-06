@@ -32,6 +32,21 @@
   // Library and a search's own page rank words; the rest only filter.
   var RANKS=/^\/(search)?$/;
   window.videreQueryHonours=function(path){return HONOURS.test(path);};
+  // On a page that narrows by the query, the box sits in that tab's toolbar,
+  // beside Sort, where it acts on what the tab shows; elsewhere it stays in the
+  // nav. One box either way, so its state and ids are never duplicated. The
+  // toolbar comes after the nav in the page, so this waits for it.
+  var navSpot=document.createComment('query box');
+  form.parentNode.insertBefore(navSpot,form);
+  function dock(){
+    var slot=HONOURS.test(location.pathname)&&document.querySelector('[data-query-slot]');
+    if(slot)slot.appendChild(form);
+  }
+  // An empty state hides the page under the nav, toolbar and all; the box goes
+  // back to the nav so a query can still be changed or cleared.
+  window.videreUndockQuery=function(){ navSpot.parentNode.insertBefore(form,navSpot); };
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',dock);
+  else dock();
   var labels={};
   var chips=[];
 

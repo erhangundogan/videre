@@ -71,6 +71,11 @@
 .qbox-caret[hidden]{display:none}
 .qbox-options{position:absolute;right:0;top:calc(100% + 4px);z-index:60;width:min(920px,92vw);max-height:70vh;overflow:auto;padding:12px;background:#1f1f25;border:1px solid #2a2a33;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.4);color:#d8d8e0;font:500 13px/1.3 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 .qbox-options[hidden]{display:none}
+/* Docked in a tab's toolbar (query-box.js), the box opens its lists from its
+   left edge, where it sits, rather than from the nav's right end. */
+.toolbar-query{display:inline-flex;align-items:center}
+.toolbar-query .qbox{max-width:min(520px,60vw)}
+.toolbar-query .qbox-suggest,.toolbar-query .qbox-options{left:0;right:auto}
 .qopt-cols{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px}
 .qopt-col h3{margin:0 0 6px;font-size:12px;font-weight:600;color:#9a9aa8;text-transform:uppercase;letter-spacing:.04em}
 .qopt-sub{margin:6px 0 2px;color:#71717a;font-size:11px}
@@ -118,7 +123,7 @@
 </div>
 <form class="secnav-search" action="/" method="get" role="search">
 <div class="qbox" id="qbox"><input type="search" name="q" id="nav-search" placeholder="Search or filter&hellip;" aria-label="Search or filter photos" autocomplete="off"></div>
-<button type="button" class="qbox-caret" id="qbox-caret" aria-label="Filter options" aria-haspopup="true" aria-expanded="false" aria-controls="qbox-options">&#9662;</button>
+<button type="button" class="qbox-caret" id="qbox-caret" aria-haspopup="true" aria-expanded="false" aria-controls="qbox-options">Filter &#9662;</button>
 <ul class="qbox-suggest" id="qbox-suggest" role="listbox" aria-label="Suggestions" hidden></ul>
 <div class="qbox-options" id="qbox-options" role="dialog" aria-label="Filter options" hidden></div>
 </form>
@@ -135,7 +140,33 @@
 // (toolbars, headers, layouts) hidden, so no route looks different from
 // another when a library is empty. `body` is the box's inner HTML after the
 // heading. Calling it again replaces the message.
+// The heights of the sticky chrome, for what sticks below it: --secnav-h, the
+// nav's, and --chrome-h, the nav's plus the page's sticky toolbar. Measured, not
+// written as constants: the toolbar wraps on a narrow window and grows with the
+// query's chips.
+(function(){
+  var nav=document.querySelector('nav.secnav');
+  function measure(){
+    var root=document.documentElement.style;
+    var navH=nav?nav.offsetHeight:0;
+    var bar=document.querySelector('.gallery-toolbar:not(.recluster-row)');
+    var barH=bar&&bar.offsetParent!==null?bar.offsetHeight:0;
+    root.setProperty('--secnav-h',navH+'px');
+    root.setProperty('--chrome-h',(navH+barH)+'px');
+  }
+  function watch(){
+    measure();
+    if(!('ResizeObserver' in window))return window.addEventListener('resize',measure);
+    var ro=new ResizeObserver(measure);
+    if(nav)ro.observe(nav);
+    var bar=document.querySelector('.gallery-toolbar:not(.recluster-row)');
+    if(bar)ro.observe(bar);
+  }
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',watch);
+  else watch();
+})();
 window.showEmptyState=function(title,body){
+  if(window.videreUndockQuery)window.videreUndockQuery();
   var nav=document.querySelector('nav.secnav');
   var box=document.getElementById('page-empty');
   if(!box){
