@@ -137,6 +137,7 @@ export default defineConfig({
 						{ label: 'Supported files', slug: 'reference/file-types' },
 						{ label: 'Search models', slug: 'reference/models' },
 						{ label: 'Query syntax', slug: 'reference/query-syntax' },
+						{ label: 'Feedback', slug: 'reference/feedback' },
 					],
 				},
 			],
