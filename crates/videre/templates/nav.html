@@ -74,7 +74,18 @@
 /* Docked in a tab's toolbar (query-box.js), the box opens its lists from its
    left edge, where it sits, rather than from the nav's right end. */
 .toolbar-query{display:inline-flex;align-items:center}
-.toolbar-query .qbox{max-width:min(520px,60vw)}
+/* In a toolbar the box and Filter look like the bar's other controls: a white
+   field like its selects, a light button like Select. */
+.toolbar-query .qbox{max-width:min(520px,60vw);min-height:27px;box-sizing:border-box;padding:0 6px;background:#fff;border-color:#2a2a33}
+.toolbar-query .qbox input{padding:4px 2px;color:#18181b;font-size:13px}
+.toolbar-query .qbox input::placeholder{color:#71717a}
+.toolbar-query .qchip{background:#e4e4e7;color:#18181b}
+.toolbar-query .qchip-key,.toolbar-query .qchip-join,.toolbar-query .qchip button{color:#52525b}
+.toolbar-query .qchip button:hover{background:#d4d4d8;color:#18181b}
+.toolbar-query .qchip-neg{background:#fee2e2}
+.toolbar-query .qchip-neg .qchip-not,.toolbar-query .qchip-neg-word{color:#b91c1c}
+.toolbar-query .qbox-caret{margin-left:6px;padding:4px 10px;background:#e9e9ed;color:#18181b;font-size:13px}
+.toolbar-query .qbox-caret:hover,.toolbar-query .qbox-caret[aria-expanded=true]{background:#d4d4d8;color:#18181b}
 .toolbar-query .qbox-suggest,.toolbar-query .qbox-options{left:0;right:auto}
 .qopt-cols{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px}
 .qopt-col h3{margin:0 0 6px;font-size:12px;font-weight:600;color:#9a9aa8;text-transform:uppercase;letter-spacing:.04em}
