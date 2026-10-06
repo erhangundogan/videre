@@ -295,6 +295,8 @@ startup, so edits do not take effect until it reconnects.
 
 ## More detail
 
+- [Working with AI agents](/guides/agents/) covers the command line side: what
+  makes videre easy for an agent to drive, and how to keep control.
 - [Keeping libraries separate](/guides/multiple-libraries/) covers serving more
   than one collection.
 - [Long-running jobs](/guides/long-running-jobs/) covers running this alongside
