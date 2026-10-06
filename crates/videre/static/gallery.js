@@ -1396,7 +1396,14 @@ function renderGallery(){
       if(btn)btn.textContent='Could not load more. Click to retry.';
     });
 }
-function showMoreGallery(){renderGallery();}
+// The Search page pages its ranking, not the library: while it has more, its
+// next page is what Show more loads. Cleared during a load, so a double click
+// cannot append one page twice.
+var SPAGE=settingIntInRange('routes.search.pageSize',1,200),searchMore=null;
+function showMoreGallery(){
+  if(searchMore){ var next=searchMore; searchMore=null; next(); return; }
+  renderGallery();
+}
 // The map page owns the location selection, while the shared gallery owns
 // paging and rendering. Reset all paging state before loading the first page
 // for the selected location; null returns to the complete library.
@@ -1492,31 +1499,50 @@ function runSearchPage(){
   g.parentNode.insertBefore(head,g);
   var btn=document.getElementById('gallery-more');
   if(btn)btn.style.display='none';
-  var url='/api/search?limit=96'+(like?'&like='+encodeURIComponent(like):'')+galleryQueryParam();
-  fetch(url).then(queryJson).then(function(d){
-    if(d.bad){ queryErrorStatus(d); head.innerHTML=''; return; }
-    var scored=d.results||[];
-    var hashes=scored.map(function(s){return s.hash;});
-    if(like)hashes.push(like);
-    var rows=hashes.length?fetch('/api/files?hashes='+encodeURIComponent(hashes.join(','))).then(function(r){return r.json();})
-                          :Promise.resolve({files:[]});
-    return rows.then(function(rd){
-      var by={};
-      (rd.files||[]).forEach(function(f){ if(!by[f.hash])by[f.hash]=f; });
-      var title=like
-        ?'Similar to '+escH(by[like]?(by[like].path.split('/').pop()||by[like].path):like.slice(0,12))
-        :'Results for &ldquo;'+escH(words)+'&rdquo;';
-      head.innerHTML='<h2>'+title+'</h2><span class="results-count">'+scored.length+' result'+(scored.length===1?'':'s')+'</span>';
-      var files=scored.map(function(s){
-        var f=by[s.hash]; if(!f)return null;
-        var copy={}; for(var k in f)copy[k]=f[k];
-        copy._score=s.score;
-        return copy;
-      }).filter(Boolean);
-      if(!files.length){ g.innerHTML='<p class="muted">Nothing ranked.</p>'; return; }
-      appendCards(files,files.length);
+  var base='/api/search?limit='+SPAGE+(like?'&like='+encodeURIComponent(like):'')+galleryQueryParam();
+  // Where the next page starts in the ranking. Kept apart from the cards
+  // shown, since a ranked hash with no row is skipped but still ranked.
+  var offset=0,title=null;
+  function page(){
+    if(btn)btn.textContent='Loading…';
+    return fetch(base+'&offset='+offset).then(queryJson).then(function(d){
+      if(d.bad){ queryErrorStatus(d); head.innerHTML=''; return; }
+      var scored=d.results||[];
+      offset+=scored.length;
+      var hashes=scored.map(function(s){return s.hash;});
+      if(like&&title===null)hashes.push(like);
+      var rows=hashes.length?fetch('/api/files?hashes='+encodeURIComponent(hashes.join(','))).then(function(r){return r.json();})
+                            :Promise.resolve({files:[]});
+      return rows.then(function(rd){
+        var by={};
+        (rd.files||[]).forEach(function(f){ if(!by[f.hash])by[f.hash]=f; });
+        if(title===null)title=like
+          ?'Similar to '+escH(by[like]?(by[like].path.split('/').pop()||by[like].path):like.slice(0,12))
+          :'Results for &ldquo;'+escH(words)+'&rdquo;';
+        var files=scored.map(function(s){
+          var f=by[s.hash]; if(!f)return null;
+          var copy={}; for(var k in f)copy[k]=f[k];
+          copy._score=s.score;
+          return copy;
+        }).filter(Boolean);
+        var shown=gShown+files.length;
+        head.innerHTML='<h2>'+title+'</h2><span class="results-count">'+shown+' result'+(shown===1?'':'s')+'</span>';
+        if(!shown){ g.innerHTML='<p class="muted">Nothing ranked.</p>'; return; }
+        appendCards(files,shown);
+        searchMore=d.more?next:null;
+        if(btn&&d.more){ btn.style.display='inline-block'; btn.textContent='Show more'; }
+      });
     });
-  }).catch(function(){ head.innerHTML='<h2>Search failed</h2>'; });
+  }
+  function next(){
+    page().catch(function(){
+      if(title===null){ head.innerHTML='<h2>Search failed</h2>'; return; }
+      // Say so, rather than leaving a button that silently does nothing.
+      searchMore=next;
+      if(btn)btn.textContent='Could not load more. Click to retry.';
+    });
+  }
+  next();
 }
 function clearResults(){
   var panel=document.getElementById('results');
