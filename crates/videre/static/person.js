@@ -42,6 +42,17 @@ const personName = decodeURIComponent(window.location.pathname.split('/').pop())
       return 'Error: ' + ((body && body.error) || fallback);
     }
     let facesData = [];
+    // A person can have thousands of faces, so they come a page at a time,
+    // primary first; `faceTotal` is all of them, `faceNext` where the next
+    // page starts (null at the end).
+    const FPAGE = settingIntInRange('routes.people.pageSize', 1, 1000);
+    let faceTotal = 0, faceNext = null, facesLoading = false, facesObserver = null;
+    function personUrl(params) {
+      return `/api/people/${encodeURIComponent(personName)}?` + new URLSearchParams(params).toString();
+    }
+    function setFaceCount() {
+      document.getElementById('face-count').textContent = `${faceTotal} face(s)`;
+    }
 
 // After an action that removes what this page was showing, go back to the
 // labeling UI rather than to `/`.
@@ -91,7 +102,7 @@ function peopleHome() {
     async function load() {
       try {
         document.title = personName;
-        const r = await fetch(`/api/people/${encodeURIComponent(personName)}`);
+        const r = await fetch(personUrl({ limit: FPAGE }));
         if (!r.ok) throw new Error('person fetch failed');
         const data = await r.json();
         // After the fetch, not before: `data` is a `const` declared here, and
@@ -106,16 +117,61 @@ function peopleHome() {
         const ri = document.getElementById('renameInput');
         if (ri) ri.value = shown;
         facesData = data.faces;
-        document.getElementById('face-count').textContent = `${facesData.length} face(s)`;
+        faceTotal = data.face_total;
+        faceNext = data.next;
+        setFaceCount();
         render();
+        watchFaces();
       } catch(e) {
         document.getElementById('status').textContent = 'Error: ' + e;
       }
     }
 
-    function render() {
+    async function loadMoreFaces() {
+      if (facesLoading || faceNext == null) return;
+      facesLoading = true;
+      try {
+        const r = await fetch(personUrl({ after: faceNext, limit: FPAGE }));
+        if (!r.ok) return;
+        const data = await r.json();
+        const shown = new Set(facesData.map(f => f.face_id));
+        const fresh = data.faces.filter(f => !shown.has(f.face_id));
+        facesData.push(...fresh);
+        faceTotal = data.face_total;
+        faceNext = data.next;
+        setFaceCount();
+        document.getElementById('faces-grid').insertAdjacentHTML('beforeend', fresh.map(faceCard).join(''));
+      } finally {
+        facesLoading = false;
+        // Still in view after a short page: observing again fires again.
+        if (facesObserver) { facesObserver.disconnect(); watchFaces(); }
+      }
+    }
+
+    function watchFaces() {
       const grid = document.getElementById('faces-grid');
-      grid.innerHTML = facesData.map(f => `
+      if (!grid || !('IntersectionObserver' in window)) return;
+      let sentinel = document.getElementById('faces-sentinel');
+      if (!sentinel) {
+        sentinel = document.createElement('div');
+        sentinel.id = 'faces-sentinel';
+        sentinel.style.height = '1px';
+        grid.after(sentinel);
+      }
+      if (!facesObserver) {
+        facesObserver = new IntersectionObserver(entries => {
+          if (entries.some(e => e.isIntersecting)) loadMoreFaces();
+        }, { rootMargin: '100% 0px' });
+      }
+      if (faceNext != null) facesObserver.observe(sentinel);
+    }
+
+    function render() {
+      document.getElementById('faces-grid').innerHTML = facesData.map(faceCard).join('');
+    }
+
+    function faceCard(f) {
+      return `
         <div class="card${f.is_primary ? ' is-default' : ''}" id="card-${f.face_id}">
           ${f.is_primary ? '<span class="default-badge">&#9733; Default</span>' : ''}
           <a href="/api/faces/${f.face_id}/original" target="_blank" title="Open original image">
@@ -129,7 +185,7 @@ function peopleHome() {
             <button onclick="setDefault(${f.face_id})" ${f.is_primary ? 'disabled title="Already the default photo"' : 'title="Show this photo for this person on the labeling page"'}>Set Default</button>
           </div>
         </div>
-      `).join('');
+      `;
     }
 
     function basename(p) { return p.split('/').pop() || p; }
@@ -143,7 +199,8 @@ function peopleHome() {
       if (!r.ok) { document.getElementById('status').textContent = await failureText(r, 'remove failed'); return; }
       document.getElementById(`card-${faceId}`)?.remove();
       facesData = facesData.filter(f => f.face_id !== faceId);
-      document.getElementById('face-count').textContent = `${facesData.length} face(s)`;
+      faceTotal = Math.max(0, faceTotal - 1);
+      setFaceCount();
     }
 
     async function setDefault(faceId) {
@@ -152,16 +209,20 @@ function peopleHome() {
         body: JSON.stringify({ person_label: personName })
       });
       if (!r.ok) { document.getElementById('status').textContent = await failureText(r, 'set default failed'); return; }
-      // Move the flag locally and re-render so the badge and disabled state
-      // follow, without a full round-trip; the labeling page picks up the new
-      // primary on its next load.
-      facesData.forEach(f => { f.is_primary = (f.face_id === faceId); });
-      render();
+      // Move the flag locally and redraw only the cards it changes, so the badge
+      // and disabled state follow while the loaded pages and the scroll position
+      // stay; the labeling page picks up the new primary on its next load.
+      facesData.forEach(f => {
+        const was = f.is_primary;
+        f.is_primary = (f.face_id === faceId);
+        const card = document.getElementById(`card-${f.face_id}`);
+        if (card && was !== f.is_primary) card.outerHTML = faceCard(f);
+      });
       document.getElementById('status').textContent = 'Default photo updated';
     }
 
     async function removePerson() {
-      if (!confirm('Remove ' + personName + '? Their ' + facesData.length + ' photo(s) will become unassigned.')) return;
+      if (!confirm('Remove ' + personName + '? Their ' + faceTotal + ' photo(s) will become unassigned.')) return;
       const r = await fetch(`/api/people/${encodeURIComponent(personName)}`, { method: 'DELETE' });
       if (!r.ok) { alert('Failed to remove person.'); return; }
       window.location.href = peopleHome();
