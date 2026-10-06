@@ -8,13 +8,38 @@ server to run, no port to open, nothing listening: the client starts videre as a
 child process and talks to it over stdin and stdout.
 
 ```bash
-videre mcp                             # serve using the default database
-videre --library ~/Photos mcp          # serve a different library
+videre --library ~/Photos mcp          # serve one library
+videre mcp                             # serve the library in this directory
 videre mcp --model <model-id>          # serve searches from a specific model
 ```
 
 You do not usually run this yourself. Your client runs it for you, using one of
-the configurations below.
+the configurations below, and stops it when it is done.
+
+## Why MCP, when the CLI does everything?
+
+It does: every MCP tool runs the same code as a command, so `search` returns
+what [`videre search`](/commands/search/) returns and `find_duplicates` what
+[`videre dedupe --json`](/commands/dedupe/) prints. An assistant that can run
+shell commands, such as Claude Code, can use the CLI directly, and that works
+well. MCP is for the other cases:
+
+- **Assistants with no shell on your machine.** Chat apps such as Claude
+  Desktop's chat, or a local-model app like LM Studio, cannot run `videre`;
+  what code they run, if any, runs elsewhere. MCP is the only way they can
+  reach your library. (Coding agents such as Cursor's agent or Copilot's agent
+  mode can run commands, so the next two points are what MCP adds for them.)
+- **Read-only by construction.** The server offers three tools that read, and
+  nothing that trashes, deletes, rotates or tags. You can let an assistant
+  search without approving each command, and it cannot remove a photo by
+  mistake. (Searching by place name may look the name up online once and save
+  the answer, the one write; see below.)
+- **Self-describing.** Each tool arrives with its parameters and what they
+  mean, so the assistant needs no knowledge of the CLI's flags, and always
+  gets one structured JSON document back rather than terminal text to parse.
+
+So with Claude Code, use whichever you prefer; elsewhere, or when you want
+access you do not have to supervise, use MCP.
 
 ## The three tools
 
@@ -79,7 +104,7 @@ Edit the config file, creating it if it does not exist:
   "mcpServers": {
     "videre": {
       "command": "/opt/homebrew/bin/videre",
-      "args": ["mcp"]
+      "args": ["--library", "/Users/you/Photos", "mcp"]
     }
   }
 }
@@ -87,17 +112,26 @@ Edit the config file, creating it if it does not exist:
 
 Restart Claude Desktop fully after editing. The tools appear once it reconnects.
 
+:::caution[Always name the library]
+A client starts `videre mcp` from its own folder, not from your library, so
+without `--library` it finds no library and the server fails to start. Running
+`videre mcp` by hand inside the library folder works, which makes this easy to
+miss. Every example here passes `--library`.
+:::
+
 ## Claude Code
 
 ```bash
-claude mcp add videre -- videre mcp
+claude mcp add -s user videre -- videre --library ~/Photos mcp
 ```
 
-The `--` separates Claude Code's own flags from the command it should run. To
-share the configuration with a repository instead of just your machine:
+The `--` separates Claude Code's own flags from the command it should run.
+`-s user` makes the server available in every project; without it, it is added
+for the current project only. To share the configuration with a repository
+instead:
 
 ```bash
-claude mcp add -s project videre -- videre mcp
+claude mcp add -s project videre -- videre --library ~/Photos mcp
 ```
 
 That writes a `.mcp.json` in the project root, which you can also create by
@@ -108,11 +142,15 @@ hand:
   "mcpServers": {
     "videre": {
       "command": "videre",
-      "args": ["mcp"]
+      "args": ["--library", "/Users/you/Photos", "mcp"]
     }
   }
 }
 ```
+
+`claude mcp list` checks every server and shows whether it connected; inside a
+session, `/mcp` shows the same and can reconnect one. A server added or removed
+appears in the next session, not in the one already running.
 
 ## Cursor
 
@@ -123,7 +161,7 @@ hand:
   "mcpServers": {
     "videre": {
       "command": "/opt/homebrew/bin/videre",
-      "args": ["mcp"]
+      "args": ["--library", "/Users/you/Photos", "mcp"]
     }
   }
 }
@@ -140,7 +178,7 @@ uses `servers` rather than `mcpServers`, and wants an explicit type:
     "videre": {
       "type": "stdio",
       "command": "/opt/homebrew/bin/videre",
-      "args": ["mcp"]
+      "args": ["--library", "/Users/you/Photos", "mcp"]
     }
   }
 }
@@ -152,33 +190,53 @@ Almost every client uses the same three fields, differing only in the wrapper
 key. If yours is not listed, look for where it keeps MCP servers and provide:
 
 - **command**: the absolute path to `videre`
-- **args**: `["mcp"]`
+- **args**: `["--library", "<your library>", "mcp"]`
 - **env**: optional, see below
 
 Check your client's documentation for the exact key, since it is `mcpServers`
 in most and `servers` in VS Code.
 
-## Pointing at a specific library
+## More than one library
 
-Add arguments the same way you would on the command line:
+A server binds to one library at startup, chosen by `--library` (or, with no
+argument, the directory the client starts it in), and serves it for its
+lifetime: no tool switches libraries. For several libraries, register one
+server per library, each under its own name:
+
+```bash
+claude mcp add -s user videre-photos -- videre --library ~/Photos mcp
+claude mcp add -s user videre-takeout -- videre --library /Volumes/Archive/Takeout mcp
+```
 
 ```json
 {
   "mcpServers": {
-    "work-photos": {
+    "videre-photos": {
       "command": "/opt/homebrew/bin/videre",
       "args": ["--library", "/Users/you/Photos", "mcp"]
+    },
+    "videre-takeout": {
+      "command": "/opt/homebrew/bin/videre",
+      "args": ["--library", "/Volumes/Archive/Takeout", "mcp"]
     }
   }
 }
 ```
 
-The server binds to one library at startup, chosen by the `--library` argument
-(or, with no argument, the directory the client launches it in). There is no
-per-tool library override: one server serves one library for its lifetime.
+Each runs as its own process, and the assistant sees both sets of tools. Name
+the library when you ask ("search my Takeout library for ..."), or it may pick
+either or ask which you mean. See
+[keeping libraries separate](/guides/multiple-libraries/).
 
-Nothing stops you registering several, one per library, under different names.
-See [keeping libraries separate](/guides/multiple-libraries/).
+## A library on an external drive
+
+The server checks the library when it starts. With the drive unplugged it
+cannot, so the server fails to start and the client shows it as failed;
+nothing else is affected, and the assistant simply has no videre tools. Plug
+the drive back in, then reconnect (`/mcp` in Claude Code, or restart the
+client). There is no need to remove and add the server again. A drive that
+goes away while the server is running makes its tool calls fail the same way
+until then.
 
 ## Checking it works
 
@@ -220,9 +278,10 @@ check above is useful.
 your disk. Run [`videre watch`](/commands/watch/) to keep it current, and treat
 paths as needing verification before anything acts on them.
 
-**It is read-only.** Nothing exposed here writes to the database or touches your
-files. An assistant can find duplicates but cannot delete them; you run
-[`videre dedupe`](/commands/dedupe/) yourself.
+**It is read-only.** Nothing exposed here touches your files, and the only
+database write is the place-name cache above. An assistant can find duplicates
+but cannot delete them; you run [`videre dedupe trash`](/commands/dedupe/)
+yourself, or use the gallery's Duplicates page.
 
 **The first text or image search is slow.** The embedding model loads on demand
 and then stays in memory for the life of the process, so later searches are
@@ -236,6 +295,8 @@ startup, so edits do not take effect until it reconnects.
 
 ## More detail
 
+- [Working with AI agents](/guides/agents/) covers the command line side: what
+  makes videre easy for an agent to drive, and how to keep control.
 - [Keeping libraries separate](/guides/multiple-libraries/) covers serving more
   than one collection.
 - [Long-running jobs](/guides/long-running-jobs/) covers running this alongside

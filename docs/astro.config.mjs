@@ -114,6 +114,7 @@ export default defineConfig({
 						{ label: 'Leaving Google Photos', slug: 'guides/leaving-google-photos' },
 						{ label: 'Browsing and labeling', slug: 'guides/browsing' },
 						{ label: 'Compositional searches', slug: 'guides/compositional-search' },
+						{ label: 'Working with AI agents', slug: 'guides/agents' },
 						{ label: 'Scoping a run', slug: 'guides/scoping-a-run' },
 						{ label: 'Long-running jobs', slug: 'guides/long-running-jobs' },
 						{ label: 'Logging and error handling', slug: 'guides/logging-and-errors' },
