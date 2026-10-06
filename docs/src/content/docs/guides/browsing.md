@@ -14,7 +14,7 @@ face clusters, a map and automatic events, and you can label people you know.
 
 | You want to | Command | What you get |
 |---|---|---|
-| Check duplicates before delete | `videre dedupe --html` | A file |
+| Check duplicates before delete | `videre dedupe review` | A file |
 | Check duplicates before delete | `videre gallery` and browse `/duplicates` | A local server |
 | Find photos | `videre search --location "Berlin" --html` | A file |
 | Many more features | `videre gallery` | A local server |
@@ -40,7 +40,7 @@ instead.
 The default, and the one to run before deleting anything.
 
 ```bash
-videre dedupe --html
+videre dedupe review
 ```
 
 Groups are sorted by wasted space, each file badged KEEP or REMOVE, with
@@ -53,7 +53,7 @@ happen. Group members share their pixels but not always their metadata, so you
 are reviewing **which path survives**, which matters most when one copy is on a
 drive you think of as the backup, and whose dates and location survive with it.
 
-Near-duplicates found by [`dedupe --similar`](/commands/dedupe/) (fingerprints
+Near-duplicates found by [`dedupe --kind similar`](/commands/dedupe/) (fingerprints
 from [`embed`](/commands/embed/)) appear here for eyeballing, and deliberately
 never in `dedupe`'s pipeable output.
 
@@ -142,7 +142,7 @@ image is broken.
 To produce something that travels, embed the images:
 
 ```bash
-videre dedupe --html for-sharing.html
+videre dedupe review for-sharing.html
 ```
 
 The page links to your files by path, so it is small but only complete on the

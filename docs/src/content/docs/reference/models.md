@@ -87,7 +87,7 @@ model's data; everything else reads it.**
 
 Asking for a model you have not prepared is an error listing the ones you do
 have, rather than silently returning nothing.
-[`videre dedupe --html`](/commands/dedupe/) is the exception: a missing model
+[`videre dedupe review`](/commands/dedupe/) is the exception: a missing model
 disables its in-page similarity search with a note, rather than failing a page
 that works without it.
 

@@ -55,6 +55,7 @@ videre search 'NOT tag:ekran date:2023'
 | `pick:` | `keep` or `reject` | `pick:keep` |
 | `label:` | a colour label | `label:Red` |
 | `is:liked` | liked files | `is:liked` |
+| `is:creation` | Google Photos creations (`-edited`, `-EFFECTS`, `-SMILE`) beside their original, as [dedupe](/commands/dedupe/#google-photos-creations) pairs them | `-is:creation` |
 | `type:` | `image` or `video` | `type:video` |
 | `ext:` `mime:` | a file extension, or an exact type | `ext:heic`, `mime:video/quicktime` |
 | `path:` | files under a folder | `path:Tatil/2023` |

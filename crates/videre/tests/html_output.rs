@@ -56,50 +56,51 @@ fn fixture(with_embeddings: bool) -> (TestLibrary, [std::path::PathBuf; 4]) {
     (lib, files)
 }
 
-/// `videre dedupe --html`, which is what plain `videre report` used to be.
+/// `videre dedupe review`, which is what plain `videre report` used to be.
 fn run_dedupe_html(lib: &TestLibrary) -> String {
     let out = lib.context().paths.root.join("dupes.html");
     let status = lib
         .cmd()
-        .args(["dedupe", "--html"])
+        .args(["dedupe", "review"])
         .arg(&out)
         .status()
-        .expect("failed to run videre dedupe --html");
+        .expect("failed to run videre dedupe review");
     assert!(status.success());
     std::fs::read_to_string(&out).unwrap()
 }
 
-/// `dedupe --html` shows Google Takeout edit pairs only with `--edited`.
+/// `dedupe review` shows Google Takeout creations only with `--kind creation`.
 #[test]
-fn dedupe_html_shows_edit_pairs_only_with_edited() {
+fn dedupe_review_shows_creations_only_with_their_kind() {
     let lib = TestLibrary::new();
     lib.copy_fixture("tiny.jpg", "Photos/IMG_1.jpg");
     lib.copy_fixture("sample_with_exif.jpg", "Photos/IMG_1-edited.jpg");
     lib.scan();
     let html = run_dedupe_html(&lib);
     assert!(
-        !html.contains("\"edited\":true"),
-        "no pairs without --edited"
+        !html.contains("\"kind\":\"creation\""),
+        "no creations without --kind creation"
     );
 
     let out = lib.context().paths.root.join("edited.html");
     let status = lib
         .cmd()
-        .args(["dedupe", "--edited", "--html"])
+        .args(["dedupe", "review", "--kind", "exact,creation"])
         .arg(&out)
         .status()
         .unwrap();
     assert!(status.success());
     let html = std::fs::read_to_string(&out).unwrap();
-    assert!(html.contains("\"edited\":true"), "the pair is shown");
+    assert!(html.contains("\"kind\":\"creation\""), "the pair is shown");
+    assert!(html.contains("var DUP_KINDS=[\"exact\",\"creation\"];"));
     assert!(html.contains("IMG_1-edited.jpg"));
-    // The header counts the pairs it shows, not only exact copies: a Takeout
-    // library whose groups are all edits read "Duplicate groups: 0".
+    // The header counts each kind it shows: a Takeout library whose groups
+    // are all creations once read "Duplicate groups: 0".
     let edit_size = std::fs::metadata(lib.context().paths.root.join("Photos/IMG_1-edited.jpg"))
         .unwrap()
         .len();
     let expected = format!(
-        "Google Photos edits:</span> 1 ({})",
+        "Google Photos creations:</span> 1 ({})",
         videre_core::disk::human_bytes(edit_size)
     );
     assert!(html.contains(&expected), "{expected} in the header");
@@ -150,7 +151,7 @@ fn a_static_page_carries_no_vectors_or_gallery_shell() {
 }
 
 #[test]
-fn dedupe_html_contains_the_duplicate_group() {
+fn dedupe_review_contains_the_duplicate_group() {
     let (lib, files) = fixture(false);
     let html = run_dedupe_html(&lib);
     // a.jpg and b.jpg share hash hdup, so both belong on the page.
@@ -160,17 +161,17 @@ fn dedupe_html_contains_the_duplicate_group() {
 
 // :warning: The two renderers disagree about files deleted after the scan, and
 // this pins the disagreement rather than hiding it. `query_all_files`, which fed
-// the old `report --all` gallery, filtered on `Path::exists()`. `query_groups`,
-// which feeds `dedupe --html`, does not, so a row whose file is gone still
+// the old `report --all` gallery, filtered on `Path::exists()`. The duplicate groups,
+// which feed `dedupe review`, do not, so a row whose file is gone still
 // appears until `videre prune` removes it.
 #[test]
-fn dedupe_html_still_lists_a_file_deleted_after_the_scan() {
+fn dedupe_review_still_lists_a_file_deleted_after_the_scan() {
     let (lib, files) = fixture(false);
     std::fs::remove_file(&files[1]).unwrap();
     let html = run_dedupe_html(&lib);
     assert!(
         html.contains(files[1].to_str().unwrap()),
-        "dedupe --html reads the database, so a not-yet-pruned row still shows"
+        "dedupe review reads the database, so a not-yet-pruned row still shows"
     );
 }
 
@@ -186,9 +187,9 @@ fn search_html_writes_a_page() {
 }
 
 #[test]
-fn html_flag_is_documented_on_both_commands() {
+fn both_static_pages_are_in_help() {
     let lib = TestLibrary::new();
-    for cmd in ["dedupe", "search"] {
+    for (cmd, needle) in [("dedupe", "review"), ("search", "--html")] {
         let out = lib
             .cmd()
             .args([cmd, "--help"])
@@ -196,8 +197,8 @@ fn html_flag_is_documented_on_both_commands() {
             .expect("failed to run --help");
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(
-            stdout.contains("--html"),
-            "{cmd} --help does not mention --html"
+            stdout.contains(needle),
+            "{cmd} --help does not mention {needle}"
         );
     }
 }

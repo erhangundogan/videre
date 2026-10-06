@@ -281,16 +281,19 @@ fn takeout_tree_with_an_edit(root: &Path) {
 }
 
 #[test]
-fn a_takeout_import_with_edits_points_at_dedupe_edited() {
+fn a_takeout_import_with_edits_points_at_dedupe_creations() {
     let lib = TestLibrary::new();
     takeout_tree_with_an_edit(&lib.root);
     let text = run(&lib, &[".", "--yes"]);
     assert!(
-        text.contains("videre dedupe --edited --html")
-            && text.contains("1 photo(s) Google Photos exported twice"),
+        text.contains("videre dedupe review --kind creation")
+            && text.contains("1 photo(s) Google Photos made from another"),
         "{text}"
     );
-    assert!(text.contains("videre dedupe --edited --trash"), "{text}");
+    assert!(
+        text.contains("videre dedupe trash --kind creation"),
+        "{text}"
+    );
 }
 
 #[test]

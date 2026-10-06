@@ -74,7 +74,7 @@ mod tests {
     fn embed_source_dhash_stays_within_the_similarity_threshold_of_the_64px_one() {
         // Fingerprints stored by the old `scan --similar` path came from a 64px
         // QuickLook render; embed now hashes its own, larger render. They must
-        // stay within dedupe's 10-bit threshold of each other, or keeping the
+        // stay within dedupe's similar-kind 10-bit threshold of each other, or keeping the
         // stored values would split existing near-duplicate groups.
         use videre_core::image_decode::dhash;
         let base = concat!(env!("CARGO_MANIFEST_DIR"), "/../videre/tests/fixtures");

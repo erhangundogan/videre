@@ -7,7 +7,7 @@
 //! the other modes wrote files.
 //!
 //! Rendering a set a command just produced is the other half, and stays static:
-//! see `dedupe --html` and `search --html`.
+//! see `dedupe review` and `search --html`.
 
 mod bulk;
 mod events;

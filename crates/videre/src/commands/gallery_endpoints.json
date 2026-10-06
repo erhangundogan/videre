@@ -9,6 +9,7 @@
     { "method": "POST",   "path": "/api/files/tags" },
     { "method": "POST",   "path": "/api/files/rotate" },
     { "method": "POST",   "path": "/api/files/delete" },
+    { "method": "POST",   "path": "/api/duplicates/trash" },
     { "method": "GET",    "path": "/api/tags" },
     { "method": "GET",    "path": "/api/dates" },
     { "method": "GET",    "path": "/api/settings" },

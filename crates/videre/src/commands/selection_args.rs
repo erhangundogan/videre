@@ -247,6 +247,8 @@ pub fn row_selection(
         pick: marks.and_then(|m| m.pick_state()),
         label: marks.and_then(|m| m.label.clone()),
         liked: marks.is_some_and(|m| m.like),
+        // No flag: only the query language's `is:creation`.
+        creation: false,
         tags: tags.map(|t| t.tags.clone()).unwrap_or_default(),
         // Resolving a query needs the database; see [`with_query`].
         query: None,

@@ -1,5 +1,5 @@
 //! Bringing a known list of files into the library: what `watch` does for the
-//! files an event named, and what `dedupe --undo` does for the files it put
+//! files an event named, and what `dedupe undo` does for the files it put
 //! back.
 
 use std::path::PathBuf;

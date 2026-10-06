@@ -188,9 +188,10 @@ function buildPreview(f){
   return '<span class="no-prev">&mdash;</span>';
 }
 function buildRow(f,isKeep){
-  var rc=isKeep?'keep':'remove';
-  var bc=isKeep?'keep-badge':'remove-badge';
-  var bt=isKeep?'KEEP':'REMOVE';
+  var review=isKeep===null;
+  var rc=review?'review':isKeep?'keep':'remove';
+  var bc=review?'review-badge':isKeep?'keep-badge':'remove-badge';
+  var bt=review?'REVIEW':isKeep?'KEEP':'REMOVE';
   var fname=f.path.split('/').pop()||f.path;
   var cr=f.cr||'<span class="dim">—</span>';
   var mo=f.mo||'<span class="dim">—</span>';
@@ -216,18 +217,32 @@ function buildRow(f,isKeep){
     '<td class="dim">'+dims+'</td>'+
     '</tr>';
 }
+// What each kind of group says in its header: the keeper is always first.
+function groupTitle(g){
+  var n=g.files.length;
+  if(g.kind==='resized')
+    return '<span class="hash">resized copies</span>'+
+      '<span class="group-meta">'+n+' files &middot; the largest kept</span>';
+  if(g.kind==='creation')
+    return '<span class="hash">made in Google Photos</span>'+
+      '<span class="group-meta">the original and '+(n-1)+' creation'+(n===2?'':'s')+'</span>';
+  if(g.kind==='similar')
+    return '<span class="hash">look alike</span>'+
+      '<span class="group-meta">'+n+' files &middot; review only, nothing is removed</span>';
+  return '<code class="hash">'+escH(g.hash)+'</code>'+
+    '<span class="group-meta">'+n+' copies &middot; '+fmtB(g.files[0].size)+' each</span>';
+}
 function buildGroup(g,idx){
-  var rows=g.files.map(function(f,j){return buildRow(f,j===0);}).join('');
+  var rows=g.files.map(function(f,j){return buildRow(f,g.kind==='similar'?null:j===0);}).join('');
+  var trash=LIVE_SERVER&&g.kind!=='similar'
+    ? '<button class="dup-trash" data-dup-trash="'+idx+'" title="Move this group\'s copies to the trash, keeping the first">Trash copies</button>'
+    : '';
   return '<div class="group" id="g'+idx+'">'+
     '<div class="group-header">'+
     '<span class="arrow">&#9654;</span>'+
-    // A Google Takeout pair: the original (kept, first) and Google's edit.
-    (g.edited
-      ? '<span class="hash">edited in Google Photos</span>'+
-        '<span class="group-meta">original and edit</span>'
-      : '<code class="hash">'+escH(g.hash)+'</code>'+
-        '<span class="group-meta">'+g.files.length+' copies &middot; '+fmtB(g.files[0].size)+' each</span>')+
-    '<span class="waste">&minus;'+fmtB(g.waste)+' wasted</span>'+
+    groupTitle(g)+
+    (g.kind==='similar'?'':'<span class="waste">&minus;'+fmtB(g.waste)+' wasted</span>')+
+    trash+
     '</div>'+
     '<div class="group-body">'+
     '<table><thead><tr>'+
@@ -271,6 +286,72 @@ function expandAll(){
   document.querySelectorAll('.group').forEach(function(g){ g.classList.add('open'); });
 }
 function collapseAll(){document.querySelectorAll('.group').forEach(function(g){g.classList.remove('open');});}
+
+// ---- the Duplicates page's kinds and trash buttons --------------------------
+// The kinds are a library setting (routes.duplicates.kinds), read by the
+// server when it builds the page, so a change saves and reloads. A static
+// review page names its kinds and offers no actions: it has no server.
+var DUP_KIND_NAMES=[['exact','Exact'],['resized','Resized'],['creation','Google creations'],['similar','Similar']];
+function dupRemovableKinds(){
+  return (typeof DUP_KINDS==='undefined'?[]:DUP_KINDS).filter(function(k){return k!=='similar';});
+}
+function dupCopies(groups){
+  return groups.reduce(function(n,g){return n+(g.kind==='similar'?0:g.files.length-1);},0);
+}
+function dupTrash(body,what){
+  confirmTrash('Move '+what+' to the Trash?',
+    '<p>Each group keeps its first file. <code>videre dedupe undo</code> puts them back.</p>'
+  ).then(function(ok){ if(ok)dupTrashNow(body); });
+}
+function dupTrashNow(body){
+  fetch('/api/duplicates/trash',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(body)})
+    .then(function(r){return r.json().then(function(j){return{ok:r.ok,j:j};});})
+    .then(function(res){
+      if(!res.ok){alert('Nothing was moved: '+(res.j.error||'the request was refused')+'.');return;}
+      if(res.j.failed&&res.j.failed.length)
+        alert(res.j.failed.length+' file(s) could not be moved: '+res.j.failed[0].error);
+      location.reload();
+    })
+    .catch(function(){alert('Nothing was moved: the gallery did not answer.');});
+}
+function trashGroup(idx){
+  var g=sorted[idx];
+  if(!g)return;
+  var n=g.files.length-1;
+  dupTrash({kinds:[g.kind],q:GQUERY||null,keepers:[g.files[0].path]},n+' cop'+(n===1?'y':'ies'));
+}
+function trashAllCopies(){
+  var n=dupCopies(GROUPS);
+  dupTrash({kinds:dupRemovableKinds(),q:GQUERY||null},n+' cop'+(n===1?'y':'ies')+' from '+
+    GROUPS.filter(function(g){return g.kind!=='similar';}).length+' group(s)');
+}
+function setDupKinds(){
+  var picked=Array.prototype.slice.call(document.querySelectorAll('#dup-kinds input:checked'))
+    .map(function(i){return i.value;});
+  if(!picked.length){this.checked=true;return;}
+  fetch('/api/settings',{method:'PATCH',headers:{'Content-Type':'application/merge-patch+json'},
+    body:JSON.stringify({routes:{duplicates:{kinds:picked}}})})
+    .then(function(){location.reload();})
+    .catch(function(){location.reload();});
+}
+(function(){
+  var holder=document.getElementById('dup-kinds');
+  if(!holder||typeof DUP_KINDS==='undefined')return;
+  if(!LIVE_SERVER){
+    holder.textContent='Kinds: '+DUP_KINDS.join(', ');
+    return;
+  }
+  holder.innerHTML='<span class="dup-kinds-label">Kinds</span>'+DUP_KIND_NAMES.map(function(k){
+    return '<label class="dup-kind"><input type="checkbox" value="'+k[0]+'"'+
+      (DUP_KINDS.indexOf(k[0])>=0?' checked':'')+'> '+k[1]+'</label>';
+  }).join('');
+  holder.querySelectorAll('input').forEach(function(i){i.addEventListener('change',setDupKinds);});
+  var actions=document.getElementById('dup-actions');
+  var n=dupCopies(GROUPS);
+  if(actions&&n>0)
+    actions.innerHTML='<button class="dup-trash-all" onclick="trashAllCopies()">Trash all copies ('+n+')</button>';
+})();
 function copyPath(p){
   navigator.clipboard.writeText(p).catch(function(){
     var t=document.createElement('textarea');t.value=p;
@@ -1054,6 +1135,8 @@ document.addEventListener('click',function(e){
   if(lb){e.preventDefault();e.stopPropagation();openTile(lb);return;}
   var cp=e.target.closest('[data-path]');
   if(cp){copyPath(cp.dataset.path);return;}
+  var dt=e.target.closest('[data-dup-trash]');
+  if(dt){trashGroup(+dt.dataset.dupTrash);return;}
   var hdr=e.target.closest('.group-header');
   if(hdr){toggle(hdr.closest('.group').id);return;}
 });
@@ -1979,11 +2062,18 @@ function confirmDelete(c){
     if(c.photos)parts.push(c.photos+' photo'+(c.photos===1?'':'s'));
     if(c.videos)parts.push(c.videos+' video'+(c.videos===1?'':'s'));
     var copies=c.extra_copies?' and '+c.extra_copies+' extra cop'+(c.extra_copies===1?'y':'ies')+' of items with duplicates':'';
+    confirmTrash('Move '+c.items+' item'+(c.items===1?'':'s')+' to the Trash?',
+      '<p>'+c.files+' file'+(c.files===1?'':'s')+': '+escH(parts.join(', '))+copies+'.</p>'+
+      '<p>They go to the system Trash and can be restored from there. Their marks, tags and faces stay until <code>videre prune</code> clears data for missing files.</p>'
+    ).then(resolve);
+  });
+}
+// The Trash confirmation: `title`, then `body` (HTML), Cancel focused.
+function confirmTrash(title,body){
+  return new Promise(function(resolve){
     var d=document.createElement('dialog');
     d.className='sel-confirm';
-    d.innerHTML='<h2>Move '+c.items+' item'+(c.items===1?'':'s')+' to the Trash?</h2>'+
-      '<p>'+c.files+' file'+(c.files===1?'':'s')+': '+escH(parts.join(', '))+copies+'.</p>'+
-      '<p>They go to the system Trash and can be restored from there. Their marks, tags and faces stay until <code>videre prune</code> clears data for missing files.</p>'+
+    d.innerHTML='<h2>'+escH(title)+'</h2>'+body+
       '<div class="sel-confirm-actions"><button type="button" data-no autofocus>Cancel</button>'+
       '<button type="button" data-yes class="primary">Move to Trash</button></div>';
     document.body.appendChild(d);

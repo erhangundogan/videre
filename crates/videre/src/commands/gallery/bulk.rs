@@ -199,7 +199,7 @@ pub(crate) struct DeleteBody {
 /// POST /api/files/delete: move every file of the selected items to the
 /// system Trash (all copies of a hash: leaving one would bring the item
 /// straight back) and forget their rows. `dry_run` only counts, for the
-/// confirmation dialog. Needs the library to itself, like `dedupe --trash`.
+/// confirmation dialog. Needs the library to itself, like `dedupe trash`.
 pub(crate) async fn handle_delete(
     State(state): State<Arc<AppState>>,
     Json(body): Json<DeleteBody>,
@@ -295,6 +295,103 @@ pub(crate) async fn handle_delete(
         report["trashed"] = json!(trashed);
         report["failed"] = Value::Array(failed_paths);
         Ok(report)
+    })
+    .await;
+    respond(result)
+}
+
+#[derive(Deserialize)]
+pub(crate) struct DuplicatesTrashBody {
+    /// The kinds the page shows. Each must be removable.
+    kinds: Vec<String>,
+    /// The page's query, judged as the page judges it: a group with a
+    /// matching file, taken whole.
+    #[serde(default)]
+    q: Option<String>,
+    /// Only the groups with these keepers (one group's Trash copies); all of
+    /// them when absent (Trash all copies).
+    #[serde(default)]
+    keepers: Option<Vec<String>>,
+}
+
+/// POST /api/duplicates/trash: move the copies of the Duplicates page's
+/// groups to the system Trash, keeping each group's keeper. The same groups,
+/// keeper rule and removal as `videre dedupe trash`, recorded the same way,
+/// so `videre dedupe undo` puts them back. A review-only kind is refused.
+pub(crate) async fn handle_duplicates_trash(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<DuplicatesTrashBody>,
+) -> Response {
+    let result = tokio::task::spawn_blocking(move || -> Result<Value, Refusal> {
+        let mut kinds = Vec::new();
+        for name in &body.kinds {
+            match videre::duplicates::Kind::parse(name) {
+                Some(kind) if kind.removable() => kinds.push(kind),
+                Some(_) => return Err(Refusal::Invalid("review_only_kind")),
+                None => return Err(Refusal::BadParameter("kinds")),
+            }
+        }
+        if kinds.is_empty() {
+            return Err(Refusal::BadParameter("kinds"));
+        }
+        let library = &state.context.library;
+        library
+            .ensure_root_identity()
+            .map_err(|_| axum::http::StatusCode::SERVICE_UNAVAILABLE)?;
+        let _activity = videre_core::library_locks::wait_for(super::server::BUSY_WAIT, || {
+            videre_core::library_locks::try_activity(
+                library,
+                videre_core::library_locks::ActivityMode::Exclusive,
+            )
+        })
+        .map_err(|_| Refusal::Busy("library_busy"))?;
+        let conn = state.conn.lock().map_err(poisoned)?;
+        let (found, query_json) =
+            super::server::duplicate_groups(&state, &conn, &kinds, body.q.as_deref())
+                .map_err(failed)?;
+        if query_json.starts_with("{\"error\"") {
+            return Err(Refusal::Invalid("query"));
+        }
+        let mut groups = found.groups;
+        if let Some(keepers) = &body.keepers {
+            let keepers: std::collections::HashSet<&str> =
+                keepers.iter().map(String::as_str).collect();
+            groups.retain(|g| keepers.contains(g.keeper().path.as_str()));
+        }
+        let paths: Vec<std::path::PathBuf> = videre::duplicates::removals(&groups, true)
+            .into_iter()
+            .map(|(_, path)| path)
+            .collect();
+        // Silent: the page shows its own count; failures come back below.
+        let progress =
+            videre_core::progress::Progress::new_counting(paths.len() as u64, true, "files");
+        let results = crate::removal::remove_and_forget(
+            Some(&conn),
+            &paths,
+            crate::removal::Method::Trash,
+            &progress,
+            Some(&mut crate::trash_stack::Writer::new(
+                &library.paths.state,
+                "dedupe",
+            )),
+        );
+        let mut removed = 0;
+        let mut gone = 0;
+        let mut failures = Vec::new();
+        for (path, outcome) in results {
+            match outcome {
+                crate::removal::Outcome::Removed => removed += 1,
+                crate::removal::Outcome::AlreadyGone => gone += 1,
+                crate::removal::Outcome::Failed(e) => {
+                    failures.push(json!({ "path": path.to_string_lossy(), "error": e }))
+                }
+            }
+        }
+        tracing::info!(
+            "videre gallery: moved {removed} duplicate copy(ies) to the trash, {} failed",
+            failures.len()
+        );
+        Ok(json!({ "removed": removed, "already_gone": gone, "failed": failures }))
     })
     .await;
     respond(result)
