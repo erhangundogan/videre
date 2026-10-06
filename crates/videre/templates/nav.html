@@ -111,7 +111,9 @@
 .qopt-none{color:#71717a;font-size:12px}
 .qopt-date{display:flex;flex-direction:column;gap:2px;margin-bottom:6px;color:#9a9aa8;font-size:12px}
 .qopt-date input{padding:3px 6px;border:1px solid #2a2a33;border-radius:4px;background:#25252d;color:#d8d8e0;font:inherit;color-scheme:dark}
-.qopt-foot{display:flex;justify-content:flex-end;margin-top:10px}
+/* Apply stays in view at the panel's foot when a short window makes the panel
+   scroll; -12px cancels the panel's bottom padding. */
+.qopt-foot{display:flex;justify-content:flex-end;margin-top:10px;position:sticky;bottom:-12px;padding:8px 0 4px;background:inherit}
 .qopt-apply{padding:5px 14px;border:0;border-radius:6px;background:#3b82f6;color:#fff;font:600 13px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;cursor:pointer}
 .qopt-apply:hover{background:#2563eb;color:#fff}
 /* The "..." menu sits after the search box at the far right. Its item reuses

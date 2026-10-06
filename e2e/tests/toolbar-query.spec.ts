@@ -60,3 +60,27 @@ test("the toolbar sticks under the nav while the page scrolls", async ({ page, g
   const bar = await page.locator(".gallery-toolbar[data-files]").first().boundingBox();
   expect(Math.abs(bar!.y - (nav!.y + nav!.height))).toBeLessThanOrEqual(1);
 });
+
+// A box in the middle of a one-line toolbar on a laptop-sized window: the
+// panel (up to 920px wide) used to start at the box and run off the right
+// edge, and off the bottom on a short window.
+test("the Filter panel and suggestions stay inside the window", async ({ page, gallery }) => {
+  const [W, H] = [1100, 420];
+  await page.setViewportSize({ width: W, height: H });
+  await page.goto(`${gallery.baseURL}/date/2021`);
+  const inside = async (selector: string) => {
+    const box = (await page.locator(selector).boundingBox())!;
+    expect(box.x, selector).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width, selector).toBeLessThanOrEqual(W);
+    expect(box.y + box.height, selector).toBeLessThanOrEqual(H);
+  };
+  await page.locator(".gallery-toolbar").getByRole("button", { name: "Filter" }).click();
+  await expect(page.locator("#qbox-options .qopt-col").first()).toBeVisible();
+  await inside("#qbox-options");
+  // A short window scrolls the panel, and Apply stays in view at its foot.
+  await inside("#qbox-apply");
+  await page.keyboard.press("Escape");
+  await page.locator("#nav-search").fill("ty");
+  await expect(page.locator("#qbox-suggest")).toBeVisible();
+  await inside("#qbox-suggest");
+});

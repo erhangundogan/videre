@@ -42,6 +42,34 @@
     var slot=HONOURS.test(location.pathname)&&document.querySelector('[data-query-slot]');
     if(slot)slot.appendChild(form);
   }
+  // Keeps a popup (suggestions, the Filter panel) inside the window: under the
+  // box, lined up with it where there is room and shifted left where there is
+  // not, never wider than the window, and no taller than the room below the
+  // box, scrolling inside instead. In the nav it lines up with the box's right
+  // end, in a toolbar with its left. Fixed, so a sticky toolbar's position is
+  // the box's position on screen.
+  var GAP=8;
+  function fit(pop,cap){
+    if(!pop||pop.hidden)return;
+    var at=form.getBoundingClientRect();
+    var vw=document.documentElement.clientWidth,vh=window.innerHeight;
+    var top=at.bottom+4;
+    pop.style.position='fixed';
+    pop.style.right='auto';
+    pop.style.top=top+'px';
+    pop.style.maxWidth=(vw-2*GAP)+'px';
+    pop.style.maxHeight=Math.max(120,Math.min(cap,vh-top-GAP))+'px';
+    var w=pop.offsetWidth;
+    var docked=!!form.closest('.toolbar-query');
+    var left=docked?at.left:at.right-w;
+    pop.style.left=Math.max(GAP,Math.min(left,vw-w-GAP))+'px';
+  }
+  function refit(){
+    fit(list,360);
+    fit(document.getElementById('qbox-options'),Math.round(window.innerHeight*0.7));
+  }
+  window.addEventListener('resize',refit);
+  window.addEventListener('scroll',refit,{passive:true});
   // An empty state hides the page under the nav, toolbar and all; the box goes
   // back to the nav so a query can still be changed or cleared.
   window.videreUndockQuery=function(){ navSpot.parentNode.insertBefore(form,navSpot); };
@@ -292,6 +320,7 @@
       list.appendChild(li);
     });
     list.hidden=false;
+    fit(list,360);
     input.setAttribute('aria-expanded','true');
     highlight(0);
   }
@@ -472,7 +501,7 @@
     if(open&&!panel.children.length)buildPanel();
     panel.hidden=!open;
     caret.setAttribute('aria-expanded',String(open));
-    if(open){ close(); refreshPanel(); }
+    if(open){ close(); refreshPanel(); refit(); }
   }
 
   if(caret&&panel){
