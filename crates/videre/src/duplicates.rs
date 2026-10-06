@@ -356,19 +356,14 @@ fn comparable(r: &FileRecord) -> bool {
             .mime
             .as_deref()
             .is_some_and(videre_core::mime_probe::is_video_mime);
-    image
-        && r.width.is_some_and(|w| w > 0)
-        && r.height.is_some_and(|h| h > 0)
-        && r.phash.is_some_and(|p| !crate::output::degenerate_phash(p))
+    image && r.phash.is_some_and(|p| !crate::output::degenerate_phash(p))
 }
 
-fn pixels(r: &FileRecord) -> u64 {
-    r.width.unwrap_or(0) as u64 * r.height.unwrap_or(0) as u64
-}
-
-/// Index pairs of `reps` within [`RESIZED_MAX_BITS`] at different pixel
-/// counts. Two fingerprints within 4 bits agree exactly on at least one of
-/// five 13-bit slices, so only files sharing a slice are compared.
+/// Index pairs of `reps` within [`RESIZED_MAX_BITS`]. Their sizes are not
+/// compared here: a copy can carry its original's size tags in the row, so
+/// only the decoded pixels (`PixelSignature`) say whether two sizes differ.
+/// Two fingerprints within 4 bits agree exactly on at least one of five
+/// 13-bit slices, so only files sharing a slice are compared.
 fn candidate_pairs(reps: &[&FileRecord]) -> Vec<(usize, usize)> {
     const SLICES: u32 = RESIZED_MAX_BITS + 1;
     let width = 64_u32.div_ceil(SLICES);
@@ -396,7 +391,7 @@ fn candidate_pairs(reps: &[&FileRecord]) -> Vec<(usize, usize)> {
                     let near =
                         crate::hasher::hamming(reps[a].phash.unwrap(), reps[b].phash.unwrap())
                             <= RESIZED_MAX_BITS;
-                    if near && pixels(reps[a]) != pixels(reps[b]) {
+                    if near {
                         seen.insert((a, b));
                     }
                 }
@@ -408,16 +403,23 @@ fn candidate_pairs(reps: &[&FileRecord]) -> Vec<(usize, usize)> {
     pairs
 }
 
+/// One picture at two sizes: the decoded sizes differ, the shapes agree, and
+/// the pixels match.
 fn confirms(a: &PixelSignature, b: &PixelSignature) -> bool {
-    let ratio = a.aspect / b.aspect;
-    (ratio - 1.0).abs() <= ASPECT_TOLERANCE && signature_mad(&a.luma, &b.luma) <= RESIZED_MAX_MAD
+    let ratio = a.aspect() / b.aspect();
+    a.pixels() != b.pixels()
+        && (ratio - 1.0).abs() <= ASPECT_TOLERANCE
+        && signature_mad(&a.luma, &b.luma) <= RESIZED_MAX_MAD
 }
 
-/// The keeper order: most pixels, then the larger file, the older date, then
-/// the path, so the choice never depends on load order.
-fn better_keeper(a: &FileRecord, b: &FileRecord) -> std::cmp::Ordering {
-    pixels(b)
-        .cmp(&pixels(a))
+/// The keeper order: most decoded pixels, then the larger file, the older
+/// date, then the path, so the choice never depends on load order.
+fn better_keeper(
+    (a, sa): (&FileRecord, &PixelSignature),
+    (b, sb): (&FileRecord, &PixelSignature),
+) -> std::cmp::Ordering {
+    sb.pixels()
+        .cmp(&sa.pixels())
         .then(b.size_bytes.cmp(&a.size_bytes))
         .then(crate::output::best_date(a).cmp(crate::output::best_date(b)))
         .then(a.path.cmp(&b.path))
@@ -472,7 +474,8 @@ fn resized_groups(
         if members.len() < 2 {
             continue;
         }
-        members.sort_by(|&a, &b| better_keeper(reps[a], reps[b]));
+        let signed = |i: usize| (reps[i], &signatures[&reps[i].hash]);
+        members.sort_by(|&a, &b| better_keeper(signed(a), signed(b)));
         let keeper = reps[members[0]];
         let keeper_sig = &signatures[&keeper.hash];
         let mut files = vec![keeper.clone()];
@@ -480,7 +483,7 @@ fn resized_groups(
             let rec = reps[m];
             // A chain must not join two pictures: each copy is confirmed
             // against the keeper itself, at a different size.
-            if pixels(rec) == pixels(keeper) || !confirms(keeper_sig, &signatures[&rec.hash]) {
+            if !confirms(keeper_sig, &signatures[&rec.hash]) {
                 continue;
             }
             let mut paths: Vec<&FileRecord> = by_hash[rec.hash.as_str()]
@@ -529,20 +532,20 @@ mod tests {
         }
     }
 
-    fn sig(luma: &[u8], aspect: f32) -> PixelSignature {
+    /// A signature of the decoded pixels: `w` by `h`, whatever the row says.
+    fn sig(luma: &[u8], w: u32, h: u32) -> PixelSignature {
         PixelSignature {
             luma: luma.to_vec(),
-            aspect,
+            width: w,
+            height: h,
         }
     }
 
     const P: u64 = 0x0F0F_3C3C_5A5A_6969;
     const FLAT: [u8; 10] = [0; 10];
 
-    fn sigs(v: &[(&str, PixelSignature)]) -> HashMap<String, PixelSignature> {
-        v.iter()
-            .map(|(h, s)| (h.to_string(), sig(&s.luma, s.aspect)))
-            .collect()
+    fn sigs(v: Vec<(&str, PixelSignature)>) -> HashMap<String, PixelSignature> {
+        v.into_iter().map(|(h, s)| (h.to_string(), s)).collect()
     }
 
     fn paths(g: &Group) -> Vec<&str> {
@@ -555,9 +558,9 @@ mod tests {
             rec("/m/çiçek-wa.jpg", "small", 1280, 960, P ^ 0b11),
             rec("/m/çiçek.jpg", "big", 1600, 1200, P),
         ];
-        let s = sigs(&[
-            ("small", sig(&FLAT, 4.0 / 3.0)),
-            ("big", sig(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 4], 4.0 / 3.0)),
+        let s = sigs(vec![
+            ("small", sig(&FLAT, 1280, 960)),
+            ("big", sig(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 4], 1600, 1200)),
         ]);
         assert_eq!(resized_candidates(&records).len(), 2);
         let found = find_in(&records, &[Kind::Resized], &s);
@@ -573,8 +576,38 @@ mod tests {
             rec("/m/IMG_1816.jpg", "a", 1600, 1200, P),
             rec("/m/IMG_1817.jpg", "b", 1600, 1200, P ^ 1),
         ];
-        let s = sigs(&[("a", sig(&FLAT, 1.0)), ("b", sig(&FLAT, 1.0))]);
-        assert!(resized_candidates(&records).is_empty());
+        let s = sigs(vec![
+            ("a", sig(&FLAT, 1600, 1200)),
+            ("b", sig(&FLAT, 1600, 1200)),
+        ]);
+        assert_eq!(resized_candidates(&records).len(), 2, "checked by pixels");
+        assert!(find_in(&records, &[Kind::Resized], &s).groups.is_empty());
+    }
+
+    /// A copy can keep its original's size tags: the rows say 1932x2576 for
+    /// both, the pixels of one are 1536x2048. The pixels decide.
+    #[test]
+    fn the_decoded_size_decides_not_the_stored_one() {
+        let records = [
+            rec("/m/IMG_0004.JPG", "a", 1932, 2576, P),
+            rec("/m/IMG_0004(1).JPG", "b", 1932, 2576, P),
+        ];
+        let s = sigs(vec![
+            ("a", sig(&FLAT, 1536, 2048)),
+            ("b", sig(&FLAT, 1932, 2576)),
+        ]);
+        let groups = find_in(&records, &[Kind::Resized], &s).groups;
+        assert_eq!(groups.len(), 1);
+        assert_eq!(paths(&groups[0]), ["/m/IMG_0004(1).JPG", "/m/IMG_0004.JPG"]);
+
+        let records = [
+            rec("/m/IMG_1816.jpg", "a", 1600, 1200, P),
+            rec("/m/IMG_1817.jpg", "b", 800, 600, P ^ 1),
+        ];
+        let s = sigs(vec![
+            ("a", sig(&FLAT, 1600, 1200)),
+            ("b", sig(&FLAT, 1600, 1200)),
+        ]);
         assert!(find_in(&records, &[Kind::Resized], &s).groups.is_empty());
     }
 
@@ -586,11 +619,11 @@ mod tests {
             rec("/m/deniz-kare.jpg", "c", 1200, 1200, P ^ 1),
             rec("/m/deniz-başka.jpg", "d", 640, 480, P ^ 2),
         ];
-        let s = sigs(&[
-            ("a", sig(&FLAT, 4.0 / 3.0)),
-            ("b", sig(&FLAT, 4.0 / 3.0)),
-            ("c", sig(&FLAT, 1.0)),
-            ("d", sig(&[9; 10], 4.0 / 3.0)),
+        let s = sigs(vec![
+            ("a", sig(&FLAT, 1600, 1200)),
+            ("b", sig(&FLAT, 800, 600)),
+            ("c", sig(&FLAT, 1200, 1200)),
+            ("d", sig(&[9; 10], 640, 480)),
         ]);
         assert!(find_in(&records, &[Kind::Resized], &s).groups.is_empty());
     }
@@ -603,10 +636,10 @@ mod tests {
             rec("/m/b.jpg", "b", 1280, 960, P ^ 1),
             rec("/m/c.jpg", "c", 800, 600, P ^ 2),
         ];
-        let s = sigs(&[
-            ("a", sig(&FLAT, 1.0)),
-            ("b", sig(&[3, 0, 0, 0, 0, 0, 0, 0, 0, 0], 1.0)),
-            ("c", sig(&[3, 3, 0, 0, 0, 0, 0, 0, 0, 0], 1.0)),
+        let s = sigs(vec![
+            ("a", sig(&FLAT, 1600, 1200)),
+            ("b", sig(&[3, 0, 0, 0, 0, 0, 0, 0, 0, 0], 1280, 960)),
+            ("c", sig(&[3, 3, 0, 0, 0, 0, 0, 0, 0, 0], 800, 600)),
         ]);
         let groups = find_in(&records, &[Kind::Resized], &s).groups;
         assert_eq!(groups.len(), 1);
@@ -619,7 +652,7 @@ mod tests {
             rec("/m/a.jpg", "a", 1600, 1200, P),
             rec("/m/b.jpg", "b", 1280, 960, P ^ 1),
         ];
-        let s = sigs(&[("a", sig(&FLAT, 1.0))]);
+        let s = sigs(vec![("a", sig(&FLAT, 1600, 1200))]);
         let found = find_in(&records, &[Kind::Resized], &s);
         assert!(found.groups.is_empty());
         assert_eq!(found.unchecked, 1);
@@ -630,15 +663,21 @@ mod tests {
         // Equal pixels cannot both be in one group, so the tie-break is
         // between a keeper and a copy of the same pixel count in another
         // order: exercised through the ordering directly.
+        let s = sig(&FLAT, 1600, 1200);
         let mut a = rec("/m/a.jpg", "a", 1600, 1200, P);
         let mut b = rec("/m/b.jpg", "b", 1600, 1200, P);
+        assert_eq!(
+            better_keeper((&a, &sig(&FLAT, 1600, 1201)), (&b, &s)),
+            std::cmp::Ordering::Less,
+            "most pixels first"
+        );
         b.size_bytes = 2000;
-        assert_eq!(better_keeper(&b, &a), std::cmp::Ordering::Less);
+        assert_eq!(better_keeper((&b, &s), (&a, &s)), std::cmp::Ordering::Less);
         b.size_bytes = a.size_bytes;
         a.exif_date = Some("2019-01-01T00:00:00".into());
-        assert_eq!(better_keeper(&a, &b), std::cmp::Ordering::Less);
+        assert_eq!(better_keeper((&a, &s), (&b, &s)), std::cmp::Ordering::Less);
         a.exif_date = None;
-        assert_eq!(better_keeper(&a, &b), std::cmp::Ordering::Less);
+        assert_eq!(better_keeper((&a, &s), (&b, &s)), std::cmp::Ordering::Less);
     }
 
     #[test]
@@ -648,7 +687,10 @@ mod tests {
             rec("/m/çiçek-wa.jpg", "small", 1280, 960, P ^ 1),
             rec("/yedek/çiçek-wa.jpg", "small", 1280, 960, P ^ 1),
         ];
-        let s = sigs(&[("small", sig(&FLAT, 1.0)), ("big", sig(&FLAT, 1.0))]);
+        let s = sigs(vec![
+            ("small", sig(&FLAT, 1280, 960)),
+            ("big", sig(&FLAT, 1600, 1200)),
+        ]);
         let groups = find_in(&records, &[Kind::Resized], &s).groups;
         assert_eq!(
             paths(&groups[0]),
@@ -688,7 +730,10 @@ mod tests {
             rec("/t/IMG_0001.jpg", "o", 1280, 960, P),
             rec("/t/IMG_0001-EFFECTS.jpg", "e", 1600, 1200, P ^ 1),
         ];
-        let s = sigs(&[("o", sig(&FLAT, 1.0)), ("e", sig(&FLAT, 1.0))]);
+        let s = sigs(vec![
+            ("o", sig(&FLAT, 1280, 960)),
+            ("e", sig(&FLAT, 1600, 1200)),
+        ]);
         assert!(find_in(&records, &[Kind::Resized], &s).groups.is_empty());
     }
 

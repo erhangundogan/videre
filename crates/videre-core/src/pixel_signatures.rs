@@ -13,15 +13,27 @@ use crate::image_decode::PixelSignature;
 use rusqlite::Connection;
 use std::collections::HashMap;
 
-/// Create the table if it is absent. Idempotent; safe on every open.
+/// Create the table if it is absent. Idempotent; safe on every open. A table
+/// from a development build that kept the aspect but not the decoded size is
+/// dropped and taken again: it is a cache.
 pub fn ensure_table(conn: &Connection) -> rusqlite::Result<()> {
+    if crate::db::table_exists(conn, "pixel_signatures")? && !has_sizes(conn)? {
+        conn.execute_batch("DROP TABLE pixel_signatures;")?;
+    }
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS pixel_signatures (
             hash   TEXT PRIMARY KEY,
             luma   BLOB NOT NULL,
-            aspect REAL NOT NULL
+            width  INTEGER NOT NULL,
+            height INTEGER NOT NULL
         );",
     )
+}
+
+fn has_sizes(conn: &Connection) -> rusqlite::Result<bool> {
+    let mut stmt =
+        conn.prepare("SELECT 1 FROM pragma_table_info('pixel_signatures') WHERE name = 'width'")?;
+    stmt.exists([])
 }
 
 /// The stored signatures for `hashes`; a hash with none is absent from the
@@ -31,15 +43,18 @@ pub fn get_many(
     hashes: &[String],
 ) -> rusqlite::Result<HashMap<String, PixelSignature>> {
     let mut out = HashMap::new();
-    if hashes.is_empty() || !crate::db::table_exists(conn, "pixel_signatures")? {
+    if hashes.is_empty() || !crate::db::table_exists(conn, "pixel_signatures")? || !has_sizes(conn)?
+    {
         return Ok(out);
     }
-    let mut stmt = conn.prepare("SELECT luma, aspect FROM pixel_signatures WHERE hash = ?1")?;
+    let mut stmt =
+        conn.prepare("SELECT luma, width, height FROM pixel_signatures WHERE hash = ?1")?;
     for hash in hashes {
         let row = stmt.query_row([hash], |r| {
             Ok(PixelSignature {
                 luma: r.get(0)?,
-                aspect: r.get::<_, f64>(1)? as f32,
+                width: r.get(1)?,
+                height: r.get(2)?,
             })
         });
         match row {
@@ -57,9 +72,10 @@ pub fn get_many(
 pub fn put(conn: &Connection, hash: &str, sig: &PixelSignature) -> rusqlite::Result<()> {
     ensure_table(conn)?;
     conn.execute(
-        "INSERT INTO pixel_signatures (hash, luma, aspect) VALUES (?1, ?2, ?3)
-         ON CONFLICT(hash) DO UPDATE SET luma = excluded.luma, aspect = excluded.aspect",
-        rusqlite::params![hash, sig.luma, sig.aspect as f64],
+        "INSERT INTO pixel_signatures (hash, luma, width, height) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(hash) DO UPDATE SET
+             luma = excluded.luma, width = excluded.width, height = excluded.height",
+        rusqlite::params![hash, sig.luma, sig.width, sig.height],
     )?;
     Ok(())
 }
@@ -102,7 +118,8 @@ mod tests {
     fn sig(v: u8) -> PixelSignature {
         PixelSignature {
             luma: vec![v; 16],
-            aspect: 1.5,
+            width: 1500,
+            height: 1000,
         }
     }
 
@@ -126,7 +143,21 @@ mod tests {
         let got = get_many(&conn, &hashes(&["çiçek", "deniz"])).unwrap();
         assert_eq!(got.len(), 1);
         assert_eq!(got["çiçek"].luma, vec![9; 16]);
-        assert!((got["çiçek"].aspect - 1.5).abs() < 1e-6);
+        assert_eq!((got["çiçek"].width, got["çiçek"].height), (1500, 1000));
+    }
+
+    #[test]
+    fn a_table_without_decoded_sizes_is_taken_again() {
+        let conn = db();
+        conn.execute_batch(
+            "CREATE TABLE pixel_signatures (hash TEXT PRIMARY KEY, luma BLOB, aspect REAL);
+             INSERT INTO pixel_signatures VALUES ('çiçek', X'00', 1.5);",
+        )
+        .unwrap();
+        assert!(get_many(&conn, &hashes(&["çiçek"])).unwrap().is_empty());
+        put(&conn, "deniz", &sig(2)).unwrap();
+        let got = get_many(&conn, &hashes(&["çiçek", "deniz"])).unwrap();
+        assert_eq!(got.keys().collect::<Vec<_>>(), vec!["deniz"]);
     }
 
     #[test]

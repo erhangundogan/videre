@@ -120,7 +120,8 @@ fn prune_drops_pixel_signatures_of_vanished_files() {
     let (lib, _a, _b, _phantom) = fixture_library();
     let sig = videre_core::image_decode::PixelSignature {
         luma: vec![0; 16],
-        aspect: 1.0,
+        width: 1,
+        height: 1,
     };
     for hash in ["haaa", "hphantom"] {
         videre_core::pixel_signatures::put(&lib.conn(), hash, &sig).unwrap();

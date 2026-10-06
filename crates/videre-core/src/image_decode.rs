@@ -114,7 +114,21 @@ pub fn dhash(image: &image::DynamicImage) -> u64 {
 pub struct PixelSignature {
     /// `SIGNATURE_SIDE * SIGNATURE_SIDE` greyscale values, row by row.
     pub luma: Vec<u8>,
-    pub aspect: f32,
+    /// The upright canvas's size, as decoded. Not the row's `width` and
+    /// `height`: a copy can keep its original's size tags.
+    pub width: u32,
+    pub height: u32,
+}
+
+impl PixelSignature {
+    /// Width over height.
+    pub fn aspect(&self) -> f32 {
+        self.width as f32 / self.height.max(1) as f32
+    }
+
+    pub fn pixels(&self) -> u64 {
+        self.width as u64 * self.height as u64
+    }
 }
 
 /// The side of a signature's greyscale square.
@@ -130,7 +144,8 @@ pub fn pixel_signature(image: &image::DynamicImage) -> PixelSignature {
     );
     PixelSignature {
         luma: small.into_raw(),
-        aspect: image.width() as f32 / image.height().max(1) as f32,
+        width: image.width(),
+        height: image.height(),
     }
 }
 
@@ -240,7 +255,7 @@ mod tests {
         ));
         let tagged = pixel_signature(&fixture("ai-generated-couple_o6.jpg"));
         assert!(signature_mad(&tagged.luma, &pixel_signature(&rotated).luma) < 1.0);
-        assert!((tagged.aspect - rotated.width() as f32 / rotated.height() as f32).abs() < 1e-6);
+        assert!((tagged.aspect() - rotated.width() as f32 / rotated.height() as f32).abs() < 1e-6);
     }
 
     #[test]
@@ -252,7 +267,7 @@ mod tests {
         let rough = pixel_signature(&reencoded(&original, w, h, 60));
         assert!(signature_mad(&sig.luma, &half.luma) < 0.5, "resize");
         assert!(signature_mad(&sig.luma, &rough.luma) < 1.0, "recompress");
-        assert!((sig.aspect - half.aspect).abs() < 0.01);
+        assert!((sig.aspect() - half.aspect()).abs() < 0.01);
     }
 
     #[test]
@@ -280,7 +295,7 @@ mod tests {
     #[test]
     fn aspect_is_width_over_height() {
         let img = image::DynamicImage::new_rgb8(1600, 1200);
-        assert!((pixel_signature(&img).aspect - 4.0 / 3.0).abs() < 1e-6);
+        assert!((pixel_signature(&img).aspect() - 4.0 / 3.0).abs() < 1e-6);
     }
 
     #[test]

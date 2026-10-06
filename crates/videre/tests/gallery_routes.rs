@@ -2317,7 +2317,8 @@ fn a_rotation_forgets_the_fingerprint_and_the_pixel_signature() {
         &hash,
         &videre_core::image_decode::PixelSignature {
             luma: vec![0; 16],
-            aspect: 1.0,
+            width: 1,
+            height: 1,
         },
     )
     .unwrap();
