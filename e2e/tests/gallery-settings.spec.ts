@@ -82,6 +82,31 @@ test("export, reset and import round-trip the library's choices", async ({ page,
   await expect(page.locator(".view-mode-select").first()).toHaveValue("list");
 });
 
+test("page sizes are edited on the settings page, in range only", async ({ page, gallery }) => {
+  const path = join(gallery.libraryRoot, ".videre", "gallery.json");
+  await page.goto(`${gallery.baseURL}/settings`);
+  const date = page.locator('input[data-setting="routes.date.pageSize"]');
+  await expect(date).toHaveValue("200");
+  await expect(page.locator('input[data-setting="routes.search.pageSize"]')).toHaveValue("96");
+  await expect(page.locator('input[data-setting="routes.duplicates.pageSize"]')).toHaveValue("100");
+
+  await date.fill("3");
+  await date.press("Enter");
+  await expect(page.locator("#settings-status")).toHaveText("Saved.");
+  expect(JSON.parse(await readFile(path, "utf8"))).toEqual({ routes: { date: { pageSize: 3 } } });
+
+  await date.fill("501");
+  await date.press("Enter");
+  await expect(page.locator("#settings-status")).toHaveText("Date: a whole number from 1 to 500.");
+  await expect(date).toHaveValue("3");
+  expect(JSON.parse(await readFile(path, "utf8"))).toEqual({ routes: { date: { pageSize: 3 } } });
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.locator("#settings-reset").click();
+  await expect(page.locator("#settings-status")).toHaveText("Reset to defaults.");
+  await expect(date).toHaveValue("200");
+});
+
 test("a settings value that looks like markup cannot swallow the page", async ({ page, gallery }) => {
   // An undeclared key survives into the inlined settings, so an imported file
   // can carry any string. `<!--<script>` inside a script element used to keep

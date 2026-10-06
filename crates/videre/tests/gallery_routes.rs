@@ -1331,6 +1331,34 @@ fn the_example_is_absent_from_its_own_results() {
     );
 }
 
+/// The Search page shows more by asking for the next page of one ranking, so
+/// pages must continue each other: no gap, no repeat, and never the example.
+#[test]
+fn search_pages_continue_one_ranking() {
+    let lib = search_fixture();
+    let server = Server::start(&lib);
+    let hashes = |body: &str| -> Vec<String> {
+        body.split("\"hash\":\"")
+            .skip(1)
+            .map(|s| s.split('"').next().unwrap().to_string())
+            .collect()
+    };
+    let mut paged = Vec::new();
+    let mut more = Vec::new();
+    for offset in 0..4 {
+        let (status, body) = server.get(&format!("/api/search?like=aaaa&limit=1&offset={offset}"));
+        assert_eq!(status, 200, "{body}");
+        paged.extend(hashes(&body));
+        more.push(body.contains("\"more\":true"));
+    }
+    assert_eq!(paged, vec!["bbbb", "cccc", "dddd"]);
+    // A next page exists after the first and second, not after the last.
+    assert_eq!(more, vec![true, true, false, false]);
+
+    let (_, body) = server.get("/api/search?like=aaaa&limit=2&offset=1");
+    assert_eq!(hashes(&body), vec!["cccc", "dddd"], "{body}");
+}
+
 #[test]
 fn a_search_needs_exactly_one_ranker() {
     let lib = search_fixture();
@@ -1856,6 +1884,70 @@ fn people_fixture() -> TestLibrary {
     )
     .unwrap();
     lib
+}
+
+#[test]
+fn singles_and_a_persons_faces_page_over_http() {
+    let lib = people_fixture();
+    lib.conn()
+        .execute_batch(
+            "INSERT INTO faces (id, hash, bbox, embedding, cluster_id, person_label, confirmed)
+               VALUES (10, 'abc123', '0,0,9,9', X'0000', NULL, NULL, 0),
+                      (11, 'abc123', '0,0,9,9', X'0000', NULL, NULL, 0),
+                      (12, 'abc123', '0,0,9,9', X'0000', NULL, NULL, 0),
+                      (13, 'abc123', '0,0,9,9', X'0000', NULL, NULL, 0),
+                      (14, 'abc123', '0,0,9,9', X'0000', NULL, NULL, 0);",
+        )
+        .unwrap();
+    let server = Server::start(&lib);
+    let ids = |v: &serde_json::Value| -> Vec<i64> {
+        v["singletons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["face_id"].as_i64().unwrap())
+            .collect()
+    };
+
+    let all = json(&server.get("/api/faces").1);
+    assert_eq!(ids(&all), vec![10, 11, 12, 13, 14]);
+    assert_eq!(
+        (all["singles_total"].as_i64(), all["singles_next"].as_i64()),
+        (Some(5), None)
+    );
+
+    let first = json(&server.get("/api/faces?singles_limit=2").1);
+    assert_eq!(ids(&first), vec![10, 11]);
+    assert_eq!(first["singles_next"], 11);
+    let second = json(&server.get("/api/faces?singles_after=11&singles_limit=2").1);
+    assert_eq!(ids(&second), vec![12, 13]);
+
+    // None at all refreshes people and clusters without touching the singles.
+    let none = json(&server.get("/api/faces?singles_limit=0").1);
+    assert!(ids(&none).is_empty());
+    assert_eq!(none["singles_total"], 5);
+    assert_eq!(none["people"].as_array().unwrap().len(), 1);
+    assert_eq!(none["clusters"].as_array().unwrap().len(), 1);
+    // Over the cap is clamped, not refused.
+    assert_eq!(
+        ids(&json(&server.get("/api/faces?singles_limit=99999").1)).len(),
+        5
+    );
+
+    let (status, body) = server.get("/api/people/ozgur_demirtas?limit=1");
+    assert_eq!(status, 200, "{body}");
+    let one = json(&body);
+    assert_eq!(one["faces"].as_array().unwrap().len(), 1, "{body}");
+    assert_eq!(one["face_total"], 2, "{body}");
+    let next = one["next"].as_i64().expect("a next page");
+    let rest = json(
+        &server
+            .get(&format!("/api/people/ozgur_demirtas?after={next}&limit=1"))
+            .1,
+    );
+    assert_eq!(rest["faces"].as_array().unwrap().len(), 1);
+    assert!(rest["next"].is_null());
+    assert_ne!(rest["faces"][0]["face_id"], one["faces"][0]["face_id"]);
 }
 
 #[test]

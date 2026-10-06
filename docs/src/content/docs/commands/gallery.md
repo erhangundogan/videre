@@ -106,11 +106,11 @@ people or location data yet.
 | Path | What you get |
 |------|--------------|
 | `/` | Every file, with a **Similar** button on each card once the library has embeddings (the grid under the map has it too) |
-| `/search?like=<hash>`, `/search?q=...` | A ranking as a page of its own: files like one, or matching words, within the query's filters. **Open as a page** on a Similar or text-results strip leads here, and a bookmark reopens it |
+| `/search?like=<hash>`, `/search?q=...` | A ranking as a page of its own: files like one, or matching words, within the query's filters. **Open as a page** on a Similar or text-results strip leads here, and a bookmark reopens it. **Show more** continues the ranking |
 | `/duplicates` | Duplicate groups, the same review `dedupe --html` writes, plus Google Takeout edits beside their originals ([`dedupe --edited`](/commands/dedupe/#google-photos-edits---edited)), counted in the header apart from exact copies |
-| `/people` | Face groups, and naming them |
+| `/people` | Face groups, and naming them. Singletons load as you scroll; naming one keeps your place |
 | `/date` | A Year / Month / Day drill-down |
-| `/date/2024`, `/date/2024/09`, `/date/2024/09/26` | The media of that year, month, or day, each with its item count |
+| `/date/2024`, `/date/2024/09`, `/date/2024/09/26` | The media of that year, month, or day, each with its item count; **Show more** loads the next page |
 | `/map` | Location clusters plotted on a world map, with the full file grid below; click a cluster to see its photos |
 | `/map/location/berlin?radius=25` | An addressable location drill-down with a proximity radius in kilometers |
 | `/events` | Substantial travel trips inferred from capture dates and photo locations; click one to see its media |
@@ -277,8 +277,11 @@ These are the defaults every library starts from:
       "sort": { "field": "date", "dir": "desc" },
       "tile": { "rowHeight": 280, "colGap": 10, "rowGap": 10 }
     },
+    "date": { "pageSize": 200 },
+    "search": { "pageSize": 96 },
     "events": { "sort": { "field": "date", "dir": "desc" } },
-    "people": { "align": "right", "reclusterOpen": false },
+    "people": { "align": "right", "reclusterOpen": false, "pageSize": 200 },
+    "duplicates": { "pageSize": 100 },
     "map": { "radiusKm": 0, "sort": { "field": "date", "dir": "desc" } }
   }
 }
@@ -291,6 +294,10 @@ These are the defaults every library starts from:
 | `faces.learningUpdates` | `true`, `false` | Whether the People page shows face learning's status strip and teaching notes, while learning is on |
 | `routes.files.view` | `tile`, `list` | The file view on the Library, Date, Events and Map grids |
 | `routes.files.pageSize` | a whole number, 1 to 500 | How many files the Library and Map grids load at a time, and with each **Show more** |
+| `routes.date.pageSize` | a whole number, 1 to 500 | The same for a day, month or range in the Date view |
+| `routes.search.pageSize` | a whole number, 1 to 200 | How many results a search page shows at a time, and with each **Show more** |
+| `routes.people.pageSize` | a whole number, 1 to 1000 | How many faces the People page's singletons and a person's page load at a time, as you scroll |
+| `routes.duplicates.pageSize` | a whole number, 1 to 1000 | How many duplicate groups the Duplicates page shows at a time, and with each **Show more** |
 | `routes.files.tile.rowHeight` | 80 to 1000 | Target height of a tile row, in pixels |
 | `routes.files.tile.colGap` | 0 to 100 | Space between tiles in a row, in pixels |
 | `routes.files.tile.rowGap` | 0 to 100 | Space between tile rows, in pixels |
@@ -316,7 +323,8 @@ lands on the Library tab.
 
 **The settings page.** The **...** button at the right end of the navigation
 bar opens a menu; **Settings** there leads to a page that shows the file's
-location and can:
+location, has a **Page sizes** box for each paged view (a value outside its
+range is refused and not saved), and can:
 
 - **Export settings** to `videre-gallery-settings.json`. Only the `routes`
   section is exported; the page a library reopens at belongs to that library.

@@ -324,6 +324,23 @@ mod tests {
     }
 
     #[test]
+    fn every_paged_section_has_a_page_size_default() {
+        let d = defaults();
+        for (section, size) in [
+            ("files", 200),
+            ("date", 200),
+            ("search", 96),
+            ("people", 200),
+            ("duplicates", 100),
+        ] {
+            assert_eq!(d["routes"][section]["pageSize"], size, "{section}");
+        }
+        let m = merge(&d, &json!({"routes": {"people": {"pageSize": "x"}}}));
+        assert_eq!(m.effective["routes"]["people"]["pageSize"], 200);
+        assert_eq!(m.ignored, vec!["routes.people.pageSize"]);
+    }
+
+    #[test]
     fn integer_and_float_are_one_type() {
         let m = merge(&defaults(), &json!({"routes": {"map": {"radiusKm": 12.5}}}));
         assert_eq!(m.effective["routes"]["map"]["radiusKm"], 12.5);

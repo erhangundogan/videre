@@ -539,7 +539,11 @@ similarity, from -1 to 1, kept above `similar_min_score` when that is set. See
 |---|---|
 | `q=<text>` | Text query |
 | `like=<hash>` | Find media similar to an existing hash |
-| `limit=<n>` | Result count. The default is `24`, capped by the server |
+| `limit=<n>` | Result count. The default is `24`, at most `200` |
+| `offset=<n>` | Where this page starts in the ranking; `0` when absent |
+
+`more` says whether a page after this one exists. A ranked search's `total`
+counts only what was ranked for this page, so it does not answer that.
 
 ```bash
 curl "http://127.0.0.1:7878/api/search?q=red%20kite&limit=2"
@@ -548,6 +552,7 @@ curl "http://127.0.0.1:7878/api/search?q=red%20kite&limit=2"
 ```json
 {
   "total": 2,
+  "more": false,
   "results": [
     {
       "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -710,7 +715,10 @@ content-length: 0
 
 ### `GET /api/people/{name}`
 
-Returns the display name and assigned faces for one person.
+Returns the display name and one page of the assigned faces for one
+person, the primary face first. `limit=<n>` (default `200`, at most `1000`)
+and `after=<id>` (the previous page's `next`) page them; `face_total` counts
+them all and `next` is `null` at the end.
 
 ```bash
 curl "http://127.0.0.1:7878/api/people/ayse_yilmaz"
@@ -727,7 +735,9 @@ curl "http://127.0.0.1:7878/api/people/ayse_yilmaz"
       "path": "/Users/me/Photos/IMG_0001.jpg",
       "is_primary": true
     }
-  ]
+  ],
+  "face_total": 1,
+  "next": null
 }
 ```
 
@@ -965,6 +975,18 @@ singletons. With `q=<query>`, a [query](/reference/query-syntax/), only those
 with a face in a matching file, each whole, plus `matched` and `library_total`
 as `GET /api/dates` gives them; a query that cannot run answers `400`.
 
+People and clusters always come whole. Singletons come a page at a time, in
+face id order:
+
+| Query | Meaning |
+|---|---|
+| `singles_limit=<n>` | Singletons in this page. The default is `200`, at most `1000`; `0` returns none |
+| `singles_after=<id>` | Start after this face id; `singles_next` from the previous page |
+
+`singles_total` counts every singleton the query keeps, and `singles_next` is
+the id to page after, or `null` at the end. Paging by id keeps a page in place
+when faces before it are named.
+
 ```bash
 curl "http://127.0.0.1:7878/api/faces"
 ```
@@ -996,7 +1018,9 @@ curl "http://127.0.0.1:7878/api/faces"
       "face_id": 31,
       "hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
     }
-  ]
+  ],
+  "singles_total": 1,
+  "singles_next": null
 }
 ```
 

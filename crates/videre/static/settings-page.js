@@ -16,9 +16,35 @@
         if(!r.ok)throw new Error('the server answered '+r.status);
         return r.json();
       })
-      .then(function(r){ VIDERE_SETTINGS=r.effective; report(r,done); })
-      .catch(function(e){ status.textContent='Not saved: '+e.message+'.'; });
+      .then(function(r){ VIDERE_SETTINGS=r.effective; report(r,done); fillSizes(); })
+      .catch(function(e){ status.textContent='Not saved: '+e.message+'.'; fillSizes(); });
   }
+  // Page sizes: one number per paged view. The inputs carry their own range,
+  // the same range the view reads the setting with, so a value saved here is
+  // one the view will use.
+  var sizes=document.querySelectorAll('input[data-setting]');
+  function fillSizes(){
+    sizes.forEach(function(input){
+      var min=+input.min,max=+input.max;
+      input.value=settingIntInRange(input.dataset.setting,min,max);
+    });
+  }
+  sizes.forEach(function(input){
+    input.addEventListener('change',function(){
+      var min=+input.min,max=+input.max,n=Number(input.value);
+      var label=input.parentNode.textContent.trim();
+      if(input.value.trim()===''||!Number.isInteger(n)||n<min||n>max){
+        status.textContent=label+': a whole number from '+min+' to '+max+'.';
+        fillSizes();
+        return;
+      }
+      var patch={},doc=patch,parts=input.dataset.setting.split('.');
+      for(var i=0;i<parts.length-1;i++)doc=doc[parts[i]]={};
+      doc[parts[parts.length-1]]=n;
+      send('PATCH',patch,'Saved.');
+    });
+  });
+  fillSizes();
   document.getElementById('settings-export').addEventListener('click',function(){
     fetch('/api/settings').then(function(r){ return r.json(); }).then(function(r){
       var out={routes:(r.overrides&&r.overrides.routes)||{}};
