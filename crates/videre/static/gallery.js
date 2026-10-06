@@ -1,5 +1,6 @@
 
-var PAGE=100,sorted=GROUPS.slice(),shown=0;
+// Duplicate groups per Show more: routes.duplicates.pageSize.
+var PAGE=settingIntInRange('routes.duplicates.pageSize',1,1000),sorted=GROUPS.slice(),shown=0;
 
 // Sort state, kept in the library's gallery settings the same way the view
 // mode is, default date desc. File grids mirror the server whitelist (six
@@ -260,20 +261,14 @@ function updateBtn(){
   else btn.style.display='none';
 }
 function showMore(){render(false);}
+// Opening a group leaves its images lazy: they load as they near the screen.
+// Turning them eager made Expand all request every thumbnail on the page at
+// once, a queue that kept later requests waiting.
 function toggle(id){
-  var g=document.getElementById(id);
-  g.classList.toggle('open');
-  if(g.classList.contains('open')){
-    g.querySelectorAll('img').forEach(function(img){if(img.loading==='lazy')img.loading='eager';});
-    g.querySelectorAll('video').forEach(function(v){if(v.preload==='metadata')v.preload='auto';});
-  }
+  document.getElementById(id).classList.toggle('open');
 }
 function expandAll(){
-  document.querySelectorAll('.group').forEach(function(g){
-    g.classList.add('open');
-    g.querySelectorAll('img').forEach(function(img){if(img.loading==='lazy')img.loading='eager';});
-    g.querySelectorAll('video').forEach(function(v){if(v.preload==='metadata')v.preload='auto';});
-  });
+  document.querySelectorAll('.group').forEach(function(g){ g.classList.add('open'); });
 }
 function collapseAll(){document.querySelectorAll('.group').forEach(function(g){g.classList.remove('open');});}
 function copyPath(p){
