@@ -16,6 +16,69 @@ version number and are released together.
 ## [Unreleased]
 
 
+## [0.56.0] - 2026-10-07
+
+### Breaking changes
+
+- **`videre dedupe` has one subcommand per action.** `videre dedupe [list|review|trash|delete|undo]`
+  replaces the flags `--trash`, `--delete`, `--undo` and `--html`, which are
+  gone. Bare `videre dedupe` still lists exact copies. `--edited` and
+  `--similar` are gone too: use `--kind creation` and `--kind similar`.
+  Scripts that call the old flags fail with a usage error.
+- **The duplicates JSON is `schema_version` 2.** `dedupe --json` and the MCP
+  `find_duplicates` tool return `kinds`, `unchecked` and one `groups` list,
+  each group with its `kind` and either `keep` and `remove` or, for the
+  review-only `similar` kind, `files`. `duplicate_groups`, `similar_groups`
+  and `edited_pairs` are gone, and `find_duplicates` takes `kinds` instead of
+  `include_similar`.
+
+### Added
+
+- **Duplicates by kind.** `--kind` takes `exact` (identical content, the
+  oldest copy kept), `resized` (the same picture at another pixel size, the
+  largest kept), `creation` (a Google Photos `-edited`, `-EFFECTS` or `-SMILE`
+  file beside its original, the original kept) and `similar` (look-alike
+  pictures, review only). Kinds combine: `--kind exact,resized`.
+- **Resized copies are confirmed by their pixels.** Pairs within 4
+  fingerprint bits are decoded once, at 64x64 greyscale, and kept in the
+  library; a pair groups when the decoded sizes differ, the shapes agree
+  within 1% and the pixels within a mean difference of 0.5. Run `videre embed`
+  first for the fingerprints.
+- **`--query` and the path and media filters on every dedupe action but
+  `undo`.** A group is chosen when any of its files matches, and is then taken
+  whole, so a copy never stays because only its keeper matched.
+- **`is:creation`** in the query language finds Google Photos creations beside
+  their originals; `-is:creation` hides them in any tab or command.
+- **The gallery's Duplicates page shows the same groups**, labelled by kind,
+  with a header line per kind. **Kinds** in its toolbar picks which
+  (`routes.duplicates.kinds`), **Trash copies** on a group and **Trash all
+  copies** move the copies to the system trash keeping each group's first
+  file, and `videre dedupe undo` puts them back.
+- **Gallery:** an x in the search box clears every filter and the typed words;
+  the lightbox's file name has a copy button; the more menu has **Help** and
+  **Feedback**, which open the docs.
+- **A Feedback page in the docs**, with feedback@videre.sh and the GitHub
+  issue tracker.
+- Shell completion offers the dedupe actions and kinds.
+
+### Changed
+
+- **Select sits at the right end of the gallery toolbar**, with its "Select
+  enabled" note, so turning it on no longer moves the other controls.
+- **Google Photos creations pair across extension case and their own
+  counter**: `IMG_1-SMILE.jpg` beside `IMG_1.JPG`, and `IMG_1-EFFECTS(1).jpg`
+  beside `IMG_1.jpg`. The Takeout import hint now points at
+  `videre dedupe review --kind creation`.
+- A gallery rotation also forgets the photo's fingerprint and pixel signature,
+  so the next `embed` and dedupe check take them again from the upright
+  pixels; `videre prune` drops signatures of files that are gone.
+
+### Fixed
+
+- **The map's Radius input** uses the gallery toolbar's style instead of a
+  dark one of its own.
+
+
 ## [0.55.0] - 2026-10-06
 
 ### Added
@@ -3063,7 +3126,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.55.0...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.56.0...HEAD
+[0.56.0]: https://github.com/erhangundogan/videre/compare/v0.55.0...v0.56.0
 [0.55.0]: https://github.com/erhangundogan/videre/compare/v0.54.0...v0.55.0
 [0.54.0]: https://github.com/erhangundogan/videre/compare/v0.53.0...v0.54.0
 [0.53.0]: https://github.com/erhangundogan/videre/compare/v0.52.0...v0.53.0
