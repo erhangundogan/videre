@@ -378,6 +378,8 @@ const ICON_ROT_L=selIcon('<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 
 const ICON_ROT_R=selIcon('<polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>');
 const ICON_MORE=selIcon('<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>');
 const ICON_UP=selIcon('<line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/>');
+const ICON_COPY=selIcon('<rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>');
+const ICON_CHECK=selIcon('<polyline points="20 6 9 17 4 12"/>');
 const ICON_TRASH=selIcon('<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>');
 function renderMetaPanel(meta){
   const el = document.getElementById('lbMeta');
@@ -387,7 +389,8 @@ function renderMetaPanel(meta){
   el.classList.add('on');
   if(!meta){ el.innerHTML=''; return; }
   const rows = [];
-  if(meta.name) rows.push('<div class="lb-row lb-fname">'+ICON_FILE+'<span>'+escH(meta.name)+'</span></div>');
+  if(meta.name) rows.push('<div class="lb-row lb-fname">'+ICON_FILE+'<span>'+escH(meta.name)+'</span>'+
+    '<button type="button" class="lb-copy" data-copy-text="'+escA(meta.name)+'" title="Copy file name" aria-label="Copy file name">'+ICON_COPY+'</button></div>');
   if(meta.date){
     // On a live server the date links to its day view; a static export has no
     // such route, so it stays plain text.
@@ -1150,6 +1153,20 @@ document.addEventListener('keydown',function(e){
 document.getElementById('lb').addEventListener('click',function(e){
   if(e.target===this)closeLb();
 });
+// The lightbox stage keeps its clicks to itself, so its metadata panel
+// listens on its own: the copy button beside the file name.
+(function(){
+  var meta=document.getElementById('lbMeta');
+  if(!meta)return;
+  meta.addEventListener('click',function(e){
+    var ct=e.target.closest('[data-copy-text]');
+    if(!ct)return;
+    copyPath(ct.dataset.copyText);
+    ct.innerHTML=ICON_CHECK;
+    ct.title='Copied';
+    setTimeout(function(){ ct.innerHTML=ICON_COPY; ct.title='Copy file name'; },1200);
+  });
+})();
 
 // Click to zoom (toggle 1:1), drag to pan, wheel to pan while zoomed. A click
 // is distinguished from a pan by the pointer barely moving, so dragging the
@@ -1789,9 +1806,13 @@ function toggleSelectMode(){ setSelectMode(!selectMode); }
     state.className='select-state';
     state.hidden=true;
     state.textContent='Select enabled';
-    // First in the bar: selecting is what acts on the files the rest arrange.
-    bar.insertBefore(state,bar.firstChild);
-    bar.insertBefore(b,state);
+    // At the right end of the bar, the state before the button: turning
+    // Select on shows "Select enabled" there and moves none of the controls.
+    var group=document.createElement('span');
+    group.className='select-group';
+    group.appendChild(state);
+    group.appendChild(b);
+    bar.appendChild(group);
   });
 })();
 

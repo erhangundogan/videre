@@ -265,7 +265,21 @@
       box.insertBefore(chip,input);
     });
     input.placeholder=chips.length?'':PLACEHOLDER;
+    syncClear();
   }
+
+  // The x at the end of the box: clears every chip and the words at once. A
+  // page narrowed by a query reloads without it; otherwise only the box empties.
+  var clearBtn=button('qbox-clear','\u00d7','Clear the search and filters',function(){
+    var had=new URLSearchParams(location.search).has('q');
+    chips=[];
+    input.value='';
+    close();
+    if(had)apply(); else { render(); input.focus(); }
+  });
+  box.appendChild(clearBtn);
+  function syncClear(){ clearBtn.hidden=!chips.length&&!input.value; }
+  input.addEventListener('input',syncClear);
 
   // Take chip i back into the input as text.
   function edit(i){

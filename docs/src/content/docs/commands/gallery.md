@@ -98,8 +98,8 @@ one click jumps from a photo to everything else taken then or there.
 
 An info panel sits directly under the media: the labeled people in the photo
 (each links to that person's page), the place name when the file has GPS, and
-the filename, size, and date. It stays visible even when a file has none of the
-people or location data yet.
+the filename, size, and date. The button beside the filename copies it. It
+stays visible even when a file has none of the people or location data yet.
 
 ## What is on each page
 
@@ -123,9 +123,9 @@ bar. The reserved routes are deliberately not in it; each one appears when it
 renders something.
 
 Each section's toolbar sits under the strip and stays there as you scroll. It
-reads, left to right: **Select**, **View**, **Sort**, then a **search and
-filter** box with its **Filter** button, then the section's own controls,
-each set apart by a divider. The box takes a
+reads, left to right: **View**, **Sort**, then a **search and filter** box
+with its **Filter** button, then the section's own controls, each set apart by
+a divider, and **Select** at the right end. The box takes a
 [query](/reference/query-syntax/) and applies it to that section (below). On
 a page with no toolbar, such as a person's page or Settings, the box sits at
 the right of the strip instead and opens the Library page with the query:
@@ -179,6 +179,7 @@ In the box, each filter is a **chip**, and words stay as text:
   values and their counts. Choosing a value writes the same chip typing it
   would, choosing it again takes it out, and **Apply** runs the query.
   `rating:4` means four stars or more.
+- The **×** at the end of the box clears every chip and the words at once.
 
 The tall library header (the database path and the scanned-file counts) shows on
 the Library page and on a static export; the other sections drop it, since the strip
@@ -339,7 +340,8 @@ day in the Date view or a place on the map. Opening the bare address still
 lands on the Library tab.
 
 **The settings page.** The **...** button at the right end of the navigation
-bar opens a menu; **Settings** there leads to a page that shows the file's
+bar opens a menu: **Help** opens this page in a new tab, and **Settings** leads
+to a page that shows the file's
 location, has a **Page sizes** box for each paged view (a value outside its
 range is refused and not saved), and can:
 
@@ -354,8 +356,9 @@ too.
 
 ## Selecting
 
-**Select**, first in the toolbar of the Library, Date, Events and Map pages, turns on
-select mode ("Select enabled"). While it is on:
+**Select**, at the right end of the toolbar of the Library, Date, Events and Map
+pages, turns on select mode ("Select enabled", beside it, so nothing else in the
+toolbar moves). While it is on:
 
 - a click on a photo or video selects it instead of opening it;
 - **Shift-click** selects everything between the last click and this one;
