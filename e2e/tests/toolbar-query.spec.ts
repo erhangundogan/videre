@@ -35,19 +35,19 @@ test("Filter in the toolbar opens the options and Apply filters the tab", async 
   await expect(page.locator(".gallery-toolbar .qchip")).toContainText("mp4");
 });
 
-test("Select comes first in a files toolbar, and features are divided", async ({ page, gallery }) => {
+test("Select comes last in a files toolbar, and features are divided", async ({ page, gallery }) => {
   await page.goto(gallery.baseURL);
   const bar = page.locator(".gallery-toolbar[data-files]").first();
-  await expect(bar.locator(":scope > :first-child")).toHaveClass(/select-toggle/);
+  await expect(bar.locator(":scope > :last-child")).toHaveClass(/select-group/);
   const dividers = await bar.locator(":scope > *").evaluateAll((els) =>
     els.map((e) => [e.className, getComputedStyle(e).borderLeftStyle])
   );
-  // View, Sort and the query box each start with a divider; Select's note
-  // belongs to Select and does not.
+  // View, Sort and the query box each start with a divider; Select, pushed to
+  // the right end with its note, does not.
   expect(dividers.filter(([, style]) => style === "solid").map(([cls]) => cls)).toEqual(
     expect.arrayContaining(["view-toggle", "toolbar-query"])
   );
-  expect(dividers.find(([cls]) => cls === "select-state")![1]).toBe("none");
+  expect(dividers.find(([cls]) => cls === "select-group")![1]).toBe("none");
 });
 
 test("the toolbar sticks under the nav while the page scrolls", async ({ page, gallery }) => {

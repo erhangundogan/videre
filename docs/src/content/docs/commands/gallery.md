@@ -123,9 +123,9 @@ bar. The reserved routes are deliberately not in it; each one appears when it
 renders something.
 
 Each section's toolbar sits under the strip and stays there as you scroll. It
-reads, left to right: **Select**, **View**, **Sort**, then a **search and
-filter** box with its **Filter** button, then the section's own controls,
-each set apart by a divider. The box takes a
+reads, left to right: **View**, **Sort**, then a **search and filter** box
+with its **Filter** button, then the section's own controls, each set apart by
+a divider, and **Select** at the right end. The box takes a
 [query](/reference/query-syntax/) and applies it to that section (below). On
 a page with no toolbar, such as a person's page or Settings, the box sits at
 the right of the strip instead and opens the Library page with the query:
@@ -345,8 +345,9 @@ too.
 
 ## Selecting
 
-**Select**, first in the toolbar of the Library, Date, Events and Map pages, turns on
-select mode ("Select enabled"). While it is on:
+**Select**, at the right end of the toolbar of the Library, Date, Events and Map
+pages, turns on select mode ("Select enabled", beside it, so nothing else in the
+toolbar moves). While it is on:
 
 - a click on a photo or video selects it instead of opening it;
 - **Shift-click** selects everything between the last click and this one;

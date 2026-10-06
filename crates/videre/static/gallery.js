@@ -1723,9 +1723,13 @@ function toggleSelectMode(){ setSelectMode(!selectMode); }
     state.className='select-state';
     state.hidden=true;
     state.textContent='Select enabled';
-    // First in the bar: selecting is what acts on the files the rest arrange.
-    bar.insertBefore(state,bar.firstChild);
-    bar.insertBefore(b,state);
+    // At the right end of the bar, the state before the button: turning
+    // Select on shows "Select enabled" there and moves none of the controls.
+    var group=document.createElement('span');
+    group.className='select-group';
+    group.appendChild(state);
+    group.appendChild(b);
+    bar.appendChild(group);
   });
 })();
 

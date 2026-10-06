@@ -29,6 +29,26 @@ test("the lightbox copies the file name", async ({ page, context, gallery }) => 
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(name);
 });
 
+test("Select sits at the right end of every toolbar, and turning it on moves nothing", async ({
+  page,
+  isolatedGallery: gallery
+}) => {
+  seedPlace(gallery.libraryRoot);
+  for (const path of ["/", "/date/2021", "/map"]) {
+    await page.goto(`${gallery.baseURL}${path}`);
+    const bar = page.locator(".gallery-toolbar[data-files]:visible").first();
+    const select = bar.locator(".select-toggle");
+    const sort = bar.locator(".toolbar-query");
+    const selectBox = (await select.boundingBox())!;
+    const before = (await sort.boundingBox())!;
+    expect(selectBox.x, path).toBeGreaterThan(before.x);
+    await select.click();
+    await expect(bar.locator(".select-state"), path).toBeVisible();
+    expect((await sort.boundingBox())!.x, path).toBe(before.x);
+    await select.click();
+  }
+});
+
 test("the more menu offers Help, which opens the docs", async ({ page, gallery }) => {
   await page.goto(gallery.baseURL);
   await page.locator("#secnav-more").click();
