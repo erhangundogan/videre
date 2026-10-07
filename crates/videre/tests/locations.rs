@@ -190,3 +190,35 @@ fn file_hashes_location_cluster_id_is_assigned_and_cleared_on_rerun() {
         "b.jpg's stale location_cluster_id must be cleared once it no longer has GPS"
     );
 }
+
+#[test]
+fn locations_names_each_gps_row_with_its_nearest_place() {
+    let lib = library_with_gps(&[
+        ("üsküdar.jpg", "ha", Some((41.02274, 29.01366))),
+        ("kadıköy.jpg", "hb", Some((40.99032, 29.02897))),
+        ("yersiz.jpg", "hc", None),
+    ]);
+    let out = lib
+        .cmd()
+        .args(["locations", "--silent"])
+        .output()
+        .expect("failed to run videre locations");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let name = |rel: &str| -> Option<String> {
+        let path = lib.context().paths.root.join(rel);
+        lib.conn()
+            .query_row(
+                "SELECT location_name FROM file_hashes WHERE path = ?1",
+                [path.to_string_lossy().as_ref()],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    assert!(name("üsküdar.jpg").unwrap().starts_with("Üsküdar"));
+    assert!(name("kadıköy.jpg").unwrap().ends_with(", TR"));
+    assert_eq!(name("yersiz.jpg"), None);
+}
