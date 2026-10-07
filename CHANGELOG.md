@@ -16,6 +16,59 @@ version number and are released together.
 ## [Unreleased]
 
 
+## [0.57.0] - 2026-10-07
+
+### Added
+
+- **The map splits a city into districts, then streets.** Zoomed past a
+  city, its marker becomes one marker per district, counted; closer in,
+  the files group into street-sized markers. A district or street group
+  can be selected and linked to (`?place=`, `?at=&radius=`), and zooming
+  back out past it clears the selection.
+- **Street detail on the map, opt-in.** With
+  `videre config set street-detail true`, the map offers to download
+  roads, buildings, parks and street and district names for the areas
+  your photos are in. It shows the size and what leaves the machine
+  first: whole 1-degree areas around your places, never a place's exact
+  location. The download is a regional cut of the OpenStreetMap planet
+  map, about 55 MB for a city such as Berlin, and the map offers an update
+  when new places fall outside it. Turning the setting off deletes it.
+- **A Working with AI agents guide**, on what makes videre easy for an
+  agent to drive and how to keep control, with the CLI and MCP side by
+  side.
+
+### Changed
+
+- **`pipeline` counts a stage that only skipped files as done.** `faces`
+  files it could not decode, and `fix-dates` files it could not update,
+  no longer mark the stage failed; pipeline prints "(n file(s) skipped)"
+  and reports `items_skipped` in `--json`. Run alone, both still exit 1.
+  A failed database write still fails the stage.
+- **`videre locations` names every photo's place**, as `watch` already
+  did. A library kept current with `pipeline` had no per-file place
+  names, so `place:` matched only city names and the map could not split
+  a city.
+- **Every MCP config in the docs passes `--library`.** A client starts
+  `videre mcp` from its own folder, so the bare command found no library.
+  The MCP page says how to register one server per library and when MCP
+  is the better way in.
+- **The gallery reads its settings once**, refreshed when a page renders
+  or settings are saved, instead of reading `gallery.json` on every face
+  learning action and Duplicates request. A hand edit still applies on
+  the next page load.
+
+### Upgrading
+
+- **Run `videre locations`** (or `videre pipeline`) once so every photo
+  with GPS gets its place name and the map can show districts. A library
+  kept current with `watch` already has them.
+- **MCP configs written from the old docs** should add
+  `--library <path>` to the `videre mcp` arguments.
+- **For crates depending on `videre-core`:** `basemap_detail` is a new
+  module and `location::name_unnamed_rows` is new;
+  `library_config::LibraryConfig` has a new `street_detail` field and
+  `library_config::ConfigKey` a new `StreetDetail` variant.
+
 ## [0.56.0] - 2026-10-07
 
 ### Breaking changes
@@ -3126,7 +3179,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.56.0...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.57.0...HEAD
+[0.57.0]: https://github.com/erhangundogan/videre/compare/v0.56.0...v0.57.0
 [0.56.0]: https://github.com/erhangundogan/videre/compare/v0.55.0...v0.56.0
 [0.55.0]: https://github.com/erhangundogan/videre/compare/v0.54.0...v0.55.0
 [0.54.0]: https://github.com/erhangundogan/videre/compare/v0.53.0...v0.54.0
