@@ -94,6 +94,45 @@ pub fn location_name_in(
     }
 }
 
+/// Names every GPS row that has no `location_name` yet, one geocode per
+/// distinct coordinate, in one transaction. Only NULLs are filled: a name the
+/// lightbox or an earlier run wrote stays. Returns the coordinates named.
+///
+/// Shared by `videre locations` and watch's location stage, so a library kept
+/// current by either has the per-file place names the map and `place:` read.
+pub fn name_unnamed_rows(
+    conn: &rusqlite::Connection,
+    cache: &crate::library::CachePaths,
+) -> anyhow::Result<usize> {
+    let unresolved: Vec<(f64, f64)> = {
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT gps_lat, gps_lon FROM file_hashes \
+             WHERE gps_lat IS NOT NULL AND gps_lon IS NOT NULL AND location_name IS NULL",
+        )?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    if unresolved.is_empty() {
+        return Ok(0);
+    }
+    let tx = conn.unchecked_transaction()?;
+    let mut resolved = 0usize;
+    for (lat, lon) in unresolved {
+        if let Some(name) = location_name_in(cache, lat, lon)? {
+            tx.execute(
+                "UPDATE file_hashes SET location_name = ?1 \
+                 WHERE gps_lat = ?2 AND gps_lon = ?3 AND location_name IS NULL",
+                rusqlite::params![name, lat, lon],
+            )?;
+            resolved += 1;
+        }
+    }
+    tx.commit()?;
+    Ok(resolved)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,6 +143,35 @@ mod tests {
             thumbnails: temp.path().join("thumbnails"),
             geo: temp.path().join("geo"),
         }
+    }
+
+    #[test]
+    fn name_unnamed_rows_fills_only_nulls_once_per_coordinate() {
+        let temp = tempfile::tempdir().unwrap();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE file_hashes (path TEXT, gps_lat REAL, gps_lon REAL, location_name TEXT);
+             INSERT INTO file_hashes VALUES ('/a.jpg', 41.02274, 29.01366, NULL);
+             INSERT INTO file_hashes VALUES ('/b.jpg', 41.02274, 29.01366, NULL);
+             INSERT INTO file_hashes VALUES ('/c.jpg', 55.60587, 13.00073, 'Elle yazılmış, TR');
+             INSERT INTO file_hashes VALUES ('/d.jpg', NULL, NULL, NULL);",
+        )
+        .unwrap();
+        let named = name_unnamed_rows(&conn, &cache(&temp)).unwrap();
+        assert_eq!(named, 1);
+        let name = |path: &str| -> Option<String> {
+            conn.query_row(
+                "SELECT location_name FROM file_hashes WHERE path = ?1",
+                [path],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert!(name("/a.jpg").unwrap().starts_with("Üsküdar"));
+        assert_eq!(name("/a.jpg"), name("/b.jpg"));
+        assert_eq!(name("/c.jpg").as_deref(), Some("Elle yazılmış, TR"));
+        assert_eq!(name("/d.jpg"), None);
+        assert_eq!(name_unnamed_rows(&conn, &cache(&temp)).unwrap(), 0);
     }
 
     #[test]

@@ -1519,29 +1519,7 @@ fn run_location_stage(
         videre_core::library_locks::ActivityMode::Shared,
         args.silent,
         || {
-            let unresolved: Vec<(f64, f64)> = {
-                let mut stmt = conn.prepare(
-                    "SELECT DISTINCT gps_lat, gps_lon FROM file_hashes \
-                     WHERE gps_lat IS NOT NULL AND gps_lon IS NOT NULL AND location_name IS NULL",
-                )?;
-                let rows = stmt
-                    .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-                rows
-            };
-            let mut resolved = 0usize;
-            for (lat, lon) in unresolved {
-                if let Some(name) =
-                    videre_core::location::location_name_in(&ctx.library.cache, lat, lon)?
-                {
-                    conn.execute(
-                        "UPDATE file_hashes SET location_name = ?1 \
-                         WHERE ROUND(gps_lat, 6) = ROUND(?2, 6) AND ROUND(gps_lon, 6) = ROUND(?3, 6)",
-                        rusqlite::params![name, lat, lon],
-                    )?;
-                    resolved += 1;
-                }
-            }
+            let resolved = videre_core::location::name_unnamed_rows(conn, &ctx.library.cache)?;
             if !args.silent && resolved > 0 {
                 tracing::info!("videre watch: location stage resolved {resolved} coordinate(s)");
             }

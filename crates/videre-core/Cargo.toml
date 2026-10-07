@@ -1,6 +1,6 @@
 [package]
 name = "videre-core"
-version = "0.56.0"
+version = "0.57.0"
 edition = "2021"
 description = "Shared SQLite, caching, and search helpers for the videre media library CLI"
 license = "Apache-2.0"
@@ -28,6 +28,7 @@ toml = { version = "1", features = ["preserve_order"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 fs2 = "0.4"
+flate2 = "1"
 ctrlc = "3"
 chrono = "0.4"
 ureq = { version = "3", features = ["json"] }

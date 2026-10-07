@@ -46,6 +46,20 @@ pub(crate) struct LocationFilter {
     pub(crate) radius_km: f64,
 }
 
+/// Which files a map selection keeps: a circle around a point (a city, or a
+/// street group), or one district of a city exactly. A district is a cluster's
+/// files under one `location_name`, so the grid shows what the district's
+/// marker counts; a circle wide enough for one district would take part of its
+/// neighbours. `name: None` is the cluster's files with no name yet.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum LocationScope {
+    Circle(LocationFilter),
+    Place {
+        cluster_id: i64,
+        name: Option<String>,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum LongitudeBounds {
     Between { west: f64, east: f64 },
@@ -262,7 +276,7 @@ pub(crate) fn query_files_page(
         date_filter,
         offset,
         limit,
-        location,
+        location.map(|l| LocationScope::Circle(*l)).as_ref(),
         sort,
         false,
     )
@@ -305,7 +319,7 @@ pub(crate) fn query_files_page_within(
     date_filter: Option<&FileDateFilter>,
     offset: i64,
     limit: i64,
-    location: Option<&LocationFilter>,
+    location: Option<&LocationScope>,
     sort: FileSort,
     within_query: bool,
 ) -> anyhow::Result<(Vec<(FileRow, i64)>, i64)> {
@@ -345,7 +359,18 @@ pub(crate) fn query_files_page_within(
         _ => {}
     }
     if view != "date" {
-        if let Some(location) = location {
+        if let Some(LocationScope::Place { cluster_id, name }) = location {
+            clauses.push("location_cluster_id = ?".to_string());
+            params.push((*cluster_id).into());
+            match name {
+                Some(name) => {
+                    clauses.push("location_name = ?".to_string());
+                    params.push(name.clone().into());
+                }
+                None => clauses.push("location_name IS NULL".to_string()),
+            }
+        }
+        if let Some(LocationScope::Circle(location)) = location {
             let bounds = location_bounds(*location);
             clauses.push("gps_lat BETWEEN ? AND ?".to_string());
             params.push(bounds.south.into());

@@ -7,6 +7,11 @@ Groups photos by where they were taken, using GPS coordinates
 [`videre scan`](/commands/scan/) already extracted from EXIF. No network access:
 place names come from an offline lookup.
 
+It also gives every photo with GPS its own place name, the nearest town or
+district (Kadıköy, Mitte), when it has none yet. Those names are what
+`place:` searches match and what the map shows when you zoom into a city. A
+name already set is kept.
+
 ```bash
 videre locations                       # group and print a summary
 videre locations --radius 25           # how far apart places can be, in km (default 15)

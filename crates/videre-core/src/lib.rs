@@ -58,3 +58,4 @@ pub mod xmp_gather;
 /// The basemap module: the offline PMTiles archive and its bounded
 /// first-use downloader.
 pub mod basemap;
+pub mod basemap_detail;

@@ -154,6 +154,11 @@ pub struct LibraryConfig {
     /// How many runs of each command `videre status` keeps, newest first
     /// (`pipeline_runs::track_in_as`). At least 1.
     pub run_history: u64,
+    /// Whether the gallery map may fetch street-level detail for this
+    /// library's places from Source Cooperative. Opt-in, off when absent:
+    /// fetching it sends the rough areas of the library's photo places
+    /// (1-degree cells) off the machine. See `videre_core::basemap_detail`.
+    pub street_detail: bool,
 }
 
 /// `run_history` when absent: the latest run and the two before it.
@@ -193,6 +198,7 @@ impl Default for LibraryConfig {
             search_min_match: SEARCH_MIN_MATCH_DEFAULT,
             similar_min_score: None,
             run_history: RUN_HISTORY_DEFAULT,
+            street_detail: false,
         }
     }
 }
@@ -238,6 +244,8 @@ pub enum ConfigKey {
     SimilarMinScore,
     /// `run_history`, an integer from 1 through 100.
     RunHistory,
+    /// `street_detail`, a boolean.
+    StreetDetail,
 }
 
 impl ConfigKey {
@@ -261,6 +269,7 @@ impl ConfigKey {
             ConfigKey::SearchMinMatch => "search_min_match",
             ConfigKey::SimilarMinScore => "similar_min_score",
             ConfigKey::RunHistory => "run_history",
+            ConfigKey::StreetDetail => "street_detail",
         }
     }
 }
@@ -496,6 +505,7 @@ fn config_from_table(table: &toml::Table, file: &Path) -> Result<LibraryConfig> 
         xmp_precedence,
         export_xmp_on_watch: bool_setting(table, file, "export_xmp_on_watch", false)?,
         gallery_starts_watch: bool_setting(table, file, "gallery_starts_watch", true)?,
+        street_detail: bool_setting(table, file, "street_detail", false)?,
         min_read_rate_mb_s: read_rate_setting(table, file)?,
         max_io_workers: io_workers_setting(table, file)?,
         watch_debounce_ms: debounce_setting(table, file)?,
@@ -573,9 +583,10 @@ fn validate_value(key: ConfigKey, value: &toml::Value) -> Result<()> {
         (ConfigKey::IoWorkers, toml::Value::Integer(n)) if (1..=256).contains(n) => Ok(()),
         (ConfigKey::RunHistory, toml::Value::Integer(n)) if (1..=100).contains(n) => Ok(()),
         (ConfigKey::Xmp, toml::Value::String(s)) => XmpPrecedence::parse(s).map(|_| ()),
-        (ConfigKey::ExportXmpOnWatch | ConfigKey::GalleryStartsWatch, toml::Value::Boolean(_)) => {
-            Ok(())
-        }
+        (
+            ConfigKey::ExportXmpOnWatch | ConfigKey::GalleryStartsWatch | ConfigKey::StreetDetail,
+            toml::Value::Boolean(_),
+        ) => Ok(()),
         (ConfigKey::WatchDebounceMs, toml::Value::Integer(n)) if *n > 0 => Ok(()),
         (ConfigKey::WatchBulkThreshold | ConfigKey::WatchBulkQuietMs, toml::Value::Integer(n))
             if *n > 0 =>
@@ -646,7 +657,12 @@ fn validate_value(key: ConfigKey, value: &toml::Value) -> Result<()> {
         (ConfigKey::Xmp, other) => {
             bail!("xmp_precedence must be a string, got {}", other.type_str())
         }
-        (k @ (ConfigKey::ExportXmpOnWatch | ConfigKey::GalleryStartsWatch), other) => {
+        (
+            k @ (ConfigKey::ExportXmpOnWatch
+            | ConfigKey::GalleryStartsWatch
+            | ConfigKey::StreetDetail),
+            other,
+        ) => {
             bail!("{} must be a boolean, got {}", k.name(), other.type_str())
         }
     }
@@ -1077,6 +1093,26 @@ mod tests {
             format!("{err:#}").contains("gallery_starts_watch must be a boolean"),
             "{err:#}"
         );
+    }
+
+    #[test]
+    fn street_detail_is_off_unless_opted_into() {
+        let (_t, ctx) = library_with_config("");
+        assert!(!load(&ctx.paths).unwrap().street_detail);
+        edit(
+            &ctx,
+            ConfigKey::StreetDetail,
+            Some(toml::Value::Boolean(true)),
+        )
+        .unwrap();
+        assert!(load(&ctx.paths).unwrap().street_detail);
+        let err = edit(&ctx, ConfigKey::StreetDetail, Some(toml::Value::Integer(1))).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("street_detail must be a boolean"),
+            "{err:#}"
+        );
+        edit(&ctx, ConfigKey::StreetDetail, None).unwrap();
+        assert!(!load(&ctx.paths).unwrap().street_detail);
     }
 
     #[test]

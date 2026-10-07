@@ -121,6 +121,12 @@ fn run_locations(
 ) -> Result<Vec<ClusterJson>> {
     let quiet = args.silent || args.json || args.geojson;
     let clusters = location_cluster::recompute_all(conn, &ctx.library.cache, args.radius, quiet)?;
+    // The per-file place names the map's district tier and `place:` read;
+    // without this only watch ever wrote them.
+    let named = videre_core::location::name_unnamed_rows(conn, &ctx.library.cache)?;
+    if !quiet && named > 0 {
+        tracing::info!("videre locations: named {named} place(s)");
+    }
     Ok(clusters
         .into_iter()
         .map(|c| ClusterJson {

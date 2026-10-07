@@ -1275,6 +1275,10 @@ function showQueryStatus(html,isError){
 }
 function galleryLocationQuery(){
   if(!GLOCATION)return '';
+  if(GLOCATION.cluster!==undefined){
+    return '&cluster='+encodeURIComponent(GLOCATION.cluster)+
+      '&place='+encodeURIComponent(GLOCATION.place);
+  }
   return '&lat='+encodeURIComponent(GLOCATION.lat)+
     '&lon='+encodeURIComponent(GLOCATION.lon)+
     '&radius='+encodeURIComponent(GLOCATION.radius);
@@ -1501,9 +1505,11 @@ function showMoreGallery(){
 }
 // The map page owns the location selection, while the shared gallery owns
 // paging and rendering. Reset all paging state before loading the first page
-// for the selected location; null returns to the complete library.
+// for the selected location; null returns to the complete library. A single
+// {cluster,place} argument selects one district of a city instead of a circle.
 window.setGalleryLocation=function(lat,lon,radius){
-  GLOCATION=(lat===null||lon===null||radius===null)?null:{lat:lat,lon:lon,radius:radius};
+  if(lat!==null&&typeof lat==='object')GLOCATION={cluster:lat.cluster,place:lat.place};
+  else GLOCATION=(lat===null||lon===null||radius===null)?null:{lat:lat,lon:lon,radius:radius};
   gRequest++;
   gLoading=false;
   gShown=0;
