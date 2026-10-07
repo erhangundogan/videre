@@ -16,6 +16,26 @@ version number and are released together.
 ## [Unreleased]
 
 
+## [0.58.0] - 2026-10-07
+
+### Added
+
+- **`videre status` keeps each command's last runs, not only the
+  latest.** A long run used to vanish as soon as the command ran again,
+  and the long runs are the ones worth seeing. `status` now lists the
+  earlier runs under each command's line, and as `history` in `--json`.
+  A run that died is kept as crashed when the next one starts, and a run
+  that skipped files says how many. Set how many runs are kept per command
+  with `videre config set run-history` (default 3, 1 to 100).
+
+### Upgrading
+
+- **For crates depending on `videre-core`:**
+  `pipeline_runs::PipelineRunStatus` has a new `history` field and
+  `pipeline_runs::RunRecord` and `note_skipped` are new;
+  `library_config::LibraryConfig` has a new `run_history` field and
+  `library_config::ConfigKey` a new `RunHistory` variant.
+
 ## [0.57.0] - 2026-10-07
 
 ### Added
@@ -3179,7 +3199,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.57.0...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.58.0...HEAD
+[0.58.0]: https://github.com/erhangundogan/videre/compare/v0.57.0...v0.58.0
 [0.57.0]: https://github.com/erhangundogan/videre/compare/v0.56.0...v0.57.0
 [0.56.0]: https://github.com/erhangundogan/videre/compare/v0.55.0...v0.56.0
 [0.55.0]: https://github.com/erhangundogan/videre/compare/v0.54.0...v0.55.0
