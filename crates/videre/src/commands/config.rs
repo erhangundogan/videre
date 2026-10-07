@@ -20,6 +20,7 @@ pub(crate) const CONFIG_KEYS: &[&str] = &[
     "log-max-age-days",
     "search-min-match",
     "similar-min-score",
+    "street-detail",
 ];
 
 #[derive(clap::Args)]
@@ -51,12 +52,31 @@ pub fn run(args: ConfigArgs, ctx: &CommandContext) -> Result<()> {
         None => show(ctx),
         Some(ConfigAction::Set { key, value }) => {
             let (key, value) = config_value(&key, value)?;
-            library_config::edit(&ctx.library, key, Some(value))
+            let off = key == ConfigKey::StreetDetail && value == toml::Value::Boolean(false);
+            library_config::edit(&ctx.library, key, Some(value))?;
+            if off {
+                forget_street_detail(ctx)?;
+            }
+            Ok(())
         }
         Some(ConfigAction::Unset { key }) => {
-            library_config::edit(&ctx.library, config_key(&key), None)
+            let key = config_key(&key);
+            library_config::edit(&ctx.library, key, None)?;
+            if key == ConfigKey::StreetDetail {
+                forget_street_detail(ctx)?;
+            }
+            Ok(())
         }
     }
+}
+
+/// Street detail off means no street map on disk: the download was the
+/// consent's only product, so withdrawing the consent deletes it.
+fn forget_street_detail(ctx: &CommandContext) -> Result<()> {
+    if videre_core::basemap_detail::remove(&ctx.library.paths.state)? {
+        eprintln!("street-detail off: deleted the downloaded street map");
+    }
+    Ok(())
 }
 
 fn config_key(key: &str) -> ConfigKey {
@@ -77,6 +97,7 @@ fn config_key(key: &str) -> ConfigKey {
         "log-max-age-days" => ConfigKey::LogMaxAgeDays,
         "search-min-match" => ConfigKey::SearchMinMatch,
         "similar-min-score" => ConfigKey::SimilarMinScore,
+        "street-detail" => ConfigKey::StreetDetail,
         _ => unreachable!("clap restricts keys to CONFIG_KEYS"),
     }
 }
@@ -110,7 +131,7 @@ fn config_value(key: &str, value: String) -> Result<(ConfigKey, toml::Value)> {
         ConfigKey::IoWorkers => whole_number(name, &value, "workers")?,
         ConfigKey::WatchBulkThreshold => whole_number(name, &value, "files")?,
         ConfigKey::WatchBulkQuietMs => whole_number(name, &value, "milliseconds")?,
-        ConfigKey::ExportXmpOnWatch | ConfigKey::GalleryStartsWatch => {
+        ConfigKey::ExportXmpOnWatch | ConfigKey::GalleryStartsWatch | ConfigKey::StreetDetail => {
             let on: bool = value
                 .parse()
                 .map_err(|_| anyhow::anyhow!("{name} must be true or false, got {value:?}"))?;
@@ -183,6 +204,10 @@ fn show(ctx: &CommandContext) -> Result<()> {
         } else {
             "off"
         }
+    );
+    println!(
+        "street-detail: {}",
+        if config.street_detail { "on" } else { "off" }
     );
     match config.watch_debounce_ms {
         Some(ms) => println!("watch-debounce-ms: {ms} ms"),

@@ -221,6 +221,39 @@ fn the_gallery_watch_setting_is_on_by_default_and_can_be_turned_off() {
 }
 
 #[test]
+fn turning_street_detail_off_deletes_the_downloaded_street_map() {
+    let library = TestLibrary::new();
+    let shown = run(&library, &["config"]);
+    assert!(String::from_utf8_lossy(&shown.stdout).contains("street-detail: off"));
+    assert!(run(&library, &["config", "set", "street-detail", "true"])
+        .status
+        .success());
+    assert!(config_text(&library).contains("street_detail = true"));
+
+    // Stand-ins for a finished download.
+    let dir = library.root.join(".videre").join("basemap");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("detail.pmtiles"), b"sokak").unwrap();
+    std::fs::write(dir.join("detail.json"), b"{}").unwrap();
+
+    let off = run(&library, &["config", "set", "street-detail", "false"]);
+    assert!(off.status.success());
+    assert!(!dir.join("detail.pmtiles").exists());
+    assert!(!dir.join("detail.json").exists());
+    assert!(
+        String::from_utf8_lossy(&off.stderr).contains("deleted"),
+        "{off:?}"
+    );
+
+    // Unset is off too.
+    std::fs::write(dir.join("detail.pmtiles"), b"sokak").unwrap();
+    assert!(run(&library, &["config", "unset", "street-detail"])
+        .status
+        .success());
+    assert!(!dir.join("detail.pmtiles").exists());
+}
+
+#[test]
 fn removed_and_unknown_config_keys_are_rejected() {
     for key in ["db", "path", "jsonl", "nope"] {
         let library = TestLibrary::new();
