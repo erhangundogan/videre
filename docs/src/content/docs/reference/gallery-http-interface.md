@@ -671,6 +671,46 @@ curl "http://127.0.0.1:7878/api/location-clusters/7/points"
 }
 ```
 
+## Street detail
+
+Opt-in per library (`videre config set street-detail true`; see
+[the gallery's map](/commands/gallery/#street-detail)). Off, the status is
+`{"enabled":false,"state":"off"}`, any street map left on disk is deleted, the
+two `POST` endpoints answer `403` and the tiles `404`.
+
+### `GET /api/basemap/detail`
+
+```json
+{"enabled":true,"state":"ready","bytes":412345678,"cells":31,"done":0,"total":0,"error":null}
+```
+
+`state` is `absent`, `downloading` (with `done` and `total` tile bytes),
+`ready`, `stale` (the library has places outside the downloaded cells) or
+`failed` (with `error`). `cells` counts the 1-degree cells the library's places
+touch.
+
+### `POST /api/basemap/detail/plan`
+
+Reads the source's directories for the cells and answers
+`{"cells":31,"bytes":412345678}`, the download's size. This already tells the
+host which cells are wanted, so the map calls it only after a click. A host
+failure answers `502`.
+
+### `POST /api/basemap/detail/ensure`
+
+Starts the download in the background (the glyphs, then the tiles) and answers
+the status at once; the map polls `GET /api/basemap/detail`.
+
+### `GET /tiles/detail.pmtiles`
+
+The library's street map, with Range support, read by MapLibre through the
+pmtiles protocol. `404` when absent or off.
+
+### `GET /fonts/{stack}/{range}`
+
+Glyphs for street and place names, `Noto Sans Regular` in its Latin ranges,
+from the machine's shared cache. Any other stack or range is `404`.
+
 ## Map basemap
 
 The Map view renders MapLibre GL JS over an offline vector basemap: a PMTiles
@@ -1202,6 +1242,11 @@ content-length: 0
 | `GET /tiles/basemap.pmtiles` | Serve the offline basemap archive (Range) |
 | `GET /api/basemap/status` | Report the basemap download state |
 | `POST /api/basemap/ensure` | Start the one-time basemap download |
+| `GET /api/basemap/detail` | Report the street map: off, absent, downloading, ready, stale or failed |
+| `POST /api/basemap/detail/plan` | Size the street-map download for this library's places |
+| `POST /api/basemap/detail/ensure` | Start the street-map download |
+| `GET /tiles/detail.pmtiles` | Serve the library's street map (Range) |
+| `GET /fonts/{stack}/{range}` | Serve the glyphs street and place names are drawn with |
 | `GET /api/processing` | Stages watch still has files to process |
 | `GET /vendor/{version}/{asset}` | Serve a vendored map library (MapLibre, pmtiles) |
 | `GET /api/people` | Search people |

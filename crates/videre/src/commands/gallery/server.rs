@@ -234,6 +234,165 @@ mod date_filter_tests {
 }
 
 #[cfg(test)]
+mod street_detail_tests {
+    use super::location_cluster_tests::gallery_state;
+    use super::*;
+    use axum::body::{to_bytes, Body};
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    fn app(state: Arc<AppState>) -> Router {
+        Router::new()
+            .route("/api/basemap/detail", get(handle_detail_status))
+            .route("/api/basemap/detail/plan", post(handle_detail_plan))
+            .route("/api/basemap/detail/ensure", post(handle_detail_ensure))
+            .route("/tiles/detail.pmtiles", get(handle_detail_tiles))
+            .route("/fonts/{stack}/{range}", get(handle_fonts))
+            .with_state(state)
+    }
+
+    async fn call(app: &Router, method: &str, uri: &str) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (status, serde_json::from_slice(&body).unwrap_or_default())
+    }
+
+    /// A library with one Berlin place and, when `on`, street_detail set.
+    fn library(dir: &Path, on: bool) -> Arc<AppState> {
+        let state = gallery_state(dir);
+        {
+            let conn = state.conn.lock().unwrap();
+            videre_core::location_cluster::ensure_location_clusters_table(&conn).unwrap();
+            conn.execute_batch(
+                "INSERT INTO location_clusters
+                    (id, centroid_lat, centroid_lon, name, photo_count, radius_km, created_at)
+                 VALUES (1, 52.52, 13.405, 'Berlin', 3, 15.0, CURRENT_TIMESTAMP);",
+            )
+            .unwrap();
+        }
+        if on {
+            let paths = &state.context.library.paths;
+            std::fs::create_dir_all(&paths.state).unwrap();
+            std::fs::write(&paths.config, "street_detail = true\n").unwrap();
+        }
+        state
+    }
+
+    fn plant(state: &AppState, cells: &str) -> std::path::PathBuf {
+        let dir = state.context.library.paths.state.join("basemap");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("detail.pmtiles"), b"sokak haritasi").unwrap();
+        std::fs::write(
+            dir.join("detail.json"),
+            format!(r#"{{"cells":{cells},"etag":"\"e\"","bytes":14}}"#),
+        )
+        .unwrap();
+        dir.join("detail.pmtiles")
+    }
+
+    #[tokio::test]
+    async fn street_detail_is_off_by_default_and_a_leftover_map_is_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = library(dir.path(), false);
+        let archive = plant(&state, r#"[{"lat":52,"lon":13}]"#);
+        let app = app(state);
+
+        let (status, v) = call(&app, "GET", "/api/basemap/detail").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(v["enabled"], false);
+        assert_eq!(v["state"], "off");
+        assert!(!archive.exists(), "off means no street map on disk");
+
+        for uri in ["/api/basemap/detail/plan", "/api/basemap/detail/ensure"] {
+            let (status, _) = call(&app, "POST", uri).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{uri}");
+        }
+        let (status, _) = call(&app, "GET", "/tiles/detail.pmtiles").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn an_enabled_library_reports_absent_ready_and_stale_and_serves_the_map() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = library(dir.path(), true);
+        let app = app(state.clone());
+
+        let (_, v) = call(&app, "GET", "/api/basemap/detail").await;
+        assert_eq!(v["enabled"], true);
+        assert_eq!(v["state"], "absent");
+        assert_eq!(v["cells"], 1);
+
+        plant(&state, r#"[{"lat":52,"lon":13}]"#);
+        let (_, v) = call(&app, "GET", "/api/basemap/detail").await;
+        assert_eq!(v["state"], "ready");
+        assert_eq!(v["bytes"], 14);
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/tiles/detail.pmtiles")
+                    .header("range", "bytes=0-4")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&body[..], b"sokak");
+
+        // A place outside the cut makes it stale: the map offers an update.
+        plant(&state, r#"[{"lat":41,"lon":29}]"#);
+        let (_, v) = call(&app, "GET", "/api/basemap/detail").await;
+        assert_eq!(v["state"], "stale");
+    }
+
+    #[tokio::test]
+    async fn glyphs_are_served_from_the_shared_cache_and_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = library(dir.path(), true);
+        let fonts = videre_core::basemap_detail::fonts_dir(&state.context.library.cache.geo);
+        std::fs::create_dir_all(&fonts).unwrap();
+        std::fs::write(fonts.join("0-255.pbf"), b"glif").unwrap();
+        let app = app(state);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/fonts/Noto%20Sans%20Regular/0-255.pbf")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&body[..], b"glif");
+
+        for uri in [
+            "/fonts/Noto%20Sans%20Regular/256-511.pbf",
+            "/fonts/Other%20Font/0-255.pbf",
+            "/fonts/Noto%20Sans%20Regular/..%2F..%2Fsecret.pbf",
+        ] {
+            let (status, _) = call(&app, "GET", uri).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{uri}");
+        }
+    }
+}
+
+#[cfg(test)]
 mod location_cluster_tests {
     use super::*;
     use axum::body::{to_bytes, Body};
@@ -266,6 +425,7 @@ mod location_cluster_tests {
             context,
             embedder: Mutex::new(None),
             basemap_downloading: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            detail_job: Arc::new(Mutex::new(DetailJob::default())),
             settings_lock: Arc::new(Mutex::new(())),
             settings_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
@@ -2189,6 +2349,8 @@ pub(crate) struct AppState {
     /// /api/basemap/ensure` returns the current status instead of launching a
     /// second download of the same once-per-machine archive.
     basemap_downloading: Arc<std::sync::atomic::AtomicBool>,
+    /// The street-detail cut in flight, if any, and its progress.
+    pub(super) detail_job: Arc<Mutex<DetailJob>>,
     /// Serializes read-modify-write of `.videre/gallery.json`, so two saves
     /// from two tabs cannot interleave and drop one of them.
     pub(super) settings_lock: Arc<Mutex<()>>,
@@ -3771,6 +3933,195 @@ async fn handle_basemap_ensure(State(state): State<Arc<AppState>>) -> Response {
     json_response(basemap_status_json(&path))
 }
 
+/// The street-detail cut in flight, for the status the map polls.
+#[derive(Default)]
+pub(super) struct DetailJob {
+    running: bool,
+    done: u64,
+    total: u64,
+    error: Option<String>,
+}
+
+/// Whether this library opted into street detail, read from its config on
+/// every call so `videre config set street-detail` takes effect without a
+/// restart. An unreadable config is off.
+fn street_detail_on(state: &AppState) -> bool {
+    videre_core::library_config::load(&state.context.library.paths)
+        .map(|c| c.street_detail)
+        .unwrap_or(false)
+}
+
+fn detail_cells(
+    state: &AppState,
+) -> Result<std::collections::BTreeSet<videre_core::basemap_detail::Cell>, StatusCode> {
+    let conn = state.conn.lock().map_err(poisoned)?;
+    let places = videre_core::basemap_detail::places(&conn).map_err(internal)?;
+    Ok(videre_core::basemap_detail::cells_for(&places))
+}
+
+/// `GET /api/basemap/detail`: `off` when the library has not opted in (and
+/// any street map left on disk is deleted, so the setting and the disk agree
+/// even after a hand edit), else `absent`, `downloading`, `ready`, `stale`
+/// (places outside the cut) or `failed`.
+async fn handle_detail_status(State(state): State<Arc<AppState>>) -> Response {
+    use videre_core::basemap_detail::{remove, status, DetailStatus};
+    let state_dir = &state.context.library.paths.state;
+    if !street_detail_on(&state) {
+        if let Err(e) = remove(state_dir) {
+            return internal(e).into_response();
+        }
+        return json_response(r#"{"enabled":false,"state":"off"}"#.to_string());
+    }
+    let cells = match detail_cells(&state) {
+        Ok(cells) => cells,
+        Err(code) => return code.into_response(),
+    };
+    let job = match state.detail_job.lock() {
+        Ok(job) => job,
+        Err(e) => return poisoned(e).into_response(),
+    };
+    let (name, bytes) = if job.running {
+        ("downloading", 0)
+    } else {
+        match status(state_dir, &cells) {
+            DetailStatus::Ready { bytes, stale } => (if stale { "stale" } else { "ready" }, bytes),
+            DetailStatus::Absent if job.error.is_some() => ("failed", 0),
+            DetailStatus::Absent => ("absent", 0),
+        }
+    };
+    json_response(
+        serde_json::json!({
+            "enabled": true,
+            "state": name,
+            "bytes": bytes,
+            "cells": cells.len(),
+            "done": job.done,
+            "total": job.total,
+            "error": job.error,
+        })
+        .to_string(),
+    )
+}
+
+/// `POST /api/basemap/detail/plan`: how many bytes the cut would download.
+/// Reads the source's directories for the cells, so it already tells the
+/// host which areas are wanted; the map asks only after the user clicks.
+async fn handle_detail_plan(State(state): State<Arc<AppState>>) -> Response {
+    if !street_detail_on(&state) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let cells = match detail_cells(&state) {
+        Ok(cells) => cells,
+        Err(code) => return code.into_response(),
+    };
+    let count = cells.len();
+    let planned = tokio::task::spawn_blocking(move || {
+        let source =
+            videre_core::basemap_detail::HttpSource::new(videre_core::basemap_detail::SOURCE_URL);
+        videre_core::basemap_detail::plan(&source, cells).map(|p| p.bytes)
+    })
+    .await;
+    match planned {
+        Ok(Ok(bytes)) => {
+            json_response(serde_json::json!({ "cells": count, "bytes": bytes }).to_string())
+        }
+        Ok(Err(e)) => (StatusCode::BAD_GATEWAY, format!("{e:#}")).into_response(),
+        Err(e) => internal(e).into_response(),
+    }
+}
+
+/// `POST /api/basemap/detail/ensure`: start the cut in the background (fonts
+/// first, then the tiles), returning at once; the map polls the status.
+async fn handle_detail_ensure(State(state): State<Arc<AppState>>) -> Response {
+    if !street_detail_on(&state) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let cells = match detail_cells(&state) {
+        Ok(cells) => cells,
+        Err(code) => return code.into_response(),
+    };
+    let started = match state.detail_job.lock() {
+        Ok(mut job) if !job.running => {
+            *job = DetailJob {
+                running: true,
+                ..DetailJob::default()
+            };
+            true
+        }
+        Ok(_) => false,
+        Err(e) => return poisoned(e).into_response(),
+    };
+    if !started {
+        return handle_detail_status(State(state)).await;
+    }
+    let job = state.detail_job.clone();
+    let geo = state.context.library.cache.geo.clone();
+    let state_dir = state.context.library.paths.state.clone();
+    tokio::task::spawn_blocking(move || {
+        let source =
+            videre_core::basemap_detail::HttpSource::new(videre_core::basemap_detail::SOURCE_URL);
+        let result = videre_core::basemap_detail::ensure_fonts(&geo).and_then(|()| {
+            videre_core::basemap_detail::ensure(&state_dir, &source, cells, |done, total| {
+                if let Ok(mut job) = job.lock() {
+                    job.done = done;
+                    job.total = total;
+                }
+            })
+        });
+        if let Ok(mut job) = job.lock() {
+            job.running = false;
+            if let Err(e) = result {
+                tracing::error!("videre gallery: street map download failed: {e:#}");
+                job.error = Some(format!("{e:#}"));
+            }
+        }
+    });
+    handle_detail_status(State(state)).await
+}
+
+/// `GET /tiles/detail.pmtiles`: the library's street map, Range-capable like
+/// the world basemap. Absent, or not opted in, is 404.
+async fn handle_detail_tiles(
+    State(state): State<Arc<AppState>>,
+    request: Request<Body>,
+) -> Response {
+    let path = videre_core::basemap_detail::archive_path(&state.context.library.paths.state);
+    if !street_detail_on(&state) || !path.exists() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    match tower_http::services::ServeFile::new(&path)
+        .try_call(request)
+        .await
+    {
+        Ok(response) => response.map(Body::new),
+        Err(e) => internal(e).into_response(),
+    }
+}
+
+/// `GET /fonts/{stack}/{range}`: the glyph files the street names need,
+/// from the machine's shared cache. Only the one stack and its known ranges;
+/// anything else, including a path, is 404.
+async fn handle_fonts(
+    axum::extract::Path((stack, range)): axum::extract::Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+) -> Response {
+    use videre_core::basemap_detail::{fonts_dir, FONT_RANGES, FONT_STACK};
+    let Some(name) = range.strip_suffix(".pbf") else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if stack != FONT_STACK || !FONT_RANGES.contains(&name) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    match std::fs::read(fonts_dir(&state.context.library.cache.geo).join(&range)) {
+        Ok(bytes) => (
+            [(axum::http::header::CONTENT_TYPE, "application/x-protobuf")],
+            bytes,
+        )
+            .into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
 /// The year/month/day tree, as counts with one representative row per bucket.
 ///
 /// :warning: **A page of rows cannot build this.** Grouping 200 files by year
@@ -5096,6 +5447,7 @@ async fn serve_faces_async(
         context: opts.context.clone(),
         embedder: Mutex::new(None),
         basemap_downloading: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        detail_job: Arc::new(Mutex::new(DetailJob::default())),
         settings_lock: Arc::new(Mutex::new(())),
         settings_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     });
@@ -5141,6 +5493,11 @@ async fn serve_faces_async(
         .route("/tiles/basemap.pmtiles", get(handle_basemap_tiles))
         .route("/api/basemap/status", get(handle_basemap_status))
         .route("/api/basemap/ensure", post(handle_basemap_ensure))
+        .route("/api/basemap/detail", get(handle_detail_status))
+        .route("/api/basemap/detail/plan", post(handle_detail_plan))
+        .route("/api/basemap/detail/ensure", post(handle_detail_ensure))
+        .route("/tiles/detail.pmtiles", get(handle_detail_tiles))
+        .route("/fonts/{stack}/{range}", get(handle_fonts))
         .route("/api/processing", get(handle_processing))
         .route("/vendor/{version}/{asset}", get(handle_vendor_asset))
         // people
@@ -5412,6 +5769,7 @@ mod thumbnail_tests {
             context,
             embedder: Mutex::new(None),
             basemap_downloading: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            detail_job: Arc::new(Mutex::new(DetailJob::default())),
             settings_lock: Arc::new(Mutex::new(())),
             settings_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
