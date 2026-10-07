@@ -255,10 +255,18 @@ const RESUME_MAX: usize = 2048;
 /// detour, not a place to come back to.
 const NOT_RESUMABLE: &[&str] = &["/api/", "/tiles/", "/vendor/"];
 
-/// Whether face learning runs for this library (`faces.learning`). Read from
-/// disk on each call, so a hand edit applies without a restart.
-pub(crate) fn face_learning_enabled(state_dir: &Path) -> bool {
-    snapshot(&path(state_dir)).effective["faces"]["learning"].as_bool() == Some(true)
+/// The effective settings the server works from, read when a page renders
+/// or the settings are saved, never on every request. A hand edit applies on
+/// the next page load.
+pub(crate) type Remembered = std::sync::Arc<std::sync::RwLock<Value>>;
+
+pub(crate) fn remember(state_dir: &Path) -> Remembered {
+    std::sync::Arc::new(std::sync::RwLock::new(snapshot(&path(state_dir)).effective))
+}
+
+/// Whether face learning runs for this library (`faces.learning`).
+pub(crate) fn face_learning_on(effective: &Value) -> bool {
+    effective["faces"]["learning"].as_bool() == Some(true)
 }
 
 /// The route to reopen the gallery at: the saved one when it is a safe local
@@ -451,11 +459,12 @@ mod tests {
     fn face_learning_is_off_unless_set_true() {
         let dir = tempfile::tempdir().unwrap();
         let p = path(dir.path());
-        assert!(!face_learning_enabled(dir.path()));
+        let on = || face_learning_on(&snapshot(&p).effective);
+        assert!(!on());
         std::fs::write(&p, r#"{"faces":{"learning":true}}"#).unwrap();
-        assert!(face_learning_enabled(dir.path()));
+        assert!(on());
         std::fs::write(&p, r#"{"faces":{"learning":"yes"}}"#).unwrap();
-        assert!(!face_learning_enabled(dir.path()));
+        assert!(!on());
     }
 
     #[test]

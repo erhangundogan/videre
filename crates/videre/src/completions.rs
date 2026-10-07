@@ -578,7 +578,9 @@ fn config_values_for(key: &str, in_library: &[String]) -> Vec<(String, Option<St
         "xmp" => fixed(&videre_core::marks::XmpPrecedence::ALL.map(|p| p.as_str())),
         "log-level" => fixed(&videre_core::library_config::LogLevel::ALL.map(|l| l.as_str())),
         "log-format" => fixed(&videre_core::library_config::LogFormat::ALL.map(|f| f.as_str())),
-        "export-xmp-on-watch" | "gallery-starts-watch" => fixed(&["true", "false"]),
+        "export-xmp-on-watch" | "gallery-starts-watch" | "street-detail" => {
+            fixed(&["true", "false"])
+        }
         _ => Vec::new(),
     }
 }

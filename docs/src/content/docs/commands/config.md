@@ -41,6 +41,8 @@ read-rate:     20 MB/s (default)
 io-workers:    40 (default)
 xmp:           db
 export-xmp-on-watch: off
+gallery-starts-watch: on
+street-detail: off
 watch-debounce-ms: 1500 ms (default)
 watch-bulk-threshold: 1000 files (default)
 watch-bulk-quiet-ms: 30000 ms (default)
@@ -77,6 +79,7 @@ similar-min-score: none (default)
 | `log-max-age-days` | Age after which a rotated log file is deleted |
 | `search-min-match` | The least match a text search keeps; 0 keeps every match |
 | `similar-min-score` | The least similarity an image search keeps |
+| `street-detail` | Whether the map may download street detail for your places |
 
 Showing config creates nothing. Setting a value may create
 `.videre/config.toml`, but it does not create the database. `scan` and `watch`
@@ -102,6 +105,7 @@ are responsible for initializing a library database.
 | `log-max-age-days` | `log_max_age_days` | A positive whole number of days (default 30) |
 | `search-min-match` | `search_min_match` | A match probability from 0 to 1 (default 0, every match); [search](/commands/search/) drops weaker text matches. On short queries a floor can hide real matches |
 | `similar-min-score` | `similar_min_score` | A similarity from -1 to 1, or unset (the default) to keep every result of an image search or **Similar** |
+| `street-detail` | `street_detail` | `false` (default) or `true`; see [street detail](/commands/gallery/#street-detail). Turning it off deletes the downloaded street map |
 
 Storage cannot be redirected. `db` and `jsonl` are fixed declarations and
 must remain `hashes.db` and `hashes.jsonl`. The removed global `path` and `db`

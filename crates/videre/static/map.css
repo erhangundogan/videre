@@ -22,7 +22,15 @@
 .map-marker:hover{background:#3f3f46;border-color:#60a5fa}
 .map-marker.active{background:#2563eb;border-color:#93c5fd;color:#fff}
 .map-marker-count{margin-left:5px;color:#a1a1aa;font-size:11px}
+.map-marker.count-only{min-width:44px;text-align:center}
+.map-marker.count-only .map-marker-count{margin-left:0;color:inherit;font-size:12px}
 .map-marker.active .map-marker-count{color:#dbeafe}
 .map-controls{position:absolute;top:12px;right:12px;display:flex;gap:6px;z-index:3}
+.map-detail-offer{position:absolute;top:52px;right:12px;z-index:4;max-width:320px;padding:12px 14px;border:1px solid #3f3f46;border-radius:10px;background:rgba(24,24,27,.95);color:#f4f4f5;font-size:13px;line-height:1.4;box-shadow:0 4px 18px rgba(0,0,0,.4)}
+.map-detail-offer p{margin:0 0 8px}
+.map-detail-offer .map-detail-note{color:#a1a1aa;font-size:12px}
+.map-detail-actions{display:flex;justify-content:flex-end;gap:8px}
+.map-detail-actions button{padding:5px 12px}
+.map-detail-actions .primary{background:#2563eb;border-color:#2563eb;color:#fff}
 .map-controls button{min-width:34px;height:32px;padding:4px 10px;background:rgba(24,24,27,.92);border-color:#3f3f46;color:#f4f4f5;font-weight:600}
 .map-controls button:hover{background:#27272a;border-color:#60a5fa}

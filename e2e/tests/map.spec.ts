@@ -1,4 +1,4 @@
-import { copyFileSync, mkdirSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, openLibraryDb, preferListView, test } from "../support/gallery";
@@ -293,6 +293,226 @@ test("zooming out to the world clears a MapLibre selection", async ({ page, gall
   await expect(page).toHaveURL(`${gallery.baseURL}/map`);
   await expect(page.locator("#map-breadcrumb")).toBeHidden();
   await expect(page.locator("#gallery .card")).toHaveCount(3);
+});
+
+// All three files in one Berlin cluster: two in Mitte about 100 m apart, the
+// clip in Kreuzberg 2.4 km south.
+function seedDistricts(libraryRoot: string): void {
+  const db = openLibraryDb(libraryRoot);
+  const files = db.prepare("SELECT path FROM file_hashes ORDER BY path").all() as Array<{ path: string }>;
+  const path = (suffix: string) => files.find((file) => file.path.endsWith(suffix))!.path;
+  db.exec(
+    "UPDATE file_hashes SET location_cluster_id = NULL, gps_lat = NULL, gps_lon = NULL, location_name = NULL;" +
+    "DELETE FROM location_clusters;" +
+    "INSERT INTO location_clusters " +
+      "(id, centroid_lat, centroid_lon, name, photo_count, radius_km, created_at) VALUES " +
+      "(1, 52.513, 13.405, 'Berlin', 3, 15.0, CURRENT_TIMESTAMP);"
+  );
+  const place = db.prepare(
+    "UPDATE file_hashes SET location_cluster_id = 1, gps_lat = ?, gps_lon = ?, location_name = ? WHERE path = ?"
+  );
+  place.run(52.52, 13.405, "Mitte, DE", path("first.jpg"));
+  place.run(52.521, 13.406, "Mitte, DE", path("second.jpg"));
+  place.run(52.499, 13.403, "Kreuzberg, DE", path("clip.mp4"));
+  db.close();
+}
+
+async function jumpTo(page: import("@playwright/test").Page, lat: number, lon: number, zoom: number) {
+  await page.evaluate(
+    ([lat, lon, zoom]) => {
+      const map = (window as unknown as { videreMap: { jumpTo(o: object): void } }).videreMap;
+      map.jumpTo({ center: [lon, lat], zoom });
+    },
+    [lat, lon, zoom]
+  );
+}
+
+test("zooming into a city splits it into districts, then street groups", async ({ page, gallery }) => {
+  test.slow();
+  seedDistricts(gallery.libraryRoot);
+  seedBasemap(gallery.libraryRoot);
+  await preferListView(gallery);
+  await page.goto(`${gallery.baseURL}/map`);
+
+  const webgl = await page.evaluate(() => {
+    try {
+      const probe = document.createElement("canvas");
+      return !!(probe.getContext("webgl2") || probe.getContext("webgl"));
+    } catch {
+      return false;
+    }
+  });
+  test.skip(!webgl, "no working WebGL in this browser");
+  await page.waitForFunction(
+    () => (window as unknown as { maplibreInitialized?: boolean }).maplibreInitialized === true,
+    null,
+    { timeout: 15_000 }
+  );
+
+  // Districts: one chip per place name, counted, and no city-wide chip.
+  await jumpTo(page, 52.51, 13.405, 12);
+  const districts = page.locator('.map-marker[data-tier="district"]');
+  await expect(districts).toHaveCount(2);
+  await expect(page.locator('.map-marker[data-name="Mitte"]')).toContainText("2");
+  await expect(page.locator('.map-marker[data-name="Kreuzberg"]')).toContainText("1");
+  await expect(page.locator('.map-marker[data-name="Berlin"]')).toHaveCount(0);
+
+  // A district is selected exactly, and is addressable.
+  await page.locator('.map-marker[data-name="Mitte"]').click();
+  await expect(page.locator("#gallery .card")).toHaveCount(2);
+  await expect(page).toHaveURL(/\/map\/location\/berlin\?place=Mitte/);
+  await expect(page.locator("#map-breadcrumb")).toHaveText("Berlin › Mitte");
+  await expect(page.locator("#map-radius-group")).toBeHidden();
+
+  await page.reload();
+  await expect(page.locator("#gallery .card")).toHaveCount(2);
+  await expect(page.locator("#map-breadcrumb")).toHaveText("Berlin › Mitte");
+
+  // The reloaded map flies to the district it names, its chip marked active.
+  await expect(page.locator('.map-marker.active[data-name="Mitte"]')).toBeVisible({ timeout: 15_000 });
+
+  // Streets: count-only chips, each selecting a small circle.
+  await jumpTo(page, 52.5205, 13.4055, 16);
+  const streets = page.locator('.map-marker[data-tier="street"]');
+  await expect(streets).toHaveCount(2);
+  await streets.first().click();
+  await expect(page).toHaveURL(/\/map\/location\/berlin\?at=/);
+  await expect(page.locator("#gallery .card")).toHaveCount(1);
+  await expect(page.locator("#map-radius-group")).toBeVisible();
+
+  // Zooming out past the street tier drops the street selection.
+  await jumpTo(page, 52.51, 13.405, 9);
+  await expect(page.locator("#map-breadcrumb")).toBeHidden();
+  await expect(page.locator("#gallery .card")).toHaveCount(3);
+});
+
+// Sets street detail in the config file, as `videre config set street-detail`
+// would. The library is shared by a worker's tests, so the key is replaced,
+// never appended twice (a duplicate key makes the whole config unreadable),
+// and every street-detail test turns it off again afterwards.
+function setStreetDetail(libraryRoot: string, on: boolean): void {
+  const config = join(libraryRoot, ".videre", "config.toml");
+  const kept = (existsSync(config) ? readFileSync(config, "utf8") : "")
+    .split("\n")
+    .filter((line) => !line.startsWith("street_detail"))
+    .join("\n");
+  writeFileSync(config, kept.replace(/\n*$/, "\n") + (on ? "street_detail = true\n" : ""));
+  if (!on) {
+    for (const name of ["detail.pmtiles", "detail.json"]) {
+      rmSync(join(libraryRoot, ".videre", "basemap", name), { force: true });
+    }
+  }
+}
+
+async function mapReady(page: import("@playwright/test").Page): Promise<boolean> {
+  const webgl = await page.evaluate(() => {
+    try {
+      const probe = document.createElement("canvas");
+      return !!(probe.getContext("webgl2") || probe.getContext("webgl"));
+    } catch {
+      return false;
+    }
+  });
+  if (!webgl) return false;
+  await page.waitForFunction(
+    () => (window as unknown as { maplibreInitialized?: boolean }).maplibreInitialized === true,
+    null,
+    { timeout: 15_000 }
+  );
+  return true;
+}
+
+test.describe("street detail", () => {
+test.afterEach(({ gallery }) => setStreetDetail(gallery.libraryRoot, false));
+
+test("street detail stays hidden until the library opts in, then is offered", async ({ page, gallery }) => {
+  seedDistricts(gallery.libraryRoot);
+  seedBasemap(gallery.libraryRoot);
+  await preferListView(gallery);
+  const asked: string[] = [];
+  page.on("request", (r) => {
+    if (r.url().includes("/api/basemap/detail")) asked.push(r.url());
+  });
+  await page.goto(`${gallery.baseURL}/map`);
+  test.skip(!(await mapReady(page)), "no working WebGL in this browser");
+  // Read once as the page rendered; off, the map never asks.
+  expect(await page.evaluate(() => (window as unknown as { STREET_DETAIL: boolean }).STREET_DETAIL)).toBe(false);
+  await expect(page.locator("#map-detail")).toBeHidden();
+  expect(asked).toEqual([]);
+
+  setStreetDetail(gallery.libraryRoot, true);
+  await page.reload();
+  await mapReady(page);
+  // Offered, not started: asking the size is what contacts the host.
+  await expect(page.locator("#map-detail")).toBeVisible();
+  await expect(page.locator("#map-detail")).toHaveText("Street detail");
+});
+
+test("the download is confirmed in the map, never through a browser dialog", async ({ page, gallery }) => {
+  seedDistricts(gallery.libraryRoot);
+  seedBasemap(gallery.libraryRoot);
+  setStreetDetail(gallery.libraryRoot, true);
+  // Stand-ins for the host: the size check and the start, no network.
+  await page.route("**/api/basemap/detail/plan", (route) =>
+    route.fulfill({ json: { cells: 2, bytes: 391_000_000 } })
+  );
+  let started = 0;
+  await page.route("**/api/basemap/detail/ensure", (route) => {
+    started += 1;
+    route.fulfill({
+      json: { enabled: true, state: "downloading", done: 0, total: 0, cells: 2, bytes: 0, error: null },
+    });
+  });
+  page.on("dialog", () => {
+    throw new Error("the street map must not use a browser dialog");
+  });
+  await preferListView(gallery);
+  await page.goto(`${gallery.baseURL}/map`);
+  test.skip(!(await mapReady(page)), "no working WebGL in this browser");
+
+  await page.locator("#map-detail").click();
+  const offer = page.locator("#map-detail-offer");
+  await expect(offer).toBeVisible();
+  await expect(offer).toContainText("391 MB");
+  await expect(offer).toContainText("2 area(s)");
+  await page.locator("#map-detail-cancel").click();
+  await expect(offer).toBeHidden();
+  expect(started).toBe(0);
+
+  await page.locator("#map-detail").click();
+  await page.locator("#map-detail-start").click();
+  await expect(offer).toBeHidden();
+  expect(started).toBe(1);
+  await expect(page.locator("#map-detail")).toContainText("Street detail");
+  await expect(page.locator("#map-detail")).toBeDisabled();
+});
+
+test("a downloaded street map is drawn over the world basemap", async ({ page, gallery }) => {
+  seedDistricts(gallery.libraryRoot);
+  seedBasemap(gallery.libraryRoot);
+  setStreetDetail(gallery.libraryRoot, true);
+  // A stand-in archive covering the Berlin cell; the layers only need a
+  // source to attach to.
+  const dir = join(gallery.libraryRoot, ".videre", "basemap");
+  copyFileSync(join(FIXTURES, "basemap-tiny.pmtiles"), join(dir, "detail.pmtiles"));
+  writeFileSync(
+    join(dir, "detail.json"),
+    JSON.stringify({ cells: [{ lat: 52, lon: 13 }], etag: '"e"', bytes: 1 })
+  );
+  await preferListView(gallery);
+  await page.goto(`${gallery.baseURL}/map`);
+  test.skip(!(await mapReady(page)), "no working WebGL in this browser");
+
+  await page.waitForFunction(
+    () => {
+      const map = (window as unknown as { videreMap: { getLayer(id: string): unknown } }).videreMap;
+      return !!map.getLayer("detail-road-names") && !!map.getLayer("detail-roads-major");
+    },
+    null,
+    { timeout: 10_000 }
+  );
+  await expect(page.locator("#map-detail")).toBeHidden();
+});
 });
 
 test("a library that never clustered shows the shared empty state", async ({ page, gallery }) => {
