@@ -681,17 +681,81 @@ pub fn write(
             _ => ranges.push((offset, end, vec![(offset, length)])),
         }
     }
-    let mut done = 0u64;
+    // Fetched FETCHERS at a time and written in order. One request at a time
+    // is latency-bound: measured 2026-10-07, a 55 MB cell ran at about
+    // 250 KB/s sequentially, where the reference tool's parallel reads took
+    // 8 s. Workers stay within WINDOW ranges of the writer, so a slow early
+    // range never makes the rest pile up in memory.
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    const FETCHERS: usize = 8;
+    const WINDOW: usize = 4 * FETCHERS;
+    let next = AtomicUsize::new(0);
+    let written = AtomicUsize::new(0);
+    let abort = AtomicBool::new(false);
+    let (tx, rx) = std::sync::mpsc::channel::<(usize, Result<Vec<u8>>)>();
+    let data_offset = plan.header.data_offset;
     progress(0, data_length);
-    for (start, stop, members) in ranges {
-        let bytes = source.read(plan.header.data_offset + start, stop - start)?;
-        for (offset, length) in members {
-            let at = (offset - start) as usize;
-            file.write_all(&bytes[at..at + length as usize])?;
-            done += u64::from(length);
+    std::thread::scope(|scope| -> Result<()> {
+        for _ in 0..FETCHERS {
+            let tx = tx.clone();
+            let (next, written, abort, ranges) = (&next, &written, &abort, &ranges);
+            scope.spawn(move || loop {
+                let i = next.fetch_add(1, Ordering::SeqCst);
+                if i >= ranges.len() {
+                    break;
+                }
+                while i >= written.load(Ordering::SeqCst) + WINDOW {
+                    if abort.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                if abort.load(Ordering::SeqCst) {
+                    return;
+                }
+                let (start, stop, _) = &ranges[i];
+                let read = source.read(data_offset + start, stop - start);
+                if tx.send((i, read)).is_err() {
+                    return;
+                }
+            });
         }
-        progress(done, data_length);
-    }
+        drop(tx);
+        let mut pending: BTreeMap<usize, Vec<u8>> = BTreeMap::new();
+        let mut want = 0usize;
+        let mut done = 0u64;
+        for (i, read) in rx {
+            let bytes = match read {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    abort.store(true, Ordering::SeqCst);
+                    return Err(e);
+                }
+            };
+            pending.insert(i, bytes);
+            while let Some(bytes) = pending.remove(&want) {
+                let (start, _, members) = &ranges[want];
+                for &(offset, length) in members {
+                    let at = (offset - start) as usize;
+                    if let Err(e) = file.write_all(&bytes[at..at + length as usize]) {
+                        abort.store(true, Ordering::SeqCst);
+                        return Err(e.into());
+                    }
+                    done += u64::from(length);
+                }
+                want += 1;
+                written.store(want, Ordering::SeqCst);
+                progress(done, data_length);
+            }
+        }
+        if want != ranges.len() {
+            bail!(
+                "the street map download stopped after {want} of {} parts",
+                ranges.len()
+            );
+        }
+        Ok(())
+    })?;
     let file = file.into_inner().map_err(|e| e.into_error())?;
     file.sync_all()?;
     Ok(())
@@ -1030,6 +1094,54 @@ mod tests {
         write(&source, &plan, &out, |_, _| {}).unwrap();
         let header = Header::parse(&std::fs::read(&out).unwrap()).unwrap();
         assert_eq!(header.addressed_tiles, wanted.len() as u64);
+    }
+
+    /// Serves byte ranges, later ones faster, so parallel reads finish out of
+    /// order.
+    struct ShuffledSource(Vec<u8>);
+
+    impl RangeSource for ShuffledSource {
+        fn read(&self, offset: u64, length: u64) -> Result<Vec<u8>> {
+            let late = 40u64.saturating_sub(offset / (1 << 20));
+            std::thread::sleep(std::time::Duration::from_millis(late));
+            Ok(self.0[offset as usize..(offset + length) as usize].to_vec())
+        }
+        fn etag(&self) -> String {
+            String::new()
+        }
+    }
+
+    #[test]
+    fn parallel_reads_finishing_out_of_order_still_write_every_tile_in_place() {
+        // Forty 1 MiB tiles: five 8 MiB requests, the first answered last.
+        let mib = 1usize << 20;
+        let mut data = Vec::with_capacity(40 * mib);
+        let mut tiles = Vec::new();
+        for i in 0..40u64 {
+            tiles.push((100 + i, data.len() as u64, mib as u32));
+            data.extend(std::iter::repeat_n(i as u8, mib));
+        }
+        let plan = Plan {
+            cells: [Cell { lat: 52, lon: 13 }].into(),
+            tiles,
+            header: Header {
+                internal_compression: 2,
+                tile_compression: 2,
+                tile_type: 1,
+                ..Header::default()
+            },
+            metadata: compress(2, b"{}").unwrap(),
+            bytes: 40 * mib as u64,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("d.pmtiles");
+        write(&ShuffledSource(data), &plan, &out, |_, _| {}).unwrap();
+        let cut = std::fs::read(&out).unwrap();
+        let header = Header::parse(&cut).unwrap();
+        for i in 0..40usize {
+            let at = header.data_offset as usize + i * mib;
+            assert!(cut[at..at + mib].iter().all(|b| *b == i as u8), "tile {i}");
+        }
     }
 
     /// Against the real planet build: run by hand with `--ignored` to check
