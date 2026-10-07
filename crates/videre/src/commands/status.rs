@@ -110,14 +110,27 @@ fn run_text(args: &StatusArgs, ctx: &CommandContext) -> anyhow::Result<()> {
             .map(|d| videre_core::progress::human_duration_ms(d as u64))
             .unwrap_or_else(|| "-".to_string());
         let flag = if p.currently_running {
-            " (running now)"
+            " (running now)".to_string()
         } else {
-            ""
+            skipped_note(p.summary.as_deref())
         };
         println!(
             "  {:10} {:19} {:11} {:>10}{}",
             p.command, last_run, status, duration, flag
         );
+        // The runs before the latest, kept per `run-history`: the long ones
+        // are the ones worth seeing, and a later short run used to hide them.
+        for run in &p.history {
+            let duration = run
+                .duration_ms
+                .map(|d| videre_core::progress::human_duration_ms(d as u64))
+                .unwrap_or_else(|| "-".to_string());
+            let note = skipped_note(run.summary.as_deref());
+            println!(
+                "  {:10} {:19} {:11} {:>10}{}",
+                "", run.started_at, run.status, duration, note
+            );
+        }
     }
 
     println!();
@@ -262,4 +275,13 @@ fn run_json(ctx: &CommandContext) -> anyhow::Result<StatusJson> {
         schema_version: SCHEMA_VERSION,
         report,
     })
+}
+
+/// ` (13 file(s) skipped)` for a run that skipped files, else nothing: the
+/// one summary worth a column, since a failure's message is in the logs.
+fn skipped_note(summary: Option<&str>) -> String {
+    summary
+        .filter(|s| s.ends_with("skipped"))
+        .map(|s| format!(" ({s})"))
+        .unwrap_or_default()
 }

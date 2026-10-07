@@ -77,7 +77,23 @@ The last run of every tracked command, with its outcome:
 `crashed` is what a kill -9, a power loss, or an OOM kill looks like after the
 fact. `interrupted` is a clean stop, not a problem: nothing is lost, and
 rerunning resumes. Per-item errors (a few unreadable photos) do not make a run
-`failed`; only the command itself erroring does.
+`failed`; only the command itself erroring does. A run that skipped files says
+how many beside it.
+
+Under each command's line come its earlier runs, newest first, so a long run
+stays visible after a shorter one replaced it:
+
+```
+Pipeline status:
+  faces      2026-10-08 09:12:40 success          4m 2s
+             2026-10-07 06:53:47 success       2h 51m (13 file(s) skipped)
+             2026-10-06 22:07:25 interrupted      8m 4s
+```
+
+Three runs of each command are kept, the latest included; `videre config set
+run-history <n>` keeps between 1 and 100. A run that died is kept as `crashed`
+when the next run of that command starts. `--json` lists the earlier runs as
+`history` under each command.
 
 ## Watch
 

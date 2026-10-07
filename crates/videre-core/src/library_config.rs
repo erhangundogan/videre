@@ -151,7 +151,13 @@ pub struct LibraryConfig {
     /// `[-1, 1]`; absent keeps every ranked result. Image against image has
     /// no trained calibration, so this one is a cosine.
     pub similar_min_score: Option<f64>,
+    /// How many runs of each command `videre status` keeps, newest first
+    /// (`pipeline_runs::track_in_as`). At least 1.
+    pub run_history: u64,
 }
+
+/// `run_history` when absent: the latest run and the two before it.
+pub const RUN_HISTORY_DEFAULT: u64 = 3;
 
 /// `search_min_match` when absent: no floor, so a text search returns its best
 /// matches, each scored by its match probability.
@@ -186,6 +192,7 @@ impl Default for LibraryConfig {
             log_max_age_days: LOG_MAX_AGE_DAYS_DEFAULT,
             search_min_match: SEARCH_MIN_MATCH_DEFAULT,
             similar_min_score: None,
+            run_history: RUN_HISTORY_DEFAULT,
         }
     }
 }
@@ -229,6 +236,8 @@ pub enum ConfigKey {
     SearchMinMatch,
     /// `similar_min_score`, a number from -1 to 1, or absent.
     SimilarMinScore,
+    /// `run_history`, an integer from 1 through 100.
+    RunHistory,
 }
 
 impl ConfigKey {
@@ -251,6 +260,7 @@ impl ConfigKey {
             ConfigKey::LogMaxAgeDays => "log_max_age_days",
             ConfigKey::SearchMinMatch => "search_min_match",
             ConfigKey::SimilarMinScore => "similar_min_score",
+            ConfigKey::RunHistory => "run_history",
         }
     }
 }
@@ -413,6 +423,19 @@ fn io_workers_setting(table: &toml::Table, file: &Path) -> Result<Option<usize>>
     Ok(value.map(|n| n as usize))
 }
 
+/// Read `run_history`: absent (the default), or 1 through 100.
+fn run_history_setting(table: &toml::Table, file: &Path) -> Result<u64> {
+    let value = int_setting(table, file, "run_history", 1)?;
+    if let Some(n) = value {
+        anyhow::ensure!(
+            n <= 100,
+            "malformed config {}: run_history must be at most 100, got {n}",
+            file.display()
+        );
+    }
+    Ok(value.unwrap_or(RUN_HISTORY_DEFAULT))
+}
+
 /// Read `watch_debounce_ms`: absent, or a positive integer. Zero is rejected
 /// rather than clamped: a zero debounce window would fire a stage run per
 /// raw event, which is the storm coalescing exists to prevent.
@@ -500,6 +523,7 @@ fn config_from_table(table: &toml::Table, file: &Path) -> Result<LibraryConfig> 
         search_min_match: number_setting(table, file, "search_min_match", 0.0..=1.0)?
             .unwrap_or(SEARCH_MIN_MATCH_DEFAULT),
         similar_min_score: number_setting(table, file, "similar_min_score", -1.0..=1.0)?,
+        run_history: run_history_setting(table, file)?,
     })
 }
 
@@ -547,6 +571,7 @@ fn validate_value(key: ConfigKey, value: &toml::Value) -> Result<()> {
         (ConfigKey::Model, toml::Value::String(s)) => validate_model_id(s),
         (ConfigKey::ReadRate, toml::Value::Integer(n)) if *n > 0 => Ok(()),
         (ConfigKey::IoWorkers, toml::Value::Integer(n)) if (1..=256).contains(n) => Ok(()),
+        (ConfigKey::RunHistory, toml::Value::Integer(n)) if (1..=100).contains(n) => Ok(()),
         (ConfigKey::Xmp, toml::Value::String(s)) => XmpPrecedence::parse(s).map(|_| ()),
         (ConfigKey::ExportXmpOnWatch | ConfigKey::GalleryStartsWatch, toml::Value::Boolean(_)) => {
             Ok(())
@@ -591,6 +616,12 @@ fn validate_value(key: ConfigKey, value: &toml::Value) -> Result<()> {
         }
         (ConfigKey::IoWorkers, toml::Value::Integer(n)) => {
             bail!("max_io_workers must be from 1 to 256, got {n}")
+        }
+        (ConfigKey::RunHistory, toml::Value::Integer(n)) => {
+            bail!("run_history must be from 1 to 100, got {n}")
+        }
+        (ConfigKey::RunHistory, other) => {
+            bail!("run_history must be an integer, got {}", other.type_str())
         }
         (ConfigKey::WatchDebounceMs, toml::Value::Integer(n)) => {
             bail!("watch_debounce_ms must be greater than 0, got {n}")

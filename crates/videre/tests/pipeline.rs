@@ -217,6 +217,20 @@ fn a_stage_that_skipped_a_file_is_reported_not_failed() {
     let text = stdout_of(&out);
     assert!(text.contains("1 file(s) skipped"), "{text}");
     assert_eq!(mtime_year(&good), 2019, "the good file is still fixed");
+    // The run's record keeps the count: status shows it beside the run.
+    let status = lib.cmd().arg("status").output().unwrap();
+    let status = String::from_utf8_lossy(&status.stdout);
+    let line = status
+        .split("Pipeline status:")
+        .nth(1)
+        .unwrap()
+        .lines()
+        .find(|l| l.starts_with("  fix-dates"))
+        .unwrap();
+    assert!(
+        line.contains("success") && line.contains("(1 file(s) skipped)"),
+        "{line}"
+    );
 
     // Run alone, fix-dates still exits nonzero, as documented.
     let alone = lib.cmd().args(["fix-dates", "--yes"]).output().unwrap();
