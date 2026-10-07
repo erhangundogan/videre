@@ -285,6 +285,7 @@ mod street_detail_tests {
             let paths = &state.context.library.paths;
             std::fs::create_dir_all(&paths.state).unwrap();
             std::fs::write(&paths.config, "street_detail = true\n").unwrap();
+            refresh_street_detail(&state);
         }
         state
     }
@@ -302,12 +303,23 @@ mod street_detail_tests {
     }
 
     #[tokio::test]
-    async fn street_detail_is_off_by_default_and_a_leftover_map_is_deleted() {
+    async fn the_map_page_reads_the_setting_once_and_off_deletes_a_leftover_map() {
         let dir = tempfile::tempdir().unwrap();
         let state = library(dir.path(), false);
         let archive = plant(&state, r#"[{"lat":52,"lon":13}]"#);
         let paths = state.context.library.paths.clone();
-        let app = app(state);
+        let page = Router::new()
+            .route("/map", get(handle_map))
+            .with_state(state.clone());
+        let render = || async {
+            let response = page
+                .clone()
+                .oneshot(Request::builder().uri("/map").body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            String::from_utf8(body.to_vec()).unwrap()
+        };
 
         // An unreadable config is off, but keeps the map: a typo must not
         // delete a finished download.
@@ -317,16 +329,25 @@ mod street_detail_tests {
             "street_detail = true\nstreet_detail = true\n",
         )
         .unwrap();
-        let (_, v) = call(&app, "GET", "/api/basemap/detail").await;
-        assert_eq!(v["state"], "off");
+        assert!(render().await.contains("var STREET_DETAIL=false;"));
         assert!(archive.exists());
-        std::fs::remove_file(&paths.config).unwrap();
 
+        // On: the page says so, and the endpoints follow without reading the
+        // config again.
+        std::fs::write(&paths.config, "street_detail = true\n").unwrap();
+        assert!(render().await.contains("var STREET_DETAIL=true;"));
+        std::fs::remove_file(&paths.config).unwrap();
+        let app = app(state.clone());
+        let (_, v) = call(&app, "GET", "/api/basemap/detail").await;
+        assert_eq!(v["enabled"], true, "remembered from the page, not re-read");
+
+        // Explicitly off: the next page render deletes the map.
+        assert!(render().await.contains("var STREET_DETAIL=false;"));
+        assert!(!archive.exists(), "off means no street map on disk");
         let (status, v) = call(&app, "GET", "/api/basemap/detail").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(v["enabled"], false);
         assert_eq!(v["state"], "off");
-        assert!(!archive.exists(), "off means no street map on disk");
 
         for uri in ["/api/basemap/detail/plan", "/api/basemap/detail/ensure"] {
             let (status, _) = call(&app, "POST", uri).await;
@@ -440,6 +461,7 @@ mod location_cluster_tests {
             embedder: Mutex::new(None),
             basemap_downloading: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             detail_job: Arc::new(Mutex::new(DetailJob::default())),
+            street_detail: std::sync::atomic::AtomicBool::new(false),
             settings_lock: Arc::new(Mutex::new(())),
             settings_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
@@ -2365,6 +2387,9 @@ pub(crate) struct AppState {
     basemap_downloading: Arc<std::sync::atomic::AtomicBool>,
     /// The street-detail cut in flight, if any, and its progress.
     pub(super) detail_job: Arc<Mutex<DetailJob>>,
+    /// The library's `street_detail` setting as last read, at startup and
+    /// then each time the map page renders.
+    pub(super) street_detail: std::sync::atomic::AtomicBool,
     /// Serializes read-modify-write of `.videre/gallery.json`, so two saves
     /// from two tabs cannot interleave and drop one of them.
     pub(super) settings_lock: Arc<Mutex<()>>,
@@ -2602,9 +2627,11 @@ fn render_map(
         let conn = state.conn.lock().unwrap();
         query_embedded_count(&conn, &state.model_id).is_some_and(|n| n > 0)
     };
+    let street_detail = refresh_street_detail(state);
     let globals = format!(
         "var LIVE_SERVER=true;\nvar HAS_EMBEDDINGS={};\nvar VIDEO_POSTERS={};\n\
-         var GVIEW=\"all\";\nvar PEOPLE_ROOT=\"/people\";\nvar GDATE=null;\nvar GLOC={location_json};\nvar GROUPS=[];",
+         var GVIEW=\"all\";\nvar PEOPLE_ROOT=\"/people\";\nvar GDATE=null;\nvar GLOC={location_json};\nvar GROUPS=[];\n\
+         var STREET_DETAIL={street_detail};",
         has_embeddings,
         cfg!(target_os = "macos")
     );
@@ -3956,13 +3983,31 @@ pub(super) struct DetailJob {
     error: Option<String>,
 }
 
-/// Whether this library opted into street detail, read from its config on
-/// every call so `videre config set street-detail` takes effect without a
-/// restart. An unreadable config is off.
+/// Whether this library opted into street detail, as last read when the map
+/// page rendered (`refresh_street_detail`). The endpoints never read the
+/// config themselves.
 fn street_detail_on(state: &AppState) -> bool {
-    videre_core::library_config::load(&state.context.library.paths)
-        .map(|c| c.street_detail)
-        .unwrap_or(false)
+    state
+        .street_detail
+        .load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Reads `street_detail` once, when the map page renders, and remembers it
+/// for the endpoints. An explicit off deletes any street map left on disk, so
+/// the setting and the disk agree even after a hand edit; an unreadable config
+/// is off but keeps the map, so a typo never costs a finished download.
+fn refresh_street_detail(state: &AppState) -> bool {
+    let loaded = videre_core::library_config::load(&state.context.library.paths);
+    let on = loaded.as_ref().is_ok_and(|c| c.street_detail);
+    if loaded.is_ok() && !on {
+        if let Err(e) = videre_core::basemap_detail::remove(&state.context.library.paths.state) {
+            tracing::error!("videre gallery: removing the street map failed: {e:#}");
+        }
+    }
+    state
+        .street_detail
+        .store(on, std::sync::atomic::Ordering::Relaxed);
+    on
 }
 
 fn detail_cells(
@@ -3973,23 +4018,13 @@ fn detail_cells(
     Ok(videre_core::basemap_detail::cells_for(&places))
 }
 
-/// `GET /api/basemap/detail`: `off` when the library has not opted in (and
-/// any street map left on disk is deleted, so the setting and the disk agree
-/// even after a hand edit), else `absent`, `downloading`, `ready`, `stale`
-/// (places outside the cut) or `failed`.
+/// `GET /api/basemap/detail`: `off` when the library has not opted in, else
+/// `absent`, `downloading`, `ready`, `stale` (places outside the cut) or
+/// `failed`. The map calls it only when its page said street detail is on.
 async fn handle_detail_status(State(state): State<Arc<AppState>>) -> Response {
-    use videre_core::basemap_detail::{remove, status, DetailStatus};
+    use videre_core::basemap_detail::{status, DetailStatus};
     let state_dir = &state.context.library.paths.state;
     if !street_detail_on(&state) {
-        // Only a config that reads and says off deletes the map: a typo that
-        // leaves the file unreadable must not cost a finished download.
-        let explicitly_off = videre_core::library_config::load(&state.context.library.paths)
-            .is_ok_and(|c| !c.street_detail);
-        if explicitly_off {
-            if let Err(e) = remove(state_dir) {
-                return internal(e).into_response();
-            }
-        }
         return json_response(r#"{"enabled":false,"state":"off"}"#.to_string());
     }
     let cells = match detail_cells(&state) {
@@ -5468,6 +5503,9 @@ async fn serve_faces_async(
         embedder: Mutex::new(None),
         basemap_downloading: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         detail_job: Arc::new(Mutex::new(DetailJob::default())),
+        street_detail: std::sync::atomic::AtomicBool::new(
+            opts.context.library.settings.street_detail,
+        ),
         settings_lock: Arc::new(Mutex::new(())),
         settings_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     });
@@ -5790,6 +5828,7 @@ mod thumbnail_tests {
             embedder: Mutex::new(None),
             basemap_downloading: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             detail_job: Arc::new(Mutex::new(DetailJob::default())),
+            street_detail: std::sync::atomic::AtomicBool::new(false),
             settings_lock: Arc::new(Mutex::new(())),
             settings_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })

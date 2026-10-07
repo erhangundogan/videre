@@ -800,7 +800,9 @@
         // only needs to catch up to the current state now that it can render.
         syncMapToState();
         pollBasemap();
-        pollDetail();
+        // Read once by the server when this page rendered; a library that has
+        // not opted in never asks.
+        if (typeof STREET_DETAIL !== 'undefined' && STREET_DETAIL) pollDetail();
       });
       map.on('move', updateMarkers);
       map.on('moveend', function () { programmaticView = false; });
