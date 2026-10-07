@@ -72,7 +72,7 @@ make fmt                       # not bare `cargo fmt`; see below
 cargo test --workspace
 ```
 
-One binary, `videre`, with twenty subcommands. `main.rs` dispatches to one
+One binary, `videre`, with twenty-one subcommands. `main.rs` dispatches to one
 module per subcommand under `src/commands/`.
 
 ### The Rust version is pinned, in one place
@@ -168,8 +168,9 @@ a module to a crate later is easy; demoting a published crate is not.
 `candle-core`/`candle-nn`/`candle-transformers` (SigLIP, Metal on macOS),
 `tokenizers`, `hf-hub`, `half`, `matrixmultiply` (GEMM candidate filter in face
 clustering), `ort` (ONNX Runtime for face models), `axum` + `tokio` (labeling
-server), `rmcp` + `schemars` (MCP), `ureq` (forward geocoding, the only network
-call).
+server), `askama` (gallery templates), `rmcp` + `schemars` (MCP),
+`reverse_geocoder` (offline place names from a bundled GeoNames extract),
+`tracing` (logging), `ureq` (forward geocoding, the only network call).
 
 Face models are InsightFace buffalo_l, fetched from `WePrompt/buffalo_l` into
 the Hugging Face hub cache (normally `~/.cache/huggingface/hub/`, with
@@ -216,7 +217,8 @@ failure never hides the other's, and `cargo test --no-fail-fast` so one failing
 test *binary* never hides the later ones. Both were learned the same way: a
 Linux-only failure in `videre-core`'s lib tests stopped the run before the
 `videre` integration tests, whose Linux result was then unknown rather than
-green. Nine tests are macOS-gated.
+green. Some tests are gated on `cfg(target_os = "macos")`, so a green Linux
+run says nothing about them.
 
 :warning: **`cargo fmt` has no per-file mode.** Arguments after `--` are rustfmt
 options, not a file filter, so `cargo fmt -p videre -- path/to/one.rs` silently
