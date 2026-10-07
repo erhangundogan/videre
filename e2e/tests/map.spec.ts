@@ -429,11 +429,16 @@ test("street detail stays hidden until the library opts in, then is offered", as
   seedDistricts(gallery.libraryRoot);
   seedBasemap(gallery.libraryRoot);
   await preferListView(gallery);
-  const asked = page.waitForResponse((r) => r.url().endsWith("/api/basemap/detail"));
+  const asked: string[] = [];
+  page.on("request", (r) => {
+    if (r.url().includes("/api/basemap/detail")) asked.push(r.url());
+  });
   await page.goto(`${gallery.baseURL}/map`);
   test.skip(!(await mapReady(page)), "no working WebGL in this browser");
-  expect(await (await asked).json()).toEqual({ enabled: false, state: "off" });
+  // Read once as the page rendered; off, the map never asks.
+  expect(await page.evaluate(() => (window as unknown as { STREET_DETAIL: boolean }).STREET_DETAIL)).toBe(false);
   await expect(page.locator("#map-detail")).toBeHidden();
+  expect(asked).toEqual([]);
 
   setStreetDetail(gallery.libraryRoot, true);
   await page.reload();

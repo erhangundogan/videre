@@ -441,6 +441,7 @@ mod location_cluster_tests {
             videre_core::library::LibraryContext::new(root, &root.join("cache"))
                 .expect("test library context should be valid"),
         );
+        let settings = crate::commands::gallery::settings::remember(&library.paths.state);
         let context = Arc::new(crate::command_context::CommandContext {
             library,
             invocation_dir: root.to_path_buf(),
@@ -462,6 +463,7 @@ mod location_cluster_tests {
             basemap_downloading: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             detail_job: Arc::new(Mutex::new(DetailJob::default())),
             street_detail: std::sync::atomic::AtomicBool::new(false),
+            settings,
             settings_lock: Arc::new(Mutex::new(())),
             settings_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
@@ -2144,8 +2146,12 @@ fn startup_url(addr: &str, state_dir: &Path) -> String {
 async fn page_settings(state: &AppState) -> String {
     let path = settings_file(state);
     let warned = state.settings_warned.clone();
+    let remembered = state.settings.clone();
     let rendered = tokio::task::spawn_blocking(move || {
         let snapshot = super::settings::snapshot(&path);
+        if let Ok(mut s) = remembered.write() {
+            *s = snapshot.effective.clone();
+        }
         if super::settings::should_warn(&warned, snapshot.error.as_deref()) {
             tracing::warn!(
                 "gallery settings not loaded, using defaults and saving nothing until it is fixed or deleted: {}",
@@ -2258,7 +2264,11 @@ async fn write_settings(
         change(&mut overrides);
         super::settings::prune_defaults(&mut overrides, &super::settings::defaults());
         match save(&path, &overrides) {
-            Ok(()) => Ok(settings_json(snapshot(&path))),
+            Ok(()) => {
+                let saved = snapshot(&path);
+                state.remember_settings(&saved.effective);
+                Ok(settings_json(saved))
+            }
             Err(SaveError::TooLarge) => Err(StatusCode::PAYLOAD_TOO_LARGE),
             Err(SaveError::Io(e)) => Err(internal(e.context("save gallery settings"))),
         }
@@ -2341,10 +2351,19 @@ struct MarkBody {
 }
 
 impl AppState {
-    /// Whether face learning is on for this library (`faces.learning`),
-    /// read from `gallery.json` on each call.
+    /// Whether face learning is on for this library (`faces.learning`), from
+    /// the settings as last read.
     pub(super) fn learning_enabled(&self) -> bool {
-        super::settings::face_learning_enabled(&self.context.library.paths.state)
+        self.settings
+            .read()
+            .is_ok_and(|s| super::settings::face_learning_on(&s))
+    }
+
+    /// Replace the remembered settings with what was just read from disk.
+    fn remember_settings(&self, effective: &serde_json::Value) {
+        if let Ok(mut s) = self.settings.write() {
+            *s = effective.clone();
+        }
     }
 
     /// Tell the learning worker a teaching mutation committed. Only while
@@ -2390,6 +2409,9 @@ pub(crate) struct AppState {
     /// The library's `street_detail` setting as last read, at startup and
     /// then each time the map page renders.
     pub(super) street_detail: std::sync::atomic::AtomicBool,
+    /// `gallery.json`'s effective settings as last read: at startup, when a
+    /// page renders, and when they are saved. Endpoints read this copy.
+    pub(super) settings: super::settings::Remembered,
     /// Serializes read-modify-write of `.videre/gallery.json`, so two saves
     /// from two tabs cannot interleave and drop one of them.
     pub(super) settings_lock: Arc<Mutex<()>>,
@@ -2979,13 +3001,15 @@ fn query_error_json(failure: QueryFailure) -> String {
     format!("{{\"error\":{},\"at\":{at}}}", json_str(&message))
 }
 
-/// The kinds the Duplicates page shows: `routes.duplicates.kinds`, read on
-/// each request so a change applies at once.
+/// The kinds the Duplicates page shows: `routes.duplicates.kinds`, from the
+/// settings as last read (the page render, or a save from the Kinds control).
 pub(super) fn duplicate_kinds(state: &AppState) -> Vec<videre::duplicates::Kind> {
     use videre::duplicates::Kind;
-    let effective =
-        super::settings::snapshot(&super::settings::path(&state.context.library.paths.state))
-            .effective;
+    let effective = state
+        .settings
+        .read()
+        .map(|s| s.clone())
+        .unwrap_or_else(|_| super::settings::defaults());
     let names: Vec<&str> = effective["routes"]["duplicates"]["kinds"]
         .as_array()
         .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
@@ -5469,15 +5493,20 @@ async fn serve_faces_async(
     // other's write rather than failing at once.
     conn.busy_timeout(super::learning::BUSY_TIMEOUT)?;
     let conn = Arc::new(Mutex::new(conn));
+    let settings = super::settings::remember(&opts.context.library.paths.state);
     let learning = if opts.serve_faces_ui {
         // Its own connection and thread: training never holds the one every
         // request shares.
         let engine = videre_core::db::open_wal(db)?;
         engine.busy_timeout(super::learning::BUSY_TIMEOUT)?;
-        let state_dir = opts.context.library.paths.state.clone();
+        let remembered = settings.clone();
         Some(super::learning::spawn(super::learning::LearningDeps {
             conn: engine,
-            enabled: Arc::new(move || super::settings::face_learning_enabled(&state_dir)),
+            enabled: Arc::new(move || {
+                remembered
+                    .read()
+                    .is_ok_and(|s| super::settings::face_learning_on(&s))
+            }),
             embedding_model_id: opts.model_id.clone(),
             config: videre_core::face_learning::TrainingConfig::default(),
             gates: videre_core::face_learning::PromotionGates::shipped(),
@@ -5506,6 +5535,7 @@ async fn serve_faces_async(
         street_detail: std::sync::atomic::AtomicBool::new(
             opts.context.library.settings.street_detail,
         ),
+        settings,
         settings_lock: Arc::new(Mutex::new(())),
         settings_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     });
@@ -5808,6 +5838,7 @@ mod thumbnail_tests {
             videre_core::library::LibraryContext::new(root, cache)
                 .expect("test library context should be valid"),
         );
+        let settings = crate::commands::gallery::settings::remember(&library.paths.state);
         let context = Arc::new(crate::command_context::CommandContext {
             library,
             invocation_dir: root.to_path_buf(),
@@ -5829,6 +5860,7 @@ mod thumbnail_tests {
             basemap_downloading: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             detail_job: Arc::new(Mutex::new(DetailJob::default())),
             street_detail: std::sync::atomic::AtomicBool::new(false),
+            settings,
             settings_lock: Arc::new(Mutex::new(())),
             settings_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
