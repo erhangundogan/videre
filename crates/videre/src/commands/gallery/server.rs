@@ -771,6 +771,76 @@ mod location_cluster_tests {
     }
 
     #[tokio::test]
+    async fn files_endpoint_selects_one_district_of_a_cluster_exactly() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+        state
+            .conn
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE file_hashes (
+                    path TEXT PRIMARY KEY, hash TEXT NOT NULL, size_bytes INTEGER,
+                    ext TEXT, created_at TEXT, modified_at TEXT, exif_date TEXT, capture_date TEXT,
+                    gps_lat REAL, gps_lon REAL, width INTEGER, height INTEGER,
+                    location_name TEXT, location_cluster_id INTEGER
+                );
+                INSERT INTO file_hashes
+                    (path, hash, size_bytes, ext, gps_lat, gps_lon, location_name, location_cluster_id)
+                VALUES
+                    ('/a.jpg', 'aaa', 1, 'jpg', 52.520, 13.405, 'Mitte, DE', 1),
+                    ('/b.jpg', 'bbb', 2, 'jpg', 52.521, 13.406, 'Mitte, DE', 1),
+                    ('/c.jpg', 'ccc', 3, 'jpg', 52.499, 13.403, 'Kreuzberg, DE', 1),
+                    ('/d.jpg', 'ddd', 4, 'jpg', 52.510, 13.390, NULL, 1),
+                    ('/e.jpg', 'eee', 5, 'jpg', 52.520, 13.405, 'Mitte, DE', 2);",
+            )
+            .unwrap();
+        let app = Router::new()
+            .route("/api/files", get(handle_files))
+            .with_state(state);
+        let get = |uri: &'static str| {
+            let app = app.clone();
+            async move {
+                let response = app
+                    .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+                let status = response.status();
+                let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+                let v: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+                (status, v)
+            }
+        };
+        let hashes = |v: &serde_json::Value| -> Vec<String> {
+            let mut h: Vec<String> = v["files"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|f| f["hash"].as_str().unwrap().to_string())
+                .collect();
+            h.sort();
+            h
+        };
+
+        let (status, v) = get("/api/files?view=all&cluster=1&place=Mitte%2C%20DE").await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        assert_eq!(v["total"], 2);
+        assert_eq!(hashes(&v), ["aaa", "bbb"]);
+
+        let (_, v) = get("/api/files?view=all&cluster=1&place=").await;
+        assert_eq!(hashes(&v), ["ddd"]);
+
+        for uri in [
+            "/api/files?view=all&place=Mitte",
+            "/api/files?view=all&cluster=1",
+            "/api/files?view=all&cluster=1&place=Mitte&lat=52.52&lon=13.405&radius=2",
+        ] {
+            let (status, _) = get(uri).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}");
+        }
+    }
+
+    #[tokio::test]
     async fn date_view_ignores_proximity_parameters() {
         let dir = tempfile::tempdir().unwrap();
         let state = gallery_state(dir.path());
@@ -4488,6 +4558,11 @@ struct FilesQuery {
     lon: Option<f64>,
     /// Map drill-down radius in positive kilometers.
     radius: Option<f64>,
+    /// Map district: a location cluster id, given with `place`.
+    cluster: Option<i64>,
+    /// Map district: one `location_name` within `cluster`; empty selects the
+    /// cluster's files with no name yet.
+    place: Option<String>,
     /// Which field the files are ordered by: `date`, `name`, `size`,
     /// `rating`, `liked` or `type`. Unknown values fall back to the default,
     /// the same rule `view` follows.
@@ -4503,9 +4578,20 @@ struct FilesQuery {
 fn files_location_filter(
     query: &FilesQuery,
     view: &str,
-) -> Result<Option<LocationFilter>, StatusCode> {
+) -> Result<Option<LocationScope>, StatusCode> {
     if view == "date" {
         return Ok(None);
+    }
+    let circle = query.lat.is_some() || query.lon.is_some() || query.radius.is_some();
+    match (query.cluster, query.place.as_deref()) {
+        (None, None) => {}
+        (Some(cluster_id), Some(place)) if !circle => {
+            return Ok(Some(LocationScope::Place {
+                cluster_id,
+                name: (!place.is_empty()).then(|| place.to_string()),
+            }));
+        }
+        _ => return Err(StatusCode::BAD_REQUEST),
     }
     match (query.lat, query.lon, query.radius) {
         (None, None, None) => Ok(None),
@@ -4517,11 +4603,11 @@ fn files_location_filter(
                 && (-180.0..=180.0).contains(&lon)
                 && radius_km > 0.0 =>
         {
-            Ok(Some(LocationFilter {
+            Ok(Some(LocationScope::Circle(LocationFilter {
                 lat,
                 lon,
                 radius_km,
-            }))
+            })))
         }
         _ => Err(StatusCode::BAD_REQUEST),
     }

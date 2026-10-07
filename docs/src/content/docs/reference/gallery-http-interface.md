@@ -157,6 +157,8 @@ Returns a page of file rows. By default it lists all scanned paths.
 | `lat=<number>` | Center latitude for a `view=all` proximity filter |
 | `lon=<number>` | Center longitude for a `view=all` proximity filter |
 | `radius=<km>` | Positive radius in kilometers for a `view=all` proximity filter |
+| `cluster=<id>` | Location cluster for a `view=all` district filter, given with `place` |
+| `place=<name>` | One place name within `cluster`; empty means the cluster's files with no name yet |
 | `sort=<date\|name\|size\|rating\|liked\|type>` | Field the files are ordered by. Default `date`. Unknown values fall back to the default |
 | `dir=<asc\|desc>` | Sort direction. Default `desc`. `path` is always the final tie-break, so pages stay stable |
 | `q=<query>` | A [query](/reference/query-syntax/). Its filters narrow the page and `total`; its words do not filter |
@@ -165,6 +167,11 @@ Returns a page of file rows. By default it lists all scanned paths.
 GPS-bearing rows with the coordinate index, then applies exact great-circle
 distance, so the returned page and `total` describe the same circle. The date
 view ignores all three parameters and keeps its own one-row-per-hash behavior.
+
+`cluster` and `place` select one district of a city exactly: the cluster's
+files whose place name is `place`, the files the map's district marker counts.
+They go together, and not with `lat`, `lon` and `radius`; any other mix answers
+`400`.
 
 Every sort puts nulls last in both directions (undated files, unrated files),
 and appends `path` as the final tie-break, so two consecutive pages never
