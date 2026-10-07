@@ -729,6 +729,41 @@
         .catch(function () {});
     }
 
+    // The confirmation sits in the map rather than in window.confirm, which
+    // some embedded browsers dismiss without showing.
+    var detailOffer = document.createElement('div');
+    detailOffer.id = 'map-detail-offer';
+    detailOffer.className = 'map-detail-offer';
+    detailOffer.hidden = true;
+    wrapper.appendChild(detailOffer);
+
+    function offerDetail(plan) {
+      detailOffer.innerHTML =
+        '<p>Download about <b>' + escH(megabytes(plan.bytes)) + '</b> of street detail for ' +
+        escH(String(plan.cells)) + ' area(s) from Source Cooperative?</p>' +
+        '<p class="map-detail-note">The areas are 1\u00b0 squares around your places, so the ' +
+        'host learns roughly where your photos were taken, to within about 100 km.</p>' +
+        '<div class="map-detail-actions">' +
+        '<button type="button" id="map-detail-cancel">Cancel</button>' +
+        '<button type="button" id="map-detail-start" class="primary">Download</button></div>';
+      detailOffer.hidden = false;
+      detailBtn.textContent = 'Street detail';
+      document.getElementById('map-detail-cancel').addEventListener('click', function () {
+        detailOffer.hidden = true;
+        pollDetail();
+      });
+      document.getElementById('map-detail-start').addEventListener('click', function () {
+        detailOffer.hidden = true;
+        fetch('/api/basemap/detail/ensure', { method: 'POST' })
+          .then(function (response) { return response.json(); })
+          .then(showDetail)
+          .catch(function () {
+            detailBtn.disabled = false;
+            detailBtn.textContent = 'Retry street detail';
+          });
+      });
+    }
+
     detailBtn.addEventListener('click', function () {
       detailBtn.disabled = true;
       detailBtn.textContent = 'Checking size\u2026';
@@ -737,17 +772,7 @@
           if (!response.ok) throw new Error('size check failed');
           return response.json();
         })
-        .then(function (plan) {
-          var ok = window.confirm(
-            'Download about ' + megabytes(plan.bytes) + ' of street detail for ' +
-            plan.cells + ' area(s) from Source Cooperative?\n\n' +
-            'The areas are 1\u00b0 squares around your places, so the host learns ' +
-            'roughly where your photos were taken, to within about 100 km.');
-          if (!ok) { pollDetail(); return; }
-          return fetch('/api/basemap/detail/ensure', { method: 'POST' })
-            .then(function (response) { return response.json(); })
-            .then(showDetail);
-        })
+        .then(function (plan) { offerDetail(plan); })
         .catch(function () {
           detailBtn.disabled = false;
           detailBtn.textContent = 'Retry street detail';

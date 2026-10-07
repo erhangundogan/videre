@@ -448,6 +448,45 @@ test("street detail stays hidden until the library opts in, then is offered", as
   await expect(page.locator("#map-detail")).toHaveText("Street detail");
 });
 
+test("the download is confirmed in the map, never through a browser dialog", async ({ page, gallery }) => {
+  seedDistricts(gallery.libraryRoot);
+  seedBasemap(gallery.libraryRoot);
+  setStreetDetail(gallery.libraryRoot, true);
+  // Stand-ins for the host: the size check and the start, no network.
+  await page.route("**/api/basemap/detail/plan", (route) =>
+    route.fulfill({ json: { cells: 2, bytes: 391_000_000 } })
+  );
+  let started = 0;
+  await page.route("**/api/basemap/detail/ensure", (route) => {
+    started += 1;
+    route.fulfill({
+      json: { enabled: true, state: "downloading", done: 0, total: 0, cells: 2, bytes: 0, error: null },
+    });
+  });
+  page.on("dialog", () => {
+    throw new Error("the street map must not use a browser dialog");
+  });
+  await preferListView(gallery);
+  await page.goto(`${gallery.baseURL}/map`);
+  test.skip(!(await mapReady(page)), "no working WebGL in this browser");
+
+  await page.locator("#map-detail").click();
+  const offer = page.locator("#map-detail-offer");
+  await expect(offer).toBeVisible();
+  await expect(offer).toContainText("391 MB");
+  await expect(offer).toContainText("2 area(s)");
+  await page.locator("#map-detail-cancel").click();
+  await expect(offer).toBeHidden();
+  expect(started).toBe(0);
+
+  await page.locator("#map-detail").click();
+  await page.locator("#map-detail-start").click();
+  await expect(offer).toBeHidden();
+  expect(started).toBe(1);
+  await expect(page.locator("#map-detail")).toContainText("Street detail");
+  await expect(page.locator("#map-detail")).toBeDisabled();
+});
+
 test("a downloaded street map is drawn over the world basemap", async ({ page, gallery }) => {
   seedDistricts(gallery.libraryRoot);
   seedBasemap(gallery.libraryRoot);

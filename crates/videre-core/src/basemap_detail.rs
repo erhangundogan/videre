@@ -544,13 +544,49 @@ fn resolve(
             out.push((id, e.offset, e.length));
         }
     }
-    for (index, wanted) in leaves {
-        let e = &entries[index];
-        let bytes = source.read(header.leaf_offset + e.offset, u64::from(e.length))?;
+    // A library's cells touch many leaf directories; read them in parallel,
+    // as the tiles are, since one at a time is latency-bound.
+    let leaves: Vec<(usize, Vec<u64>)> = leaves.into_iter().collect();
+    let reads: Vec<(u64, u64)> = leaves
+        .iter()
+        .map(|(index, _)| {
+            let e = &entries[*index];
+            (header.leaf_offset + e.offset, u64::from(e.length))
+        })
+        .collect();
+    let fetched = read_all(source, &reads)?;
+    for ((_, wanted), bytes) in leaves.iter().zip(fetched) {
         let leaf = decode_dir(&decompress(header.internal_compression, &bytes)?)?;
-        resolve(source, header, &leaf, &wanted, depth + 1, out)?;
+        resolve(source, header, &leaf, wanted, depth + 1, out)?;
     }
     Ok(())
+}
+
+/// Reads every (offset, length), eight at a time, returned in order.
+fn read_all(source: &dyn RangeSource, reads: &[(u64, u64)]) -> Result<Vec<Vec<u8>>> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let next = AtomicUsize::new(0);
+    let results: Vec<std::sync::Mutex<Option<Result<Vec<u8>>>>> =
+        reads.iter().map(|_| std::sync::Mutex::new(None)).collect();
+    std::thread::scope(|scope| {
+        for _ in 0..8.min(reads.len()) {
+            scope.spawn(|| loop {
+                let i = next.fetch_add(1, Ordering::SeqCst);
+                let Some(&(offset, length)) = reads.get(i) else {
+                    break;
+                };
+                *results[i].lock().unwrap() = Some(source.read(offset, length));
+            });
+        }
+    });
+    results
+        .into_iter()
+        .map(|slot| {
+            slot.into_inner()
+                .unwrap()
+                .unwrap_or_else(|| bail!("unread range"))
+        })
+        .collect()
 }
 
 /// The output directories: everything in the root when it fits, otherwise
