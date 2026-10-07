@@ -306,7 +306,8 @@
     }
 
     // Visible files bucketed on a screen grid: a count per bucket at its mean,
-    // unnamed (no offline street data; the basemap names the streets).
+    // unnamed: videre has no offline street names, and the bundled basemap
+    // stops at zoom 8 with no roads.
     function streetSpecs() {
       var specs = [];
       clusters.forEach(function (cluster) {

@@ -217,7 +217,8 @@ marker with its count (Mitte, Kreuzberg, Prenzlauer Berg), from the place name
 exactly that district's photos, the breadcrumb reads **Berlin › Mitte**, and a
 city whose photos share one name keeps its single marker. Closer still, the
 photos in view group by where they were taken into small markers that show only
-a count, since street names come from the map itself; clicking one shows the
+a count (videre has no street names offline, and the map draws no streets at
+that zoom); clicking one shows the
 photos within a few hundred metres, with the radius control to widen it. Each
 step is addressable, and zooming back out past it clears it without leaving
 the view you zoomed to.
