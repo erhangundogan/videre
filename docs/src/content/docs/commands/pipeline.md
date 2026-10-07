@@ -40,6 +40,14 @@ and never rewrites what is already there. Two stages are opt-in:
 `prune` (which deletes stale rows) is never run by the pipeline; run
 [`videre prune`](/commands/prune/) yourself when you want it.
 
+A stage that finishes but has to skip some files, such as a photo QuickLook
+times out on or a date that cannot be parsed, still counts as done. The summary
+says how many, `+ faces 2h 51m (13 file(s) skipped)`, and `--json` gives
+`items_skipped` per stage. Faces tries a skipped photo again on the next run.
+Only a stage that could not do its work, such as a failed database write, is
+marked `!` and makes the pipeline exit nonzero. Run on its own, `faces` or
+`fix-dates` still exits nonzero after skipping a file, so a script notices.
+
 ## The cost gate
 
 `embed` and `classify` are the expensive stages: on a large library they can

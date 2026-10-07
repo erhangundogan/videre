@@ -13,9 +13,24 @@ pub struct Exit {
     /// The failure was already presented to the user (for example as JSON on
     /// stdout), so it is logged but not printed to stderr again.
     pub shown: bool,
+    /// The run finished; this many items could not be processed and were
+    /// reported as they happened. Run alone, the command still exits 1, so a
+    /// script sees it; `pipeline` counts the stage as done, not failed.
+    pub skipped: Option<usize>,
 }
 
 impl Exit {
+    /// A finished run that skipped `count` items (unreadable files, ones
+    /// that could not be written), each already reported. Exits 1.
+    pub fn skipped(count: usize) -> Self {
+        Self {
+            code: 1,
+            error: None,
+            shown: false,
+            skipped: Some(count),
+        }
+    }
+
     /// A deliberate status with no failure of its own behind it: a health
     /// check reporting a problem, or a run whose per-item failures were
     /// already reported as they happened. Nothing more is logged.
@@ -24,6 +39,7 @@ impl Exit {
             code,
             error: None,
             shown: false,
+            skipped: None,
         }
     }
 
@@ -33,6 +49,7 @@ impl Exit {
             code: 1,
             error: Some(error),
             shown: true,
+            skipped: None,
         }
     }
 }
