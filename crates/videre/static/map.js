@@ -125,9 +125,11 @@
     controls.innerHTML =
       '<button id="map-zoom-in" type="button" aria-label="Zoom in">+</button>' +
       '<button id="map-zoom-out" type="button" aria-label="Zoom out">&minus;</button>' +
-      '<button id="map-clear" type="button" disabled>Clear</button>';
+      '<button id="map-clear" type="button" disabled>Clear</button>' +
+      '<button id="map-detail" type="button" hidden>Street detail</button>';
     wrapper.appendChild(controls);
     var clearBtn = document.getElementById('map-clear');
+    var detailBtn = document.getElementById('map-detail');
 
     var attribution = document.createElement('div');
     attribution.id = 'map-attribution';
@@ -649,7 +651,12 @@
       (full.layers || []).forEach(function (layer) {
         if (layer.type === 'background') background = layer;
       });
-      return { version: 8, sources: {}, layers: background ? [background] : [] };
+      return {
+        version: 8,
+        glyphs: full.glyphs,
+        sources: {},
+        layers: background ? [background] : []
+      };
     }
 
     function addBasemapLayers() {
@@ -662,6 +669,90 @@
         if (layer.source === 'basemap') map.addLayer(layer, before);
       });
     }
+
+    // Street detail: roads, buildings and names for this library's places,
+    // a separate archive the library opts into (`videre config set
+    // street-detail true`). Drawn over the world basemap once it is ready.
+    function addDetailLayers() {
+      if (!map) return;
+      var full = window.BASEMAP_STYLE;
+      if (!full.sources || !full.sources.detail) return;
+      (full.layers || []).forEach(function (layer) {
+        if (layer.source === 'detail' && map.getLayer(layer.id)) map.removeLayer(layer.id);
+      });
+      if (map.getSource('detail')) map.removeSource('detail');
+      map.addSource('detail', full.sources.detail);
+      var before = map.getLayer('radius-ring') ? 'radius-ring' : undefined;
+      (full.layers || []).forEach(function (layer) {
+        if (layer.source === 'detail') map.addLayer(layer, before);
+      });
+    }
+
+    function megabytes(bytes) {
+      return Math.max(1, Math.round(bytes / 1e6)) + ' MB';
+    }
+
+    // The button reflects the status: hidden when the library has not opted
+    // in or the map is current, a percentage while downloading, and an offer
+    // otherwise. Asking the size already contacts the host, so only a click
+    // does it.
+    var detailShown = false;
+    function showDetail(status) {
+      if (!status.enabled || status.state === 'off') { detailBtn.hidden = true; return; }
+      if (status.state === 'ready' || status.state === 'stale') {
+        if (!detailShown) { addDetailLayers(); detailShown = true; }
+      }
+      if (status.state === 'ready') { detailBtn.hidden = true; return; }
+      detailBtn.hidden = false;
+      if (status.state === 'downloading') {
+        detailBtn.disabled = true;
+        detailBtn.textContent = status.total
+          ? 'Street detail ' + Math.floor(status.done * 100 / status.total) + '%'
+          : 'Street detail\u2026';
+        window.setTimeout(pollDetail, 1500);
+        return;
+      }
+      detailBtn.disabled = false;
+      detailBtn.textContent = status.state === 'stale' ? 'Update street detail'
+        : status.state === 'failed' ? 'Retry street detail' : 'Street detail';
+      if (status.error) detailBtn.title = status.error;
+    }
+
+    function pollDetail() {
+      fetch('/api/basemap/detail')
+        .then(function (response) { return response.json(); })
+        .then(function (status) {
+          // A finished update replaces the drawn archive.
+          if (status.state === 'ready' && detailBtn.disabled) detailShown = false;
+          showDetail(status);
+        })
+        .catch(function () {});
+    }
+
+    detailBtn.addEventListener('click', function () {
+      detailBtn.disabled = true;
+      detailBtn.textContent = 'Checking size\u2026';
+      fetch('/api/basemap/detail/plan', { method: 'POST' })
+        .then(function (response) {
+          if (!response.ok) throw new Error('size check failed');
+          return response.json();
+        })
+        .then(function (plan) {
+          var ok = window.confirm(
+            'Download about ' + megabytes(plan.bytes) + ' of street detail for ' +
+            plan.cells + ' area(s) from Source Cooperative?\n\n' +
+            'The areas are 1\u00b0 squares around your places, so the host learns ' +
+            'roughly where your photos were taken, to within about 100 km.');
+          if (!ok) { pollDetail(); return; }
+          return fetch('/api/basemap/detail/ensure', { method: 'POST' })
+            .then(function (response) { return response.json(); })
+            .then(showDetail);
+        })
+        .catch(function () {
+          detailBtn.disabled = false;
+          detailBtn.textContent = 'Retry street detail';
+        });
+    });
 
     // Poll the basemap status; attach the vector tiles once the archive is
     // ready, kicking the download once when it is not. Bounded and
@@ -709,6 +800,7 @@
         // only needs to catch up to the current state now that it can render.
         syncMapToState();
         pollBasemap();
+        pollDetail();
       });
       map.on('move', updateMarkers);
       map.on('moveend', function () { programmaticView = false; });

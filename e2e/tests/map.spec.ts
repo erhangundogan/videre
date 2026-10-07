@@ -1,4 +1,4 @@
-import { copyFileSync, mkdirSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, openLibraryDb, preferListView, test } from "../support/gallery";
@@ -384,6 +384,91 @@ test("zooming into a city splits it into districts, then street groups", async (
   await jumpTo(page, 52.51, 13.405, 9);
   await expect(page.locator("#map-breadcrumb")).toBeHidden();
   await expect(page.locator("#gallery .card")).toHaveCount(3);
+});
+
+// Sets street detail in the config file, as `videre config set street-detail`
+// would. The library is shared by a worker's tests, so the key is replaced,
+// never appended twice (a duplicate key makes the whole config unreadable),
+// and every street-detail test turns it off again afterwards.
+function setStreetDetail(libraryRoot: string, on: boolean): void {
+  const config = join(libraryRoot, ".videre", "config.toml");
+  const kept = (existsSync(config) ? readFileSync(config, "utf8") : "")
+    .split("\n")
+    .filter((line) => !line.startsWith("street_detail"))
+    .join("\n");
+  writeFileSync(config, kept.replace(/\n*$/, "\n") + (on ? "street_detail = true\n" : ""));
+  if (!on) {
+    for (const name of ["detail.pmtiles", "detail.json"]) {
+      rmSync(join(libraryRoot, ".videre", "basemap", name), { force: true });
+    }
+  }
+}
+
+async function mapReady(page: import("@playwright/test").Page): Promise<boolean> {
+  const webgl = await page.evaluate(() => {
+    try {
+      const probe = document.createElement("canvas");
+      return !!(probe.getContext("webgl2") || probe.getContext("webgl"));
+    } catch {
+      return false;
+    }
+  });
+  if (!webgl) return false;
+  await page.waitForFunction(
+    () => (window as unknown as { maplibreInitialized?: boolean }).maplibreInitialized === true,
+    null,
+    { timeout: 15_000 }
+  );
+  return true;
+}
+
+test.describe("street detail", () => {
+test.afterEach(({ gallery }) => setStreetDetail(gallery.libraryRoot, false));
+
+test("street detail stays hidden until the library opts in, then is offered", async ({ page, gallery }) => {
+  seedDistricts(gallery.libraryRoot);
+  seedBasemap(gallery.libraryRoot);
+  await preferListView(gallery);
+  const asked = page.waitForResponse((r) => r.url().endsWith("/api/basemap/detail"));
+  await page.goto(`${gallery.baseURL}/map`);
+  test.skip(!(await mapReady(page)), "no working WebGL in this browser");
+  expect(await (await asked).json()).toEqual({ enabled: false, state: "off" });
+  await expect(page.locator("#map-detail")).toBeHidden();
+
+  setStreetDetail(gallery.libraryRoot, true);
+  await page.reload();
+  await mapReady(page);
+  // Offered, not started: asking the size is what contacts the host.
+  await expect(page.locator("#map-detail")).toBeVisible();
+  await expect(page.locator("#map-detail")).toHaveText("Street detail");
+});
+
+test("a downloaded street map is drawn over the world basemap", async ({ page, gallery }) => {
+  seedDistricts(gallery.libraryRoot);
+  seedBasemap(gallery.libraryRoot);
+  setStreetDetail(gallery.libraryRoot, true);
+  // A stand-in archive covering the Berlin cell; the layers only need a
+  // source to attach to.
+  const dir = join(gallery.libraryRoot, ".videre", "basemap");
+  copyFileSync(join(FIXTURES, "basemap-tiny.pmtiles"), join(dir, "detail.pmtiles"));
+  writeFileSync(
+    join(dir, "detail.json"),
+    JSON.stringify({ cells: [{ lat: 52, lon: 13 }], etag: '"e"', bytes: 1 })
+  );
+  await preferListView(gallery);
+  await page.goto(`${gallery.baseURL}/map`);
+  test.skip(!(await mapReady(page)), "no working WebGL in this browser");
+
+  await page.waitForFunction(
+    () => {
+      const map = (window as unknown as { videreMap: { getLayer(id: string): unknown } }).videreMap;
+      return !!map.getLayer("detail-road-names") && !!map.getLayer("detail-roads-major");
+    },
+    null,
+    { timeout: 10_000 }
+  );
+  await expect(page.locator("#map-detail")).toBeHidden();
+});
 });
 
 test("a library that never clustered shows the shared empty state", async ({ page, gallery }) => {

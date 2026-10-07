@@ -306,7 +306,21 @@ mod street_detail_tests {
         let dir = tempfile::tempdir().unwrap();
         let state = library(dir.path(), false);
         let archive = plant(&state, r#"[{"lat":52,"lon":13}]"#);
+        let paths = state.context.library.paths.clone();
         let app = app(state);
+
+        // An unreadable config is off, but keeps the map: a typo must not
+        // delete a finished download.
+        std::fs::create_dir_all(&paths.state).unwrap();
+        std::fs::write(
+            &paths.config,
+            "street_detail = true\nstreet_detail = true\n",
+        )
+        .unwrap();
+        let (_, v) = call(&app, "GET", "/api/basemap/detail").await;
+        assert_eq!(v["state"], "off");
+        assert!(archive.exists());
+        std::fs::remove_file(&paths.config).unwrap();
 
         let (status, v) = call(&app, "GET", "/api/basemap/detail").await;
         assert_eq!(status, StatusCode::OK);
@@ -3967,8 +3981,14 @@ async fn handle_detail_status(State(state): State<Arc<AppState>>) -> Response {
     use videre_core::basemap_detail::{remove, status, DetailStatus};
     let state_dir = &state.context.library.paths.state;
     if !street_detail_on(&state) {
-        if let Err(e) = remove(state_dir) {
-            return internal(e).into_response();
+        // Only a config that reads and says off deletes the map: a typo that
+        // leaves the file unreadable must not cost a finished download.
+        let explicitly_off = videre_core::library_config::load(&state.context.library.paths)
+            .is_ok_and(|c| !c.street_detail);
+        if explicitly_off {
+            if let Err(e) = remove(state_dir) {
+                return internal(e).into_response();
+            }
         }
         return json_response(r#"{"enabled":false,"state":"off"}"#.to_string());
     }

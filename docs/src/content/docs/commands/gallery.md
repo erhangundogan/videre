@@ -217,11 +217,10 @@ marker with its count (Mitte, Kreuzberg, Prenzlauer Berg), from the place name
 exactly that district's photos, the breadcrumb reads **Berlin › Mitte**, and a
 city whose photos share one name keeps its single marker. Closer still, the
 photos in view group by where they were taken into small markers that show only
-a count (videre has no street names offline, and the map draws no streets at
-that zoom); clicking one shows the
-photos within a few hundred metres, with the radius control to widen it. Each
-step is addressable, and zooming back out past it clears it without leaving
-the view you zoomed to.
+a count; clicking one shows the photos within a few hundred metres, with the
+radius control to widen it. Each step is addressable, and zooming back out past
+it clears it without leaving the view you zoomed to. Streets and their names
+are drawn under these markers only with [street detail](#street-detail).
 
 The map renders real coastlines and borders with
 [MapLibre GL JS](https://maplibre.org) over an offline vector basemap built from
@@ -231,6 +230,38 @@ map. Your location clusters and every drill-down are drawn from the local
 library database, and once the basemap is present the view makes no outbound map
 or tile requests. On a machine without working WebGL the map falls back to a
 self-drawn plot with the same clusters, drill-down, and grid.
+
+### Street detail
+
+The world basemap stops at country level: land, water and borders, no roads.
+Street detail adds roads, buildings, parks, and street and district names
+around your own places, from zoom 9 down to single streets. It is **off by
+default**, because getting it tells a third party roughly where your photos
+were taken:
+
+```bash
+videre config set street-detail true
+```
+
+With it on, the map shows a **Street detail** button. Clicking it asks the size
+first and then, once you confirm, downloads the areas around your places from
+the OpenStreetMap map that Protomaps builds and
+[Source Cooperative](https://source.coop/protomaps/openstreetmap) hosts. What
+leaves your machine is which areas: whole 1° squares (about 111 × 70 km in
+central Europe) that contain your places, never a place's exact position, and
+nothing about the photos themselves. A library with 53 places across Europe and
+Asia needs around 1 GB; one city is around 50 MB. Street and place names use a
+font covering Latin scripts, so names in other scripts are not labelled.
+
+After that the map is offline again: the download lives in the library's
+`.videre/basemap/`, and browsing makes no requests. When new places appear
+outside the downloaded areas, the button offers **Update street detail**.
+
+```bash
+videre config set street-detail false
+```
+
+turns it off and deletes the downloaded map.
 
 The Events view currently finds travel trips, not ordinary local outings. It
 infers home from the place with the most assignable media in your library, then
