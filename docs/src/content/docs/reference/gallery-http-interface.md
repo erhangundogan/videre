@@ -157,6 +157,8 @@ Returns a page of file rows. By default it lists all scanned paths.
 | `lat=<number>` | Center latitude for a `view=all` proximity filter |
 | `lon=<number>` | Center longitude for a `view=all` proximity filter |
 | `radius=<km>` | Positive radius in kilometers for a `view=all` proximity filter |
+| `cluster=<id>` | Location cluster for a `view=all` district filter, given with `place` |
+| `place=<name>` | One place name within `cluster`; empty means the cluster's files with no name yet |
 | `sort=<date\|name\|size\|rating\|liked\|type>` | Field the files are ordered by. Default `date`. Unknown values fall back to the default |
 | `dir=<asc\|desc>` | Sort direction. Default `desc`. `path` is always the final tie-break, so pages stay stable |
 | `q=<query>` | A [query](/reference/query-syntax/). Its filters narrow the page and `total`; its words do not filter |
@@ -165,6 +167,11 @@ Returns a page of file rows. By default it lists all scanned paths.
 GPS-bearing rows with the coordinate index, then applies exact great-circle
 distance, so the returned page and `total` describe the same circle. The date
 view ignores all three parameters and keeps its own one-row-per-hash behavior.
+
+`cluster` and `place` select one district of a city exactly: the cluster's
+files whose place name is `place`, the files the map's district marker counts.
+They go together, and not with `lat`, `lon` and `radius`; any other mix answers
+`400`.
 
 Every sort puts nulls last in both directions (undated files, unrated files),
 and appends `path` as the final tie-break, so two consecutive pages never
@@ -643,6 +650,66 @@ curl "http://127.0.0.1:7878/api/location-clusters"
 
 `route_name` is the normalized addressable identity used under
 `/map/location/{name}`.
+
+### `GET /api/location-clusters/{id}/points`
+
+Every file of one cluster with GPS, as `[lat, lon, place]`, for the Map view to
+split a city into districts and street groups when you zoom in. `place` indexes
+`places`, the per-file place names [`videre locations`](/commands/locations/)
+writes; `-1` is a file with no name yet. Coordinates are rounded to 5 decimals
+(about a metre). `q=<query>` keeps the matching files only, a query that cannot
+run answers `400`, and an unknown cluster `404`.
+
+```bash
+curl "http://127.0.0.1:7878/api/location-clusters/7/points"
+```
+
+```json
+{
+  "places": ["Mitte, DE", "Kreuzberg, DE"],
+  "points": [[52.52001, 13.40499, 0], [52.499, 13.403, 1], [52.51, 13.39, -1]]
+}
+```
+
+## Street detail
+
+Opt-in per library (`videre config set street-detail true`; see
+[the gallery's map](/commands/gallery/#street-detail)). Off, the status is
+`{"enabled":false,"state":"off"}`, any street map left on disk is deleted, the
+two `POST` endpoints answer `403` and the tiles `404`.
+
+### `GET /api/basemap/detail`
+
+```json
+{"enabled":true,"state":"ready","bytes":412345678,"cells":31,"done":0,"total":0,"error":null}
+```
+
+`state` is `absent`, `downloading` (with `done` and `total` tile bytes),
+`ready`, `stale` (the library has places outside the downloaded cells) or
+`failed` (with `error`). `cells` counts the 1-degree cells the library's places
+touch.
+
+### `POST /api/basemap/detail/plan`
+
+Reads the source's directories for the cells and answers
+`{"cells":31,"bytes":412345678}`, the download's size. This already tells the
+host which cells are wanted, so the map calls it only after a click. A host
+failure answers `502`.
+
+### `POST /api/basemap/detail/ensure`
+
+Starts the download in the background (the glyphs, then the tiles) and answers
+the status at once; the map polls `GET /api/basemap/detail`.
+
+### `GET /tiles/detail.pmtiles`
+
+The library's street map, with Range support, read by MapLibre through the
+pmtiles protocol. `404` when absent or off.
+
+### `GET /fonts/{stack}/{range}`
+
+Glyphs for street and place names, `Noto Sans Regular` in its Latin ranges,
+from the machine's shared cache. Any other stack or range is `404`.
 
 ## Map basemap
 
@@ -1171,9 +1238,15 @@ content-length: 0
 | `GET /api/query/suggest` | Complete the query term at the cursor |
 | `GET /api/locations` | Resolve one coordinate pair to a place name |
 | `GET /api/location-clusters` | List location clusters for the Map view |
+| `GET /api/location-clusters/{id}/points` | One cluster's files as points, for districts and streets |
 | `GET /tiles/basemap.pmtiles` | Serve the offline basemap archive (Range) |
 | `GET /api/basemap/status` | Report the basemap download state |
 | `POST /api/basemap/ensure` | Start the one-time basemap download |
+| `GET /api/basemap/detail` | Report the street map: off, absent, downloading, ready, stale or failed |
+| `POST /api/basemap/detail/plan` | Size the street-map download for this library's places |
+| `POST /api/basemap/detail/ensure` | Start the street-map download |
+| `GET /tiles/detail.pmtiles` | Serve the library's street map (Range) |
+| `GET /fonts/{stack}/{range}` | Serve the glyphs street and place names are drawn with |
 | `GET /api/processing` | Stages watch still has files to process |
 | `GET /vendor/{version}/{asset}` | Serve a vendored map library (MapLibre, pmtiles) |
 | `GET /api/people` | Search people |
