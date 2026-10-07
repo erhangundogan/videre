@@ -204,6 +204,64 @@ fn json_run_reports_stage_outcomes() {
     assert_eq!(v["failed"], serde_json::json!(0));
 }
 
+#[test]
+fn a_stage_that_skipped_a_file_is_reported_not_failed() {
+    let (lib, good) = library_with_one_bad_date();
+    let skip = [
+        "--skip",
+        "scan,faces,embed,classify,locations",
+        "--fix-dates",
+    ];
+
+    let out = run_pipeline(&lib, &skip, None);
+    let text = stdout_of(&out);
+    assert!(text.contains("1 file(s) skipped"), "{text}");
+    assert_eq!(mtime_year(&good), 2019, "the good file is still fixed");
+
+    // Run alone, fix-dates still exits nonzero, as documented.
+    let alone = lib.cmd().args(["fix-dates", "--yes"]).output().unwrap();
+    assert!(!alone.status.success());
+
+    let (lib, _) = library_with_one_bad_date();
+    let mut args = skip.to_vec();
+    args.push("--json");
+    let out = run_pipeline(&lib, &args, None);
+    let v: serde_json::Value = serde_json::from_str(stdout_of(&out).trim()).unwrap();
+    assert_eq!(v["failed"], 0);
+    let stage = v["stages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["stage"] == "fix-dates")
+        .unwrap();
+    assert_eq!(stage["ok"], true);
+    assert_eq!(stage["items_skipped"], 1);
+}
+
+/// One file fix-dates can correct and one whose date it cannot parse.
+fn library_with_one_bad_date() -> (TestLibrary, std::path::PathBuf) {
+    let lib = TestLibrary::new();
+    let root = lib.context().paths.root;
+    let good = root.join("düğün.jpg");
+    let bad = root.join("bozuk.jpg");
+    std::fs::write(&good, b"img_a").unwrap();
+    std::fs::write(&bad, b"img_b").unwrap();
+    let conn = lib.init_db();
+    conn.execute(
+        "INSERT INTO file_hashes (path, hash, exif_date) VALUES (?1, 'haaa', '2019-06-15T10:00:00')",
+        [good.to_string_lossy().as_ref()],
+    )
+    .unwrap();
+    // A date fix-dates cannot parse: that one file is skipped and reported.
+    conn.execute(
+        "INSERT INTO file_hashes (path, hash, exif_date) VALUES (?1, 'hbbb', 'tarih yok')",
+        [bad.to_string_lossy().as_ref()],
+    )
+    .unwrap();
+    drop(conn);
+    (lib, good)
+}
+
 fn mtime_year(path: &std::path::Path) -> i32 {
     use chrono::{Datelike, Local, TimeZone};
     let modified = std::fs::metadata(path).unwrap().modified().unwrap();

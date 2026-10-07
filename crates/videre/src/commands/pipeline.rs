@@ -156,6 +156,31 @@ struct Outcome {
     ok: bool,
     skipped: Option<&'static str>,
     duration_ms: Option<u64>,
+    /// Files the stage finished without, each already reported.
+    items_skipped: usize,
+}
+
+/// How a stage that ran ended.
+#[derive(Debug, PartialEq)]
+enum StageResult {
+    Done { items_skipped: usize },
+    Failed,
+}
+
+/// A stage that finished but skipped some files (an unreadable photo, a
+/// QuickLook timeout) did its job: the files are retried or reported, and
+/// one of them must not turn a night's run into "stage failed". Anything
+/// else that ended in an error failed.
+fn stage_result(result: &anyhow::Result<()>) -> StageResult {
+    match result {
+        Ok(()) => StageResult::Done { items_skipped: 0 },
+        Err(e) => match e.downcast_ref::<crate::exit::Exit>() {
+            Some(crate::exit::Exit {
+                skipped: Some(n), ..
+            }) => StageResult::Done { items_skipped: *n },
+            _ => StageResult::Failed,
+        },
+    }
 }
 
 /// Run one stage by calling that command's own `run`, so it keeps its own
@@ -216,11 +241,14 @@ fn confirm_heavy(report: &StatusReport) -> anyhow::Result<bool> {
 
 fn render_resolved(outcomes: &[Outcome]) {
     for o in outcomes {
-        let note = match (o.skipped, o.duration_ms) {
+        let mut note = match (o.skipped, o.duration_ms) {
             (Some(reason), _) => format!("skipped ({reason})"),
             (None, Some(ms)) => videre_core::progress::human_duration_ms(ms),
             (None, None) => String::new(),
         };
+        if o.items_skipped > 0 {
+            note.push_str(&format!(" ({} file(s) skipped)", o.items_skipped));
+        }
         println!("  {} {:10} {}", indicator(o), o.stage.key(), note);
     }
 }
@@ -232,6 +260,7 @@ struct StageOutcomeJson {
     ok: bool,
     skipped: Option<&'static str>,
     duration_ms: Option<u64>,
+    items_skipped: usize,
 }
 
 #[derive(serde::Serialize)]
@@ -250,6 +279,7 @@ fn report_json(outcomes: &[Outcome], failed: usize) -> PipelineJson {
                 ok: o.ok,
                 skipped: o.skipped,
                 duration_ms: o.duration_ms,
+                items_skipped: o.items_skipped,
             })
             .collect(),
         failed,
@@ -303,6 +333,7 @@ pub fn run(args: PipelineArgs, ctx: &CommandContext) -> anyhow::Result<()> {
                     ok: true,
                     skipped: Some("up to date"),
                     duration_ms: None,
+                    items_skipped: 0,
                 });
                 continue;
             }
@@ -327,6 +358,7 @@ pub fn run(args: PipelineArgs, ctx: &CommandContext) -> anyhow::Result<()> {
                         ok: true,
                         skipped: Some("declined"),
                         duration_ms: None,
+                        items_skipped: 0,
                     });
                     continue;
                 }
@@ -335,14 +367,20 @@ pub fn run(args: PipelineArgs, ctx: &CommandContext) -> anyhow::Result<()> {
 
         let started = Instant::now();
         let _stage = videre_core::error_log::enter_stage(stage.key());
-        match run_stage(*stage, ctx, stage_silent) {
-            Ok(()) => outcomes.push(Outcome {
+        let result = run_stage(*stage, ctx, stage_silent);
+        if let StageResult::Done { items_skipped } = stage_result(&result) {
+            outcomes.push(Outcome {
                 stage: *stage,
                 ran: true,
                 ok: true,
                 skipped: None,
                 duration_ms: Some(started.elapsed().as_millis() as u64),
-            }),
+                items_skipped,
+            });
+            continue;
+        }
+        match result {
+            Ok(()) => unreachable!("an Ok stage is Done"),
             Err(e) => {
                 // Logged here, once, inside the stage: the run goes on.
                 videre_core::error_log::report(
@@ -356,6 +394,7 @@ pub fn run(args: PipelineArgs, ctx: &CommandContext) -> anyhow::Result<()> {
                     ok: false,
                     skipped: None,
                     duration_ms: Some(started.elapsed().as_millis() as u64),
+                    items_skipped: 0,
                 });
             }
         }
@@ -374,4 +413,34 @@ pub fn run(args: PipelineArgs, ctx: &CommandContext) -> anyhow::Result<()> {
         anyhow::bail!("pipeline: {failed} stage(s) failed");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::exit::Exit;
+
+    #[test]
+    fn a_stage_that_only_skipped_files_succeeded() {
+        assert_eq!(
+            stage_result(&Ok(())),
+            StageResult::Done { items_skipped: 0 }
+        );
+        assert_eq!(
+            stage_result(&Err(Exit::skipped(13).into())),
+            StageResult::Done { items_skipped: 13 }
+        );
+    }
+
+    #[test]
+    fn any_other_error_still_fails_the_stage() {
+        assert_eq!(
+            stage_result(&Err(Exit::code(1).into())),
+            StageResult::Failed
+        );
+        assert_eq!(
+            stage_result(&Err(anyhow::anyhow!("database is locked"))),
+            StageResult::Failed
+        );
+    }
 }

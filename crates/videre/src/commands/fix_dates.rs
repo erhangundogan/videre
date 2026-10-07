@@ -56,8 +56,9 @@ pub fn run(args: FixDatesArgs, ctx: &CommandContext) -> anyhow::Result<()> {
             run_fix_dates(&args, ctx, &conn)
         })?;
 
+    // Each file that could not be updated was reported and skipped.
     if errors > 0 {
-        return Err(crate::exit::Exit::code(1).into());
+        return Err(crate::exit::Exit::skipped(errors).into());
     }
 
     Ok(())

@@ -526,8 +526,13 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
         tracing::info!("Imported {imported} face name(s) from XMP");
     }
 
-    if outcome.write_errors > 0 || outcome.detect_errors > 0 {
+    // A database write that failed is a failure; a photo that could not be
+    // decoded or detected was skipped, reported, and is retried next run.
+    if outcome.write_errors > 0 {
         return Err(crate::exit::Exit::code(1).into());
+    }
+    if outcome.detect_errors > 0 {
+        return Err(crate::exit::Exit::skipped(outcome.detect_errors).into());
     }
     Ok(())
 }

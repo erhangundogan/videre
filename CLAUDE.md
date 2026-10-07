@@ -600,7 +600,9 @@ same result as a serial run.
 `running`/`success`/`failed`/`interrupted`; `crashed` is **never written**, only
 computed at read time when a `running` row's lock is not held by a live process.
 Per-item errors do not mark a run failed, so `fix-dates`/`faces` can exit
-nonzero while recording success.
+nonzero while recording success. They exit through `Exit::skipped(n)`, which `pipeline`
+counts as a finished stage with `n` files skipped, not a failed one: a few
+QuickLook timeouts once marked a whole night's faces stage as failed.
 
 ### HEIC conversion uses `qlmanage`, never `sips`
 
