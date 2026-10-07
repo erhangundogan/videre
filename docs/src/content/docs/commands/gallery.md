@@ -113,6 +113,8 @@ stays visible even when a file has none of the people or location data yet.
 | `/date/2024`, `/date/2024/09`, `/date/2024/09/26` | The media of that year, month, or day, each with its item count; **Show more** loads the next page |
 | `/map` | Location clusters plotted on a world map, with the full file grid below; click a cluster to see its photos |
 | `/map/location/berlin?radius=25` | An addressable location drill-down with a proximity radius in kilometers |
+| `/map/location/berlin?place=Mitte%2C%20DE` | One district of a city: exactly the files named for it |
+| `/map/location/berlin?at=52.52,13.405&radius=0.2` | A street group: a small circle inside a city |
 | `/events` | Substantial travel trips inferred from capture dates and photo locations; click one to see its media |
 | `/events/20200312T100000-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` | One trip's media, keyed by its first photo anchor's time and full content hash |
 | `/smart` | Reserved, not built yet |
@@ -208,6 +210,17 @@ shrinks the grid to include every GPS-bearing file within that exact distance,
 regardless of its original cluster membership. The **Map > Berlin** breadcrumb,
 **Clear**, **Escape**, or zooming back to the world returns to the unselected
 map and the full grid.
+
+Zoom further into a city and it splits. Closer in, each district gets its own
+marker with its count (Mitte, Kreuzberg, Prenzlauer Berg), from the place name
+[`videre locations`](/commands/locations/) gives each photo; clicking one shows
+exactly that district's photos, the breadcrumb reads **Berlin › Mitte**, and a
+city whose photos share one name keeps its single marker. Closer still, the
+photos in view group by where they were taken into small markers that show only
+a count, since street names come from the map itself; clicking one shows the
+photos within a few hundred metres, with the radius control to widen it. Each
+step is addressable, and zooming back out past it clears it without leaving
+the view you zoomed to.
 
 The map renders real coastlines and borders with
 [MapLibre GL JS](https://maplibre.org) over an offline vector basemap built from
