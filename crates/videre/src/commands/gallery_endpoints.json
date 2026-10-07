@@ -21,6 +21,7 @@
     { "method": "GET",    "path": "/api/query/suggest" },
     { "method": "GET",    "path": "/api/locations" },
     { "method": "GET",    "path": "/api/location-clusters" },
+    { "method": "GET",    "path": "/api/location-clusters/{id}/points" },
     { "method": "GET",    "path": "/tiles/basemap.pmtiles" },
     { "method": "GET",    "path": "/api/basemap/status" },
     { "method": "POST",   "path": "/api/basemap/ensure" },

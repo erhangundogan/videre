@@ -572,6 +572,73 @@ mod location_cluster_tests {
     }
 
     #[tokio::test]
+    async fn cluster_points_carry_each_file_with_its_place_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+        {
+            let conn = state.conn.lock().unwrap();
+            videre_core::library_db::ensure_scan_schema(&conn).unwrap();
+            videre_core::location_cluster::ensure_location_clusters_table(&conn).unwrap();
+            conn.execute_batch(
+                "INSERT INTO location_clusters
+                    (id, centroid_lat, centroid_lon, name, photo_count, radius_km, created_at)
+                 VALUES (1, 52.52, 13.405, 'Berlin', 4, 15.0, CURRENT_TIMESTAMP);
+                 INSERT INTO file_hashes
+                    (path, hash, ext, mime, gps_lat, gps_lon, location_name, location_cluster_id)
+                 VALUES
+                    ('/p/a.jpg', 'ha', 'jpg', 'image/jpeg', 52.5200123, 13.4049876, 'Mitte, DE', 1),
+                    ('/p/b.jpg', 'hb', 'jpg', 'image/jpeg', 52.5210000, 13.4060000, 'Mitte, DE', 1),
+                    ('/p/c.mp4', 'hc', 'mp4', 'video/mp4', 52.4990000, 13.4030000, 'Kreuzberg, DE', 1),
+                    ('/p/d.jpg', 'hd', 'jpg', 'image/jpeg', 52.5100000, 13.3900000, NULL, 1),
+                    ('/p/e.jpg', 'he', 'jpg', 'image/jpeg', 41.0100000, 28.9700000, 'Kadıköy, TR', NULL);",
+            )
+            .unwrap();
+        }
+        let app = Router::new()
+            .route(
+                "/api/location-clusters/{id}/points",
+                get(handle_location_cluster_points),
+            )
+            .with_state(state);
+        let get = |uri: &'static str| {
+            let app = app.clone();
+            async move {
+                let response = app
+                    .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+                let status = response.status();
+                let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+                let v: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+                (status, v)
+            }
+        };
+
+        let (status, v) = get("/api/location-clusters/1/points").await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        assert_eq!(
+            v["places"],
+            serde_json::json!(["Mitte, DE", "Kreuzberg, DE"])
+        );
+        assert_eq!(
+            v["points"],
+            serde_json::json!([
+                [52.52001, 13.40499, 0],
+                [52.521, 13.406, 0],
+                [52.499, 13.403, 1],
+                [52.51, 13.39, -1]
+            ])
+        );
+
+        let (_, v) = get("/api/location-clusters/1/points?q=type%3Avideo").await;
+        assert_eq!(v["places"], serde_json::json!(["Kreuzberg, DE"]));
+        assert_eq!(v["points"], serde_json::json!([[52.499, 13.403, 0]]));
+
+        let (status, _) = get("/api/location-clusters/99/points").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
     async fn location_clusters_endpoint_on_an_empty_library_returns_an_empty_array() {
         let dir = tempfile::tempdir().unwrap();
         let state = gallery_state(dir.path());
@@ -3167,6 +3234,75 @@ async fn handle_location_clusters(
     json_response(out)
 }
 
+/// `GET /api/location-clusters/{id}/points`: every file of one cluster as
+/// `[lat, lon, place]`, for the map to split the city into districts (by
+/// `place`, an index into `places`; -1 for a file with no name) and street
+/// groups (by position) on the client. Coordinates are rounded to 5 decimals,
+/// about a metre, which is finer than any marker and keeps the payload small.
+/// `?q=` keeps the matching files only, as the cluster list does.
+async fn handle_location_cluster_points(
+    axum::extract::Path(id): axum::extract::Path<i64>,
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<RouteQuery>,
+) -> Response {
+    let conn = match state.conn.lock() {
+        Ok(conn) => conn,
+        Err(e) => return poisoned(e).into_response(),
+    };
+    let exists: bool = match conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM location_clusters WHERE id = ?1)",
+        [id],
+        |r| r.get(0),
+    ) {
+        Ok(exists) => exists,
+        Err(e) => return internal(e).into_response(),
+    };
+    if !exists {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let filtered = match apply_query(&state, &conn, q.q.as_deref()) {
+        Err(response) => return *response,
+        Ok(applied) => applied.is_some_and(|a| a.filtered),
+    };
+    let within = if filtered {
+        format!(" AND hash IN (SELECT hash FROM {QUERY_HASHES_TABLE})")
+    } else {
+        String::new()
+    };
+    let rows: rusqlite::Result<Vec<(f64, f64, Option<String>)>> = conn
+        .prepare(&format!(
+            "SELECT gps_lat, gps_lon, location_name FROM file_hashes
+             WHERE location_cluster_id = ?1
+               AND gps_lat IS NOT NULL AND gps_lon IS NOT NULL{within}
+             ORDER BY path"
+        ))
+        .and_then(|mut stmt| {
+            stmt.query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                .collect()
+        });
+    let rows = match rows {
+        Ok(rows) => rows,
+        Err(e) => return internal(e).into_response(),
+    };
+    let round = |v: f64| (v * 1e5).round() / 1e5;
+    let mut places: Vec<String> = Vec::new();
+    let mut points = Vec::with_capacity(rows.len());
+    for (lat, lon, name) in rows {
+        let index = match name {
+            Some(name) => match places.iter().position(|p| *p == name) {
+                Some(i) => i as i64,
+                None => {
+                    places.push(name);
+                    places.len() as i64 - 1
+                }
+            },
+            None => -1,
+        };
+        points.push(serde_json::json!([round(lat), round(lon), index]));
+    }
+    json_response(serde_json::json!({ "places": places, "points": points }).to_string())
+}
+
 /// Matching files per location cluster, from `temp.query_hashes`.
 fn matching_per_cluster(
     conn: &Connection,
@@ -4911,6 +5047,10 @@ async fn serve_faces_async(
         .route("/api/query/suggest", get(handle_query_suggest))
         .route("/api/locations", get(handle_location))
         .route("/api/location-clusters", get(handle_location_clusters))
+        .route(
+            "/api/location-clusters/{id}/points",
+            get(handle_location_cluster_points),
+        )
         // basemap: the offline PMTiles archive and its download lifecycle
         .route("/tiles/basemap.pmtiles", get(handle_basemap_tiles))
         .route("/api/basemap/status", get(handle_basemap_status))

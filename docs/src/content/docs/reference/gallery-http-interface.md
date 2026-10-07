@@ -644,6 +644,26 @@ curl "http://127.0.0.1:7878/api/location-clusters"
 `route_name` is the normalized addressable identity used under
 `/map/location/{name}`.
 
+### `GET /api/location-clusters/{id}/points`
+
+Every file of one cluster with GPS, as `[lat, lon, place]`, for the Map view to
+split a city into districts and street groups when you zoom in. `place` indexes
+`places`, the per-file place names [`videre locations`](/commands/locations/)
+writes; `-1` is a file with no name yet. Coordinates are rounded to 5 decimals
+(about a metre). `q=<query>` keeps the matching files only, a query that cannot
+run answers `400`, and an unknown cluster `404`.
+
+```bash
+curl "http://127.0.0.1:7878/api/location-clusters/7/points"
+```
+
+```json
+{
+  "places": ["Mitte, DE", "Kreuzberg, DE"],
+  "points": [[52.52001, 13.40499, 0], [52.499, 13.403, 1], [52.51, 13.39, -1]]
+}
+```
+
 ## Map basemap
 
 The Map view renders MapLibre GL JS over an offline vector basemap: a PMTiles
@@ -1171,6 +1191,7 @@ content-length: 0
 | `GET /api/query/suggest` | Complete the query term at the cursor |
 | `GET /api/locations` | Resolve one coordinate pair to a place name |
 | `GET /api/location-clusters` | List location clusters for the Map view |
+| `GET /api/location-clusters/{id}/points` | One cluster's files as points, for districts and streets |
 | `GET /tiles/basemap.pmtiles` | Serve the offline basemap archive (Range) |
 | `GET /api/basemap/status` | Report the basemap download state |
 | `POST /api/basemap/ensure` | Start the one-time basemap download |
