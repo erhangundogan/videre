@@ -47,7 +47,9 @@ pushing. Details and the reasoning are in CLAUDE.md's `## CI` section.
 - Rust toolchain is pinned in rust-toolchain.toml.
 - Prefer Makefile targets where they exist.
 - User-facing behavior changes must update docs under docs/src/content/docs/.
-- Tests must not download model weights.
+- The normal test suite must not download model weights. Only `VIDERE_TEST_MODELS=1`
+  opts the model-backed tests in, and those may download into the developer's
+  Hugging Face cache.
 - Anything shared by multiple crates belongs in videre-core.
 - Anything shared only by CLI subcommands should stay under crates/videre/src/.
 - Verify with real command output before claiming work is complete.
