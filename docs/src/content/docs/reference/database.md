@@ -232,7 +232,7 @@ never repeats the request.
 ## pipeline_runs
 
 One row per tracked command, not an append-only log, so it holds the *last* run
-of each. This is what [`videre stats`](/commands/stats/) reports.
+of each; earlier runs are kept in [`pipeline_run_history`](#pipeline_run_history). This is what [`videre stats`](/commands/stats/) reports.
 
 ```sql
 CREATE TABLE pipeline_runs (
@@ -248,6 +248,26 @@ CREATE TABLE pipeline_runs (
 `status` is stored as `running`, `success`, `failed` or `interrupted`. A fifth
 value, `crashed`, is never written: it is computed when reading, when a row says
 `running` but no live process holds that command's lock.
+
+## pipeline_run_history
+
+The finished runs of each command, newest kept: every run is copied here when it
+ends, and only the newest `run_history` (default 3) per command remain. A
+`running` row found when the next run starts belonged to a run that died, and is
+copied here as `crashed`. `summary` holds a failure's message or
+`13 file(s) skipped`.
+
+```sql
+CREATE TABLE pipeline_run_history (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    command      TEXT NOT NULL,
+    started_at   TEXT NOT NULL,
+    finished_at  TEXT,
+    status       TEXT NOT NULL,
+    duration_ms  INTEGER,
+    summary      TEXT
+);
+```
 
 ## The embeddings database
 

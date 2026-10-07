@@ -149,3 +149,57 @@ fn status_check_exits_nonzero_when_a_command_failed() {
         "--json output must still be valid, unaffected by --check"
     );
 }
+
+/// The scan line of `videre status` and the indented earlier runs under it.
+fn scan_lines(lib: &TestLibrary) -> Vec<String> {
+    let out = lib.cmd().arg("status").output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    let block = text.split("Pipeline status:").nth(1).unwrap().to_string();
+    let mut lines = Vec::new();
+    let mut in_scan = false;
+    for line in block.lines() {
+        if line.starts_with("  scan ") {
+            in_scan = true;
+        } else if in_scan && !line.starts_with("             ") {
+            break;
+        }
+        if in_scan {
+            lines.push(line.to_string());
+        }
+    }
+    lines
+}
+
+#[test]
+fn status_lists_earlier_runs_up_to_run_history() {
+    let lib = TestLibrary::new();
+    lib.copy_fixture("tiny.jpg", "photos/düğün.jpg");
+    for _ in 0..4 {
+        lib.scan();
+    }
+    // Default 3: the latest run's line and the two before it.
+    assert_eq!(scan_lines(&lib).len(), 3, "{:?}", scan_lines(&lib));
+
+    let json = lib.cmd().args(["status", "--json"]).output().unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    let scan = v["report"]["pipelines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["command"] == "scan")
+        .unwrap();
+    assert_eq!(scan["history"].as_array().unwrap().len(), 2);
+
+    let set = |value: &str| {
+        lib.cmd()
+            .args(["config", "set", "run-history", value])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    };
+    assert!(set("1"));
+    lib.scan();
+    assert_eq!(scan_lines(&lib).len(), 1, "only the latest run is kept");
+    assert!(!set("0"), "at least one run is kept");
+}

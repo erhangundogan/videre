@@ -58,6 +58,7 @@ pub fn run(args: FixDatesArgs, ctx: &CommandContext) -> anyhow::Result<()> {
 
     // Each file that could not be updated was reported and skipped.
     if errors > 0 {
+        videre_core::pipeline_runs::note_skipped(&conn, "fix-dates", errors)?;
         return Err(crate::exit::Exit::skipped(errors).into());
     }
 

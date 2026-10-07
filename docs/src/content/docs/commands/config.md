@@ -53,6 +53,7 @@ log-keep:      5
 log-max-age-days: 30 days
 search-min-match: 0 (default)
 similar-min-score: none (default)
+run-history:   3 run(s) per command (default)
 ```
 
 | Line | Meaning |
@@ -79,6 +80,7 @@ similar-min-score: none (default)
 | `log-max-age-days` | Age after which a rotated log file is deleted |
 | `search-min-match` | The least match a text search keeps; 0 keeps every match |
 | `similar-min-score` | The least similarity an image search keeps |
+| `run-history` | How many runs of each command `videre status` keeps |
 | `street-detail` | Whether the map may download street detail for your places |
 
 Showing config creates nothing. Setting a value may create
@@ -105,6 +107,7 @@ are responsible for initializing a library database.
 | `log-max-age-days` | `log_max_age_days` | A positive whole number of days (default 30) |
 | `search-min-match` | `search_min_match` | A match probability from 0 to 1 (default 0, every match); [search](/commands/search/) drops weaker text matches. On short queries a floor can hide real matches |
 | `similar-min-score` | `similar_min_score` | A similarity from -1 to 1, or unset (the default) to keep every result of an image search or **Similar** |
+| `run-history` | `run_history` | A whole number from 1 through 100 (default 3): runs kept per command, the latest included |
 | `street-detail` | `street_detail` | `false` (default) or `true`; see [street detail](/commands/gallery/#street-detail). Turning it off deletes the downloaded street map |
 
 Storage cannot be redirected. `db` and `jsonl` are fixed declarations and

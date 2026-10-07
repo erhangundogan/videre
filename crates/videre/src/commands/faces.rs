@@ -532,6 +532,9 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
         return Err(crate::exit::Exit::code(1).into());
     }
     if outcome.detect_errors > 0 {
+        if !args.dry_run {
+            videre_core::pipeline_runs::note_skipped(&conn, "faces", outcome.detect_errors)?;
+        }
         return Err(crate::exit::Exit::skipped(outcome.detect_errors).into());
     }
     Ok(())

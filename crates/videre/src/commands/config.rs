@@ -20,6 +20,7 @@ pub(crate) const CONFIG_KEYS: &[&str] = &[
     "log-max-age-days",
     "search-min-match",
     "similar-min-score",
+    "run-history",
     "street-detail",
 ];
 
@@ -97,6 +98,7 @@ fn config_key(key: &str) -> ConfigKey {
         "log-max-age-days" => ConfigKey::LogMaxAgeDays,
         "search-min-match" => ConfigKey::SearchMinMatch,
         "similar-min-score" => ConfigKey::SimilarMinScore,
+        "run-history" => ConfigKey::RunHistory,
         "street-detail" => ConfigKey::StreetDetail,
         _ => unreachable!("clap restricts keys to CONFIG_KEYS"),
     }
@@ -129,6 +131,7 @@ fn config_value(key: &str, value: String) -> Result<(ConfigKey, toml::Value)> {
             toml::Value::Integer(mb_s)
         }
         ConfigKey::IoWorkers => whole_number(name, &value, "workers")?,
+        ConfigKey::RunHistory => whole_number(name, &value, "runs")?,
         ConfigKey::WatchBulkThreshold => whole_number(name, &value, "files")?,
         ConfigKey::WatchBulkQuietMs => whole_number(name, &value, "milliseconds")?,
         ConfigKey::ExportXmpOnWatch | ConfigKey::GalleryStartsWatch | ConfigKey::StreetDetail => {
@@ -256,6 +259,15 @@ fn show(ctx: &CommandContext) -> Result<()> {
         Some(score) => println!("similar-min-score: {score}"),
         None => println!("similar-min-score: none (default)"),
     }
+    println!(
+        "run-history:   {} run(s) per command{}",
+        config.run_history,
+        if config.run_history == library_config::RUN_HISTORY_DEFAULT {
+            " (default)"
+        } else {
+            ""
+        }
+    );
     Ok(())
 }
 
