@@ -70,11 +70,29 @@
   // MapLibre renderer
   // ------------------------------------------------------------------
   function runMapLibrePlot() {
+    // Zoom tiers: continents below CLUSTER_ZOOM, then location clusters, then
+    // a city split by place name (districts), then by position (street
+    // groups). Tuned on a real library: at 11 a 15 km cluster fills the view,
+    // at 14 a district does.
     var CLUSTER_ZOOM = 3;
+    var DISTRICT_ZOOM = 11;
+    var STREET_ZOOM = 14;
+    // Street groups bucket points on a screen grid of this many pixels.
+    var STREET_CELL = 60;
     var clusters = [];
     var byContinent = {};
+    // The selection: a cluster with a radius (kind 'cluster'), one district of
+    // it (kind 'place', activePlace), or a circle around a street group (kind
+    // 'circle', activePoint + activeRadius). activeCluster is set for all three.
     var activeCluster = null;
     var activeRadius = null;
+    var activeKind = null;
+    var activePlace = null;
+    var activePoint = null;
+    // Each cluster's files as points, fetched once when it is first shown past
+    // DISTRICT_ZOOM: { places: [name], points: [[lat, lon, placeIndex]] }.
+    var pointsById = {};
+    var pointsPending = {};
     var map = null;
     var ready = false;
     // Set while a programmatic fly/jump is animating, so the zoom-to-world
@@ -148,7 +166,7 @@
     // tested without a reflow per tag on every move/zoom. The chip is centred
     // on its point (translate(-50%,-50%)) and sized like the CSS pill.
     function markerBox(point, label) {
-      var width = Math.min(180, Math.max(88, label.length * 7.2 + 46));
+      var width = label ? Math.min(180, Math.max(88, label.length * 7.2 + 46)) : 44;
       var height = 30;
       return {
         left: point.x - width / 2, right: point.x + width / 2,
@@ -178,26 +196,174 @@
       placed.push(box);
       var button = document.createElement('button');
       button.type = 'button';
-      button.className = 'map-marker' + (spec.active ? ' active' : '');
+      button.className = 'map-marker' + (spec.active ? ' active' : '') +
+        (spec.label ? '' : ' count-only');
       button.dataset.tier = spec.tier;
-      button.dataset.name = spec.label;
+      if (spec.label) button.dataset.name = spec.label;
       if (spec.clusterId !== null) button.dataset.cluster = String(spec.clusterId);
       button.style.left = point.x + 'px';
       button.style.top = point.y + 'px';
       button.innerHTML = escH(spec.label) +
         '<span class="map-marker-count">' + spec.count + '</span>';
+      if (!spec.label) {
+        button.setAttribute('aria-label', spec.count === 1 ? '1 photo here' : spec.count + ' photos here');
+      }
       button.addEventListener('click', spec.click);
       markerLayer.appendChild(button);
     }
 
     function tier() {
-      return map.getZoom() < CLUSTER_ZOOM ? 'world' : 'clusters';
+      var zoom = map.getZoom();
+      if (zoom < CLUSTER_ZOOM) return 'world';
+      if (zoom < DISTRICT_ZOOM) return 'clusters';
+      return zoom < STREET_ZOOM ? 'districts' : 'streets';
+    }
+
+    // The zoom below which a selection of this kind no longer makes sense.
+    function selectionFloor(kind) {
+      if (kind === 'place') return DISTRICT_ZOOM;
+      if (kind === 'circle') return STREET_ZOOM;
+      return CLUSTER_ZOOM;
+    }
+
+    function ensurePoints(cluster) {
+      var id = cluster.cluster_id;
+      if (pointsById[id] || pointsPending[id]) return;
+      pointsPending[id] = true;
+      fetch('/api/location-clusters/' + id + '/points' + queryParam())
+        .then(function (response) {
+          if (!response.ok) throw new Error('points ' + response.status);
+          return response.json();
+        })
+        .then(function (data) {
+          pointsById[id] = data;
+          updateMarkers();
+        })
+        .catch(function () {})
+        .then(function () { delete pointsPending[id]; });
+    }
+
+    // Zoomed into a street, the city's centroid can be screens away while its
+    // files are in view, so the visible bounds grow by the cluster's radius.
+    function clusterNearView(cluster) {
+      var bounds = map.getBounds();
+      var padLat = cluster.radius_km / 111;
+      var padLon = padLat / Math.max(0.01, Math.cos(cluster.centroid_lat * Math.PI / 180));
+      return cluster.centroid_lat >= bounds.getSouth() - padLat &&
+        cluster.centroid_lat <= bounds.getNorth() + padLat &&
+        cluster.centroid_lon >= bounds.getWest() - padLon &&
+        cluster.centroid_lon <= bounds.getEast() + padLon;
+    }
+
+    function shortPlace(name) {
+      var comma = name.indexOf(',');
+      return comma < 0 ? name : name.slice(0, comma);
+    }
+
+    function clusterSpec(cluster) {
+      var isActive = !!(activeCluster && cluster.cluster_id === activeCluster.cluster_id);
+      return {
+        label: cluster.name, count: cluster.photo_count,
+        lat: cluster.centroid_lat, lon: cluster.centroid_lon,
+        tier: 'cluster', clusterId: cluster.cluster_id, active: isActive,
+        click: function () { selectCluster(cluster, defaultRadius(cluster), 'push'); }
+      };
+    }
+
+    // One chip per place name in each nearby cluster, at the mean of its
+    // files. A cluster whose files share one name keeps its city chip.
+    function districtSpecs() {
+      var specs = [];
+      clusters.forEach(function (cluster) {
+        if (!clusterNearView(cluster)) return;
+        var data = pointsById[cluster.cluster_id];
+        if (!data) { ensurePoints(cluster); specs.push(clusterSpec(cluster)); return; }
+        var groups = {};
+        data.points.forEach(function (p) {
+          var group = groups[p[2]] || (groups[p[2]] = { lat: 0, lon: 0, count: 0 });
+          group.lat += p[0];
+          group.lon += p[1];
+          group.count += 1;
+        });
+        var keys = Object.keys(groups);
+        if (keys.length < 2) { specs.push(clusterSpec(cluster)); return; }
+        keys.forEach(function (key) {
+          var group = groups[key];
+          var index = Number(key);
+          var name = index >= 0 ? data.places[index] : null;
+          var label = name ? shortPlace(name) : cluster.name;
+          var isActive = !!(activeKind === 'place' && activeCluster &&
+            activeCluster.cluster_id === cluster.cluster_id && activePlace.name === name);
+          specs.push({
+            label: label, count: group.count,
+            lat: group.lat / group.count, lon: group.lon / group.count,
+            tier: 'district', clusterId: cluster.cluster_id, active: isActive,
+            click: function () { selectPlace(cluster, name, 'push'); }
+          });
+        });
+      });
+      return specs;
+    }
+
+    // Visible files bucketed on a screen grid: a count per bucket at its mean,
+    // unnamed (no offline street data; the basemap names the streets).
+    function streetSpecs() {
+      var specs = [];
+      clusters.forEach(function (cluster) {
+        if (!clusterNearView(cluster)) return;
+        var data = pointsById[cluster.cluster_id];
+        if (!data) { ensurePoints(cluster); return; }
+        var cells = {};
+        data.points.forEach(function (p) {
+          var point = map.project([p[1], p[0]]);
+          if (!inView(point)) return;
+          var key = Math.floor(point.x / STREET_CELL) + ':' + Math.floor(point.y / STREET_CELL);
+          var cell = cells[key] || (cells[key] = { lat: 0, lon: 0, members: [] });
+          cell.lat += p[0];
+          cell.lon += p[1];
+          cell.members.push(p);
+        });
+        Object.keys(cells).forEach(function (key) {
+          var cell = cells[key];
+          var lat = cell.lat / cell.members.length;
+          var lon = cell.lon / cell.members.length;
+          specs.push({
+            label: '', count: cell.members.length, lat: lat, lon: lon,
+            tier: 'street', clusterId: cluster.cluster_id, active: false,
+            click: function () {
+              var farthest = 0;
+              cell.members.forEach(function (p) {
+                farthest = Math.max(farthest, haversineKm(lat, lon, p[0], p[1]));
+              });
+              var radius = Math.max(0.05, Math.ceil(farthest * 1.1 * 1000) / 1000);
+              selectCircle(cluster, lat, lon, radius, 'push');
+            }
+          });
+        });
+      });
+      return specs;
+    }
+
+    function haversineKm(lat1, lon1, lat2, lon2) {
+      var rad = Math.PI / 180;
+      var dLat = (lat2 - lat1) * rad;
+      var dLon = (lon2 - lon1) * rad;
+      var a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+      return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+
+    function byPriority(a, b) {
+      if (a.active !== b.active) return a.active ? -1 : 1;
+      return b.count - a.count;
     }
 
     // Marker specs for the current tier, ordered by priority so decluttering
     // keeps the most significant tags: the active selection first, then the
     // largest by photo count.
     function markerSpecs() {
+      if (tier() === 'districts') return districtSpecs().sort(byPriority);
+      if (tier() === 'streets') return streetSpecs().sort(byPriority);
       if (tier() === 'world') {
         return Object.keys(byContinent).map(function (name) {
           var group = byContinent[name];
@@ -208,18 +374,7 @@
           };
         }).sort(function (a, b) { return b.count - a.count; });
       }
-      return clusters.map(function (cluster) {
-        var isActive = !!(activeCluster && cluster.cluster_id === activeCluster.cluster_id);
-        return {
-          label: cluster.name, count: cluster.photo_count,
-          lat: cluster.centroid_lat, lon: cluster.centroid_lon,
-          tier: 'cluster', clusterId: cluster.cluster_id, active: isActive,
-          click: function () { selectCluster(cluster, defaultRadius(cluster), 'push'); }
-        };
-      }).sort(function (a, b) {
-        if (a.active !== b.active) return a.active ? -1 : 1;
-        return b.count - a.count;
-      });
+      return clusters.map(clusterSpec).sort(byPriority);
     }
 
     function updateMarkers() {
@@ -246,13 +401,23 @@
       return [nextLongitude * 180 / Math.PI, nextLatitude * 180 / Math.PI];
     }
 
+    // The ring marks a circle selection: a cluster's radius or a street
+    // group's. A district is selected by name, so it has none.
+    function ringCenter() {
+      if (activeKind === 'circle') {
+        return { centroid_lat: activePoint.lat, centroid_lon: activePoint.lon };
+      }
+      return activeKind === 'cluster' ? activeCluster : null;
+    }
+
     function ringGeoJson() {
-      if (!activeCluster || activeRadius === null) {
+      var center = ringCenter();
+      if (!center || activeRadius === null) {
         return { type: 'FeatureCollection', features: [] };
       }
       var coordinates = [];
       for (var index = 0; index <= 64; index++) {
-        coordinates.push(destinationPoint(activeCluster, activeRadius, index / 64 * Math.PI * 2));
+        coordinates.push(destinationPoint(center, activeRadius, index / 64 * Math.PI * 2));
       }
       return {
         type: 'FeatureCollection',
@@ -265,37 +430,80 @@
       map.getSource('radius-ring').setData(ringGeoJson());
     }
 
-    function locationPath(cluster, radius) {
-      return withQueryParam('/map/location/' + encodeURIComponent(cluster.route_name) +
-        '?radius=' + encodeURIComponent(radius));
+    // The address of the current selection: `?radius=` for a cluster,
+    // `?place=` for a district (empty: its unnamed files), `?at=&radius=` for
+    // a street group.
+    function selectionPath() {
+      var params = new URLSearchParams();
+      if (activeKind === 'place') {
+        params.set('place', activePlace.name || '');
+      } else if (activeKind === 'circle') {
+        params.set('at', activePoint.lat.toFixed(5) + ',' + activePoint.lon.toFixed(5));
+        params.set('radius', String(activeRadius));
+      } else {
+        params.set('radius', String(activeRadius));
+      }
+      return withQueryParam('/map/location/' + encodeURIComponent(activeCluster.route_name) +
+        '?' + params.toString());
     }
 
-    function showSelection(cluster, radius) {
+    function showSelection(crumb, radius) {
       selectionStatus.hidden = true;
       selectionStatus.textContent = '';
       breadcrumb.hidden = false;
-      radiusGroup.hidden = false;
-      breadcrumb.textContent = cluster.name;
-      radiusInput.value = String(radius);
+      breadcrumb.textContent = crumb;
+      radiusGroup.hidden = radius === null;
+      if (radius !== null) radiusInput.value = String(radius);
     }
 
-    function selectCluster(cluster, radius, historyMode) {
+    function select(kind, cluster, place, point, radius, historyMode) {
+      activeKind = kind;
       activeCluster = cluster;
+      activePlace = place;
+      activePoint = point;
       activeRadius = radius;
-      wrapper.dataset.radius = String(radius);
+      if (radius === null) delete wrapper.dataset.radius;
+      else wrapper.dataset.radius = String(radius);
       clearBtn.disabled = false;
-      showSelection(cluster, radius);
-      window.setGalleryLocation(cluster.centroid_lat, cluster.centroid_lon, radius);
-      if (historyMode === 'push') {
-        window.history.pushState(null, '', locationPath(cluster, radius));
-      }
+      if (historyMode === 'push') window.history.pushState(null, '', selectionPath());
       updateRing();
-      if (ready) viewFlyTo({ center: [cluster.centroid_lon, cluster.centroid_lat], zoom: CLUSTER_ZOOM + 2 });
       updateMarkers();
     }
 
-    function clearSelection(historyMode) {
+    function selectCluster(cluster, radius, historyMode) {
+      select('cluster', cluster, null, null, radius, historyMode);
+      showSelection(cluster.name, radius);
+      window.setGalleryLocation(cluster.centroid_lat, cluster.centroid_lon, radius);
+      // Never zoom out to show a cluster picked from a closer view.
+      if (ready) {
+        viewFlyTo({
+          center: [cluster.centroid_lon, cluster.centroid_lat],
+          zoom: Math.max(map.getZoom(), CLUSTER_ZOOM + 2)
+        });
+      }
+    }
+
+    // One district of a cluster, exactly: the grid gets the cluster's files
+    // under this place name (null: those with none), what the chip counted.
+    function selectPlace(cluster, name, historyMode) {
+      select('place', cluster, { name: name }, null, null, historyMode);
+      showSelection(cluster.name + ' › ' + (name ? shortPlace(name) : cluster.name), null);
+      window.setGalleryLocation({ cluster: cluster.cluster_id, place: name || '' });
+    }
+
+    function selectCircle(cluster, lat, lon, radius, historyMode) {
+      select('circle', cluster, null, { lat: lat, lon: lon }, radius, historyMode);
+      showSelection(cluster.name + ' › ' + lat.toFixed(4) + ', ' + lon.toFixed(4), radius);
+      window.setGalleryLocation(lat, lon, radius);
+    }
+
+    // keepView leaves the camera where it is: zooming out of a district or
+    // street selection should not also fly to the world.
+    function clearSelection(historyMode, keepView) {
+      activeKind = null;
       activeCluster = null;
+      activePlace = null;
+      activePoint = null;
       activeRadius = null;
       delete wrapper.dataset.radius;
       clearBtn.disabled = true;
@@ -306,12 +514,15 @@
       window.setGalleryLocation(null, null, null);
       updateRing();
       if (historyMode === 'push') window.history.pushState(null, '', withQueryParam('/map'));
-      if (ready) viewFlyTo({ center: [10, 30], zoom: 1 });
+      if (ready && !keepView) viewFlyTo({ center: [10, 30], zoom: 1 });
       updateMarkers();
     }
 
     function showUnknownLocation() {
+      activeKind = null;
       activeCluster = null;
+      activePlace = null;
+      activePoint = null;
       activeRadius = null;
       delete wrapper.dataset.radius;
       clearBtn.disabled = true;
@@ -334,6 +545,47 @@
       return { kind: 'location', name: name, radius: radius };
     }
 
+    // `place` and `at` ride on the URL only; the server's bootstrap names the
+    // cluster and radius, which is all the canvas fallback understands.
+    function selectionExtrasFromUrl() {
+      var params = new URLSearchParams(window.location.search);
+      var at = null;
+      var match = /^(-?[0-9.]+),(-?[0-9.]+)$/.exec(params.get('at') || '');
+      if (match) at = { lat: Number(match[1]), lon: Number(match[2]) };
+      return { place: params.has('place') ? params.get('place') : null, at: at };
+    }
+
+    // Fly to a district once its points are known; the grid is already set.
+    function flyToPlace(cluster, name) {
+      var data = pointsById[cluster.cluster_id];
+      if (!data) {
+        ensurePoints(cluster);
+        window.setTimeout(function () {
+          if (activeKind === 'place' && activeCluster === cluster) flyToPlace(cluster, name);
+        }, 200);
+        return;
+      }
+      var index = name ? data.places.indexOf(name) : -1;
+      var lat = 0, lon = 0, count = 0;
+      data.points.forEach(function (p) {
+        if (p[2] !== index) return;
+        lat += p[0];
+        lon += p[1];
+        count += 1;
+      });
+      if (!count) return;
+      viewFlyTo({ center: [lon / count, lat / count], zoom: DISTRICT_ZOOM + 1 });
+    }
+
+    // Moves the camera to the selection the URL names, once the map can.
+    function flyToSelection() {
+      if (activeKind === 'place') {
+        flyToPlace(activeCluster, activePlace.name);
+      } else if (activeKind === 'circle') {
+        viewFlyTo({ center: [activePoint.lon, activePoint.lat], zoom: STREET_ZOOM + 1 });
+      }
+    }
+
     function applyLocationState(state) {
       if (!state) { clearSelection('none'); return; }
       if (state.kind !== 'location') { showUnknownLocation(); return; }
@@ -343,7 +595,16 @@
       if (!cluster) { showUnknownLocation(); return; }
       var radius = Number(state.radius);
       if (!Number.isFinite(radius) || radius <= 0) radius = defaultRadius(cluster);
-      selectCluster(cluster, radius, 'none');
+      var extras = selectionExtrasFromUrl();
+      if (extras.place !== null) {
+        selectPlace(cluster, extras.place || null, 'none');
+      } else if (extras.at) {
+        selectCircle(cluster, extras.at.lat, extras.at.lon, radius, 'none');
+      } else {
+        selectCluster(cluster, radius, 'none');
+        return;
+      }
+      if (ready) flyToSelection();
     }
 
     document.getElementById('map-zoom-in').addEventListener('click', function () {
@@ -362,8 +623,9 @@
       }
       activeRadius = radius;
       wrapper.dataset.radius = String(radius);
-      window.setGalleryLocation(activeCluster.centroid_lat, activeCluster.centroid_lon, radius);
-      window.history.replaceState({}, '', locationPath(activeCluster, radius));
+      var center = ringCenter();
+      window.setGalleryLocation(center.centroid_lat, center.centroid_lon, radius);
+      window.history.replaceState({}, '', selectionPath());
       updateRing();
     });
     window.addEventListener('keydown', function (event) {
@@ -451,13 +713,18 @@
       map.on('moveend', function () { programmaticView = false; });
       map.on('zoom', function () {
         updateMarkers();
-        // Zooming out to the world tier clears any active selection, matching
-        // the canvas renderer. Skipped during our own fly/jump (which begins
+        // Zooming out past the tier a selection was made in clears it: the
+        // world tier clears a cluster (matching the canvas renderer), the
+        // cluster tier a district, the district tier a street group. Only a
+        // cluster's clear flies back to the world; the others keep the view
+        // the user zoomed to. Skipped during our own fly/jump (which begins
         // below the threshold on the way to a selection).
-        if (activeCluster && !programmaticView && map.getZoom() < CLUSTER_ZOOM) {
-          clearSelection('push');
+        if (activeCluster && !programmaticView && map.getZoom() < selectionFloor(activeKind)) {
+          clearSelection('push', activeKind !== 'cluster');
         }
       });
+      // For the e2e suite, which moves the camera without animation.
+      window.videreMap = map;
     }
 
     // A programmatic camera move that must not trip the zoom-to-world
@@ -474,12 +741,14 @@
     function syncMapToState() {
       if (!map || !ready) return;
       updateRing();
-      if (activeCluster) {
+      if (activeKind === 'cluster') {
         programmaticView = true;
         map.jumpTo({
           center: [activeCluster.centroid_lon, activeCluster.centroid_lat],
           zoom: CLUSTER_ZOOM + 2
         });
+      } else if (activeKind) {
+        flyToSelection();
       }
       updateMarkers();
     }
@@ -500,7 +769,7 @@
         // not wait on WebGL. The map catches up in syncMapToState on load.
         applyLocationState(typeof GLOC === 'object' ? GLOC : locationStateFromUrl());
         if (activeCluster) {
-          window.history.replaceState(null, '', locationPath(activeCluster, activeRadius));
+          window.history.replaceState(null, '', selectionPath());
         }
       })
       .catch(function () {

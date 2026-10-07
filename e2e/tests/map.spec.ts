@@ -295,6 +295,97 @@ test("zooming out to the world clears a MapLibre selection", async ({ page, gall
   await expect(page.locator("#gallery .card")).toHaveCount(3);
 });
 
+// All three files in one Berlin cluster: two in Mitte about 100 m apart, the
+// clip in Kreuzberg 2.4 km south.
+function seedDistricts(libraryRoot: string): void {
+  const db = openLibraryDb(libraryRoot);
+  const files = db.prepare("SELECT path FROM file_hashes ORDER BY path").all() as Array<{ path: string }>;
+  const path = (suffix: string) => files.find((file) => file.path.endsWith(suffix))!.path;
+  db.exec(
+    "UPDATE file_hashes SET location_cluster_id = NULL, gps_lat = NULL, gps_lon = NULL, location_name = NULL;" +
+    "DELETE FROM location_clusters;" +
+    "INSERT INTO location_clusters " +
+      "(id, centroid_lat, centroid_lon, name, photo_count, radius_km, created_at) VALUES " +
+      "(1, 52.513, 13.405, 'Berlin', 3, 15.0, CURRENT_TIMESTAMP);"
+  );
+  const place = db.prepare(
+    "UPDATE file_hashes SET location_cluster_id = 1, gps_lat = ?, gps_lon = ?, location_name = ? WHERE path = ?"
+  );
+  place.run(52.52, 13.405, "Mitte, DE", path("first.jpg"));
+  place.run(52.521, 13.406, "Mitte, DE", path("second.jpg"));
+  place.run(52.499, 13.403, "Kreuzberg, DE", path("clip.mp4"));
+  db.close();
+}
+
+async function jumpTo(page: import("@playwright/test").Page, lat: number, lon: number, zoom: number) {
+  await page.evaluate(
+    ([lat, lon, zoom]) => {
+      const map = (window as unknown as { videreMap: { jumpTo(o: object): void } }).videreMap;
+      map.jumpTo({ center: [lon, lat], zoom });
+    },
+    [lat, lon, zoom]
+  );
+}
+
+test("zooming into a city splits it into districts, then street groups", async ({ page, gallery }) => {
+  test.slow();
+  seedDistricts(gallery.libraryRoot);
+  seedBasemap(gallery.libraryRoot);
+  await preferListView(gallery);
+  await page.goto(`${gallery.baseURL}/map`);
+
+  const webgl = await page.evaluate(() => {
+    try {
+      const probe = document.createElement("canvas");
+      return !!(probe.getContext("webgl2") || probe.getContext("webgl"));
+    } catch {
+      return false;
+    }
+  });
+  test.skip(!webgl, "no working WebGL in this browser");
+  await page.waitForFunction(
+    () => (window as unknown as { maplibreInitialized?: boolean }).maplibreInitialized === true,
+    null,
+    { timeout: 15_000 }
+  );
+
+  // Districts: one chip per place name, counted, and no city-wide chip.
+  await jumpTo(page, 52.51, 13.405, 12);
+  const districts = page.locator('.map-marker[data-tier="district"]');
+  await expect(districts).toHaveCount(2);
+  await expect(page.locator('.map-marker[data-name="Mitte"]')).toContainText("2");
+  await expect(page.locator('.map-marker[data-name="Kreuzberg"]')).toContainText("1");
+  await expect(page.locator('.map-marker[data-name="Berlin"]')).toHaveCount(0);
+
+  // A district is selected exactly, and is addressable.
+  await page.locator('.map-marker[data-name="Mitte"]').click();
+  await expect(page.locator("#gallery .card")).toHaveCount(2);
+  await expect(page).toHaveURL(/\/map\/location\/berlin\?place=Mitte/);
+  await expect(page.locator("#map-breadcrumb")).toHaveText("Berlin › Mitte");
+  await expect(page.locator("#map-radius-group")).toBeHidden();
+
+  await page.reload();
+  await expect(page.locator("#gallery .card")).toHaveCount(2);
+  await expect(page.locator("#map-breadcrumb")).toHaveText("Berlin › Mitte");
+
+  // The reloaded map flies to the district it names, its chip marked active.
+  await expect(page.locator('.map-marker.active[data-name="Mitte"]')).toBeVisible({ timeout: 15_000 });
+
+  // Streets: count-only chips, each selecting a small circle.
+  await jumpTo(page, 52.5205, 13.4055, 16);
+  const streets = page.locator('.map-marker[data-tier="street"]');
+  await expect(streets).toHaveCount(2);
+  await streets.first().click();
+  await expect(page).toHaveURL(/\/map\/location\/berlin\?at=/);
+  await expect(page.locator("#gallery .card")).toHaveCount(1);
+  await expect(page.locator("#map-radius-group")).toBeVisible();
+
+  // Zooming out past the street tier drops the street selection.
+  await jumpTo(page, 52.51, 13.405, 9);
+  await expect(page.locator("#map-breadcrumb")).toBeHidden();
+  await expect(page.locator("#gallery .card")).toHaveCount(3);
+});
+
 test("a library that never clustered shows the shared empty state", async ({ page, gallery }) => {
   const db = openLibraryDb(gallery.libraryRoot);
   db.exec("UPDATE file_hashes SET location_cluster_id = NULL; DELETE FROM location_clusters;");
