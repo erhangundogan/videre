@@ -16,6 +16,39 @@ version number and are released together.
 ## [Unreleased]
 
 
+## [0.59.0] - 2026-10-09
+
+### Added
+
+- **Settings in the gallery has three tabs.** **Library config** edits
+  every `videre config` key, and **Gallery** edits the gallery settings,
+  grouped by the page they belong to: People holds face learning, the
+  clustering parameters and the people layout. Each setting shows its
+  control and range, a value is checked as you type, and **Save** writes
+  every change at once or none, saying which values it refused. A setting
+  that differs from its default is tinted and has a reset button. Turning
+  street detail off there deletes the street map at once.
+- **Gallery Import/Export** (the former settings page) now exports,
+  imports and resets the face learning and clustering settings too. A file
+  exported by an earlier version still imports, and leaves the face
+  settings as they are.
+
+### Changed
+
+- A gallery settings save (`PATCH` or `PUT /api/settings`) refuses a value
+  of the wrong type or out of range with `422` and a message per value,
+  where it used to store it and ignore it. A hand-edited file is read as
+  before.
+- `videre config set street-detail false` says how much it deleted.
+
+### Upgrading
+
+- **For crates depending on `videre-core`:** `basemap_detail::remove`
+  returns the deleted street map's size (`Option<u64>`) instead of `bool`.
+  `library_config` gains `edit_many`, `KEYS`, `KeySpec`, `Kind`, `Applies`,
+  `spec_for`, `value_json` and the range constants `IO_WORKERS_MAX`,
+  `RUN_HISTORY_MAX`, `SEARCH_MIN_MATCH_RANGE` and `SIMILAR_MIN_SCORE_RANGE`.
+
 ## [0.58.0] - 2026-10-07
 
 ### Added
@@ -3199,7 +3232,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.58.0...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.59.0...HEAD
+[0.59.0]: https://github.com/erhangundogan/videre/compare/v0.58.0...v0.59.0
 [0.58.0]: https://github.com/erhangundogan/videre/compare/v0.57.0...v0.58.0
 [0.57.0]: https://github.com/erhangundogan/videre/compare/v0.56.0...v0.57.0
 [0.56.0]: https://github.com/erhangundogan/videre/compare/v0.55.0...v0.56.0
