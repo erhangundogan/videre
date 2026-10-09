@@ -16,6 +16,57 @@ version number and are released together.
 ## [Unreleased]
 
 
+## [0.60.0] - 2026-10-09
+
+### Changed
+
+- **`videre watch` prunes by default**, including the watch the gallery
+  starts. A file deleted or moved outside videre used to stay in the
+  library until a manual `videre prune`. Prune keeps its guards when
+  unattended: a missing folder is left alone, and an implausibly large
+  share is refused. `--no-prune` leaves the stage out.
+- **The gallery's Delete and the Duplicates page's Trash clean up at
+  once**, as `dedupe trash` does: a removed item's marks, tags, faces and
+  embeddings go with it, recorded as a prune run. An undo brings the files
+  back for watch to process again.
+- **A file skipped after two failed decodes is tried again unless it is
+  broken.** A QuickLook timeout under load used to skip a good photo for
+  good, exactly like a corrupt file. Now only a file that is not a
+  decodable image stays skipped; a timeout, an unreachable drive or an
+  unknown cause rests for a day, then any run, watch included, tries it
+  again. Files skipped by an earlier version are retried within a day.
+- `videre status` shows run times in local time, as the problems below
+  them already were, aligns its name column, and shows a run in progress
+  as running.
+- Watch's stages no longer fill `videre status`'s run history with
+  sub-second cycles; the history keeps the long runs it is for.
+
+### Fixed
+
+- `fix-dates` dates photos taken in the hour the clocks change. The
+  repeated hour takes its first pass and the skipped hour reads as the
+  clock after the jump; both used to fail on every run. Run `fix-dates`
+  again to fix the ones it skipped.
+- A date `fix-dates` cannot read is a warning, counted apart in its
+  summary, so `videre status --check` no longer alerts on it; `status`
+  counts such files as skipped rather than done.
+- `videre dedupe review` says where it wrote its page once, and keeps
+  quiet under `--silent`.
+
+### Docs
+
+- The guides and reference were checked against the code and corrected
+  throughout; the prune page says when a manual prune is still needed.
+- A flag in a table's first column no longer wraps.
+
+### Upgrading
+
+- **For crates depending on `videre-core`:** `decode_failures::record`
+  takes the failure's `Option<ErrorKind>`, and `decode_failures` gains
+  `RETRY_AFTER`. `pipeline_runs` gains `track_cycle_in_as`.
+- **For crates depending on `videre-ml`:** `WorkerMsg::DecodeError` has a
+  `kind` field.
+
 ## [0.59.0] - 2026-10-09
 
 ### Added
@@ -3232,7 +3283,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.59.0...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.60.0...HEAD
+[0.60.0]: https://github.com/erhangundogan/videre/compare/v0.59.0...v0.60.0
 [0.59.0]: https://github.com/erhangundogan/videre/compare/v0.58.0...v0.59.0
 [0.58.0]: https://github.com/erhangundogan/videre/compare/v0.57.0...v0.58.0
 [0.57.0]: https://github.com/erhangundogan/videre/compare/v0.56.0...v0.57.0
