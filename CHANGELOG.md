@@ -16,6 +16,33 @@ version number and are released together.
 ## [Unreleased]
 
 
+## [0.61.0] - 2026-10-10
+
+### Added
+
+- **Diagnostics in the gallery.** The `...` menu has a Diagnostics page
+  with three tabs. **Status** shows what `videre status` prints: coverage,
+  each command's runs with the earlier ones beneath, recent problems linked
+  to their log lines, and the commands to run next; it refreshes every 10
+  seconds while watch runs. **Stats** shows what `videre stats` prints.
+  **Logs** lists the command logs newest first, filtered by command, level,
+  time and text, with the filters kept in the address; case and Turkish
+  letters do not matter, so `cicek` finds `ÇİÇEK.HEIC`. The page changes
+  nothing.
+- New gallery endpoints `GET /api/diagnostics/status`, `/stats` and `/logs`.
+
+### Fixed
+
+- A video the browser cannot play, such as an older camera clip in Motion
+  JPEG or a ProRes clip, no longer leaves a dead player in the lightbox. It
+  says the browser cannot play the format and offers the original as a
+  download.
+
+### Upgrading
+
+- **For crates depending on `videre-core`:** `error_log` gains
+  `read_lines`, `LogQuery` and `LogPage`; `person` gains `search_fold`.
+
 ## [0.60.0] - 2026-10-09
 
 ### Changed
@@ -3283,7 +3310,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.60.0...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.61.0...HEAD
+[0.61.0]: https://github.com/erhangundogan/videre/compare/v0.60.0...v0.61.0
 [0.60.0]: https://github.com/erhangundogan/videre/compare/v0.59.0...v0.60.0
 [0.59.0]: https://github.com/erhangundogan/videre/compare/v0.58.0...v0.59.0
 [0.58.0]: https://github.com/erhangundogan/videre/compare/v0.57.0...v0.58.0
