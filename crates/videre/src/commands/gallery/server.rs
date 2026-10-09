@@ -2282,11 +2282,29 @@ async fn write_settings(
 async fn handle_patch_settings(
     State(state): State<Arc<AppState>>,
     AxumJson(patch): AxumJson<serde_json::Value>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+) -> Result<Json<serde_json::Value>, axum::response::Response> {
     if !patch.is_object() {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(StatusCode::BAD_REQUEST.into_response());
     }
-    write_settings(state, move |o| super::settings::merge_patch(o, &patch)).await
+    refuse_invalid(&patch)?;
+    write_settings(state, move |o| super::settings::merge_patch(o, &patch))
+        .await
+        .map_err(IntoResponse::into_response)
+}
+
+/// 422 with each refused value's message by dotted path, before anything is
+/// written. Only the incoming values are checked: a value already on disk
+/// that is out of range (a hand edit) must not block every later save.
+fn refuse_invalid(incoming: &serde_json::Value) -> Result<(), axum::response::Response> {
+    let errors = super::settings::validate(incoming);
+    if errors.is_empty() {
+        return Ok(());
+    }
+    Err((
+        StatusCode::UNPROCESSABLE_ENTITY,
+        Json(serde_json::json!({ "errors": errors })),
+    )
+        .into_response())
 }
 
 /// `PUT /api/settings`: import. Replaces `routes` wholesale and keeps the
@@ -2295,16 +2313,18 @@ async fn handle_patch_settings(
 async fn handle_put_settings(
     State(state): State<Arc<AppState>>,
     AxumJson(body): AxumJson<serde_json::Value>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+) -> Result<Json<serde_json::Value>, axum::response::Response> {
     let Some(routes) = body.get("routes").filter(|r| r.is_object()).cloned() else {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(StatusCode::BAD_REQUEST.into_response());
     };
+    refuse_invalid(&serde_json::json!({ "routes": routes }))?;
     write_settings(state, move |o| {
         o.as_object_mut()
             .expect("stored overrides are an object")
             .insert("routes".into(), routes);
     })
     .await
+    .map_err(IntoResponse::into_response)
 }
 
 #[derive(Deserialize)]
@@ -6195,6 +6215,33 @@ mod settings_api_tests {
     }
 
     #[tokio::test]
+    async fn a_patch_with_one_bad_value_is_refused_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = app(gallery_state(dir.path()));
+        let (status, _) =
+            patch_settings(&app, json!({"routes": {"date": {"pageSize": 300}}})).await;
+        assert_eq!(status, StatusCode::OK);
+        let before = std::fs::read(file(dir.path())).unwrap();
+
+        let (status, body) = patch_settings(
+            &app,
+            json!({"routes": {"files": {"view": "list", "pageSize": 501}}}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            body["errors"],
+            json!({"routes.files.pageSize": "Enter a whole number from 1 to 500"})
+        );
+        assert_eq!(std::fs::read(file(dir.path())).unwrap(), before);
+        assert_eq!(
+            get_settings(&app).await["effective"]["routes"]["files"]["view"],
+            "tile",
+            "the good value in the same patch is not kept either"
+        );
+    }
+
+    #[tokio::test]
     async fn a_patch_is_stored_sparse_and_null_reverts_it() {
         let dir = tempfile::tempdir().unwrap();
         let app = app(gallery_state(dir.path()));
@@ -6259,14 +6306,20 @@ mod settings_api_tests {
     }
 
     #[tokio::test]
-    async fn a_wrong_type_is_stored_but_ignored_and_reported() {
+    async fn a_wrong_type_is_refused_by_a_save_and_ignored_in_a_hand_edit() {
         let dir = tempfile::tempdir().unwrap();
         let app = app(gallery_state(dir.path()));
-        let (status, body) =
+        let (status, _) =
             patch_settings(&app, json!({"routes": {"files": {"pageSize": "x"}}})).await;
-        assert_eq!(status, StatusCode::OK);
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+        std::fs::write(file(dir.path()), r#"{"routes":{"files":{"pageSize":"x"}}}"#).unwrap();
+        let body = get_settings(&app).await;
         assert_eq!(body["ignored"], json!(["routes.files.pageSize"]));
         assert_eq!(body["effective"]["routes"]["files"]["pageSize"], 200);
+        let (status, _) =
+            patch_settings(&app, json!({"routes": {"date": {"pageSize": 300}}})).await;
+        assert_eq!(status, StatusCode::OK, "a bad value on disk blocks no save");
     }
 
     #[tokio::test]

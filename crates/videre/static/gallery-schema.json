@@ -1,0 +1,39 @@
+{
+  "resume.route": { "section": "library", "label": "Reopen at", "type": "string", "hidden": true },
+
+  "routes.files.view": { "section": "library", "label": "View", "type": "enum", "options": ["tile", "list"] },
+  "routes.files.pageSize": { "section": "library", "label": "Page size", "hint": "Files loaded at a time, here and on the map", "type": "int", "min": 1, "max": 500 },
+  "routes.files.sort.field": { "section": "library", "label": "Sort by", "type": "enum", "options": ["date", "name", "size", "rating", "liked", "type"] },
+  "routes.files.sort.dir": { "section": "library", "label": "Sort order", "type": "enum", "options": ["desc", "asc"] },
+  "routes.files.tile.rowHeight": { "section": "library", "label": "Row height", "hint": "Target height of a tile row", "type": "int", "min": 80, "max": 1000, "unit": "px", "control": "slider", "step": 10 },
+  "routes.files.tile.colGap": { "section": "library", "label": "Column gap", "type": "int", "min": 0, "max": 100, "unit": "px" },
+  "routes.files.tile.rowGap": { "section": "library", "label": "Row gap", "type": "int", "min": 0, "max": 100, "unit": "px" },
+
+  "routes.date.pageSize": { "section": "date", "label": "Page size", "hint": "Files loaded at a time", "type": "int", "min": 1, "max": 500 },
+
+  "routes.search.pageSize": { "section": "search", "label": "Page size", "hint": "Results loaded at a time", "type": "int", "min": 1, "max": 200 },
+
+  "routes.events.sort.field": { "section": "events", "label": "Sort by", "type": "enum", "options": ["date", "files", "length", "name"] },
+  "routes.events.sort.dir": { "section": "events", "label": "Sort order", "type": "enum", "options": ["desc", "asc"] },
+
+  "faces.learning": { "section": "people", "label": "Face learning", "hint": "Learn from the faces you name and confirm", "type": "bool" },
+  "faces.learningUpdates": { "section": "people", "label": "Learning updates", "hint": "Show what face learning changed", "type": "bool" },
+  "routes.people.align": { "section": "people", "label": "Show people", "hint": "Where the people list sits beside the faces", "type": "enum", "options": ["right", "top"] },
+  "routes.people.reclusterOpen": { "section": "people", "label": "Recluster row open", "type": "bool" },
+  "routes.people.pageSize": { "section": "people", "label": "Page size", "hint": "Faces loaded at a time", "type": "int", "min": 1, "max": 1000 },
+  "faces.clustering.eps": { "section": "people", "label": "Grouping distance", "hint": "How far apart two faces of one person may be; larger groups more", "type": "number", "min": 0, "max": 2, "step": 0.01 },
+  "faces.clustering.min_cluster_size": { "section": "people", "label": "Smallest group", "hint": "Fewer faces than this stay ungrouped", "type": "int", "min": 1, "max": 1000 },
+  "faces.clustering.merge_sim": { "section": "people", "label": "Merge similarity", "hint": "Groups at least this similar merge", "type": "number", "min": -1, "max": 1, "step": 0.01 },
+  "faces.clustering.min_face_size": { "section": "people", "label": "Smallest face", "hint": "Smaller faces are held out", "type": "number", "min": 0, "max": 10000, "unit": "px" },
+  "faces.clustering.max_generic_sim": { "section": "people", "label": "Generic face limit", "hint": "Faces this close to an average face are held out", "type": "number", "min": -1, "max": 1, "step": 0.01 },
+  "faces.clustering.max_landmark_error": { "section": "people", "label": "Alignment limit", "hint": "Worse aligned faces are held out", "type": "number", "min": 0, "max": 1000, "unit": "px", "step": 0.1 },
+  "faces.clustering.min_blur": { "section": "people", "label": "Sharpness floor", "hint": "Blurrier faces are held out", "type": "number", "min": 0, "max": 100000 },
+  "faces.clustering.attach_sim": { "section": "people", "label": "Attach similarity", "hint": "A leftover face joins its nearest group when at least this similar; 1 turns it off", "type": "number", "min": -1, "max": 1, "step": 0.01 },
+
+  "routes.duplicates.pageSize": { "section": "duplicates", "label": "Page size", "hint": "Groups loaded at a time", "type": "int", "min": 1, "max": 1000 },
+  "routes.duplicates.kinds": { "section": "duplicates", "label": "Kinds", "hint": "Which kinds of duplicate the page lists", "type": "set", "options": ["exact", "resized", "creation", "similar"] },
+
+  "routes.map.radiusKm": { "section": "map", "label": "Place radius", "hint": "How far around a place it opens with; 0 means the place itself", "type": "number", "min": 0, "max": 20000, "unit": "km" },
+  "routes.map.sort.field": { "section": "map", "label": "Sort by", "type": "enum", "options": ["date", "name", "size", "rating", "liked", "type"] },
+  "routes.map.sort.dir": { "section": "map", "label": "Sort order", "type": "enum", "options": ["desc", "asc"] }
+}
