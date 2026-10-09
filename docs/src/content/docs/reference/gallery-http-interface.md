@@ -46,7 +46,8 @@ and cannot answer these HTTP requests after the command exits.
 | `GET /map/location/{name}` | One addressable location drill-down |
 | `GET /events` | Automatic travel-trip overview |
 | `GET /events/{key}` | One trip's media (`key` is its first photo anchor's compact time and full hash) |
-| `GET /settings` | Gallery settings: import, export and reset |
+| `GET /settings` | Redirects to `/settings/config` |
+| `GET /settings/{tab}` | The settings pages: `config`, `gallery`, or `manage` (import, export and reset) |
 | `GET /smart` | Reserved |
 
 Date route segments are zero-padded where applicable: `YYYY`, `YYYY/MM` and
@@ -124,7 +125,10 @@ restart.
 A JSON merge patch ([RFC 7396](https://www.rfc-editor.org/rfc/rfc7396)) over
 the stored overrides. `null` removes a key, reverting it to its default. After
 every write, `PATCH` or `PUT`, any value equal to its default is dropped, so
-the file only ever holds what differs.
+the file only ever holds what differs. Every incoming value the settings
+schema describes is checked first; any refused value answers
+`422 Unprocessable Entity` with `{"errors": {"<dotted.path>": "<message>"}}`
+and nothing is written.
 
 ```bash
 curl -X PATCH -H 'Content-Type: application/merge-patch+json' \
@@ -137,6 +141,16 @@ curl -X PATCH -H 'Content-Type: application/merge-patch+json' \
 Import. The body must hold a `routes` object, which replaces the stored
 `routes` wholesale; everything else in the file, including where the library
 reopens, is kept. `{"routes":{}}` resets every preference to its default.
+
+### `PATCH /api/config`
+
+Changes [`videre config`](/commands/config/) keys, named as `videre config
+set` names them: `{"run-history": 5, "similar-min-score": null}`. `null`
+unsets a key. Every value is checked before the config is written once, so a
+save lands whole or not at all; a refused one answers `422` with
+`{"errors": {"<key>": "<message>"}}`. The reply holds every key's value as
+`values`. Turning `street-detail` off deletes the street map, and
+`deleted_street_map_bytes` says how much.
 
 ## Files
 

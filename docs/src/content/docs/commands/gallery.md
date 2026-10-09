@@ -331,7 +331,20 @@ These are the defaults every library starts from:
 ```json
 {
   "resume": { "route": "/" },
-  "faces": { "learning": false, "learningUpdates": false },
+  "faces": {
+    "learning": false,
+    "learningUpdates": false,
+    "clustering": {
+      "eps": 0.6,
+      "min_cluster_size": 3,
+      "merge_sim": 0.35,
+      "min_face_size": 80,
+      "max_generic_sim": 0.4,
+      "max_landmark_error": 7,
+      "min_blur": 80,
+      "attach_sim": 0.4
+    }
+  },
   "routes": {
     "files": {
       "view": "tile",
@@ -354,6 +367,7 @@ These are the defaults every library starts from:
 | `resume.route` | a page path | The page the gallery reopens at. Saved as you move around; see below |
 | `faces.learning` | `true`, `false` | Whether face learning runs for this library; see [Face learning](#face-learning) |
 | `faces.learningUpdates` | `true`, `false` | Whether the People page shows face learning's status strip and teaching notes, while learning is on |
+| `faces.clustering.*` | see [Recluster](#recluster) | The face grouping parameters the People page's **Recluster** saves; `videre faces` and watch use them too |
 | `routes.files.view` | `tile`, `list` | The file view on the Library, Date, Events and Map grids |
 | `routes.files.pageSize` | a whole number, 1 to 500 | How many files the Library and Map grids load at a time, and with each **Show more** |
 | `routes.date.pageSize` | a whole number, 1 to 500 | The same for a day, month or range in the Date view |
@@ -373,8 +387,9 @@ These are the defaults every library starts from:
 | `routes.events.sort.field` | `date`, `files`, `length`, `name` | What the Events overview orders trips by |
 | `routes.events.sort.dir` | `asc`, `desc` | Which way that order runs |
 
-A value of the wrong type (a word where a number belongs) or out of range is
-ignored and the default used instead. Keys the gallery does not know are kept
+Saving from the settings page refuses a value of the wrong type or out of
+range. In a hand-edited file, such a value is ignored and the default used
+instead. Keys the gallery does not know are kept
 in the file but have no effect. If the file is not valid JSON, the gallery runs
 on the defaults, shows a banner saying why, and saves nothing until you fix or
 delete the file, so hand edits are never overwritten.
@@ -384,18 +399,29 @@ page `--browse` opens, is the last page you visited in that library, such as a
 day in the Date view or a place on the map. Opening the bare address still
 lands on the Library tab.
 
-**The settings page.** The **...** button at the right end of the navigation
+**The settings pages.** The **...** button at the right end of the navigation
 bar opens a menu: **Help** opens this page in a new tab, **Feedback** the
-[Feedback](/reference/feedback/) page, and **Settings** leads
-to a page that shows the file's
-location, has a **Page sizes** box for each paged view (a value outside its
-range is refused and not saved), and can:
+[Feedback](/reference/feedback/) page, and **Settings** leads to three tabs:
 
-- **Export settings** to `videre-gallery-settings.json`. Only the `routes`
-  section is exported; the page a library reopens at belongs to that library.
-- **Import settings** from such a file, into this or any other library.
-- **Reset to defaults**, clearing every saved choice except where the library
-  reopens.
+- **Library config** edits every [`videre config`](/commands/config/) key.
+- **Gallery** edits the settings above, grouped by the page they belong to:
+  People, for example, holds face learning, the clustering parameters and the
+  people layout.
+- **Import and export** can:
+  - **Export settings** to `videre-gallery-settings.json`. Only the `routes`
+    section is exported; the page a library reopens at belongs to that
+    library.
+  - **Import settings** from such a file, into this or any other library.
+  - **Reset to defaults**, clearing every saved choice except where the
+    library reopens.
+
+On the first two tabs, each setting shows its control, a short description
+and, where it has one, its range. A value is checked as you type, and
+**Save** at the bottom writes every change at once, or says which values it
+refused. A setting that differs from its default is tinted, shows the default,
+and has a reset button beside its control. A saved gallery setting applies when
+a page next loads; a config key applies as its description says, at once for
+street detail and from the next run or start for the rest.
 
 Copying `.videre/gallery.json` into another library's `.videre` folder works
 too.

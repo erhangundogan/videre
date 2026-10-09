@@ -89,6 +89,10 @@ are responsible for initializing a library database.
 
 ## Settings
 
+Every key can also be changed in the gallery, under **Settings**, then
+**Library config**: each shows its control and range, and **Save** writes every
+change at once. See [the settings pages](/commands/gallery/#settings).
+
 | Command key | TOML key | Accepted value |
 |---|---|---|
 | `model` | `default_model` | A supported `owner/model` identifier |

@@ -2324,14 +2324,14 @@ async fn write_settings(
 async fn handle_patch_settings(
     State(state): State<Arc<AppState>>,
     AxumJson(patch): AxumJson<serde_json::Value>,
-) -> Result<Json<serde_json::Value>, axum::response::Response> {
+) -> Result<Json<serde_json::Value>, Refusal> {
     if !patch.is_object() {
-        return Err(StatusCode::BAD_REQUEST.into_response());
+        return Err(bare(StatusCode::BAD_REQUEST));
     }
     refuse_invalid(&patch)?;
     write_settings(state, move |o| super::settings::merge_patch(o, &patch))
         .await
-        .map_err(IntoResponse::into_response)
+        .map_err(bare)
 }
 
 /// `PATCH /api/config`: `{cli-name: value | null}`, the settings page's save
@@ -2342,32 +2342,29 @@ async fn handle_patch_settings(
 async fn handle_patch_config(
     State(state): State<Arc<AppState>>,
     AxumJson(body): AxumJson<serde_json::Value>,
-) -> Result<Json<serde_json::Value>, axum::response::Response> {
+) -> Result<Json<serde_json::Value>, Refusal> {
     use videre_core::library_config::{self, ConfigKey};
     let changes = super::config_form::parse(&body).map_err(|errors| {
         (
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(serde_json::json!({ "errors": errors })),
         )
-            .into_response()
     })?;
     tokio::task::spawn_blocking(move || {
-        let _guard = guard_operation(&state).map_err(IntoResponse::into_response)?;
+        let _guard = guard_operation(&state).map_err(bare)?;
         let library = &state.context.library;
         library_config::edit_many(library, &changes).map_err(|e| {
             (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 Json(serde_json::json!({ "error": format!("{e:#}") })),
             )
-                .into_response()
         })?;
-        let config =
-            library_config::load(&library.paths).map_err(|e| internal(e).into_response())?;
+        let config = library_config::load(&library.paths).map_err(|e| bare(internal(e)))?;
         let mut deleted = None;
         if changes.iter().any(|(k, _)| *k == ConfigKey::StreetDetail) {
             if !config.street_detail {
                 deleted = videre_core::basemap_detail::remove(&library.paths.state)
-                    .map_err(|e| internal(e).into_response())?;
+                    .map_err(|e| bare(internal(e)))?;
             }
             state
                 .street_detail
@@ -2379,13 +2376,13 @@ async fn handle_patch_config(
         })))
     })
     .await
-    .map_err(|e| internal(e).into_response())?
+    .map_err(|e| bare(internal(e)))?
 }
 
 /// 422 with each refused value's message by dotted path, before anything is
 /// written. Only the incoming values are checked: a value already on disk
 /// that is out of range (a hand edit) must not block every later save.
-fn refuse_invalid(incoming: &serde_json::Value) -> Result<(), axum::response::Response> {
+fn refuse_invalid(incoming: &serde_json::Value) -> Result<(), Refusal> {
     let errors = super::settings::validate(incoming);
     if errors.is_empty() {
         return Ok(());
@@ -2393,8 +2390,15 @@ fn refuse_invalid(incoming: &serde_json::Value) -> Result<(), axum::response::Re
     Err((
         StatusCode::UNPROCESSABLE_ENTITY,
         Json(serde_json::json!({ "errors": errors })),
-    )
-        .into_response())
+    ))
+}
+
+/// A refused settings or config save: the status, and a body saying why
+/// (`null` when the status says it all).
+type Refusal = (StatusCode, Json<serde_json::Value>);
+
+fn bare(code: StatusCode) -> Refusal {
+    (code, Json(serde_json::Value::Null))
 }
 
 /// `PUT /api/settings`: import. Replaces `routes` wholesale and keeps the
@@ -2403,9 +2407,9 @@ fn refuse_invalid(incoming: &serde_json::Value) -> Result<(), axum::response::Re
 async fn handle_put_settings(
     State(state): State<Arc<AppState>>,
     AxumJson(body): AxumJson<serde_json::Value>,
-) -> Result<Json<serde_json::Value>, axum::response::Response> {
+) -> Result<Json<serde_json::Value>, Refusal> {
     let Some(routes) = body.get("routes").filter(|r| r.is_object()).cloned() else {
-        return Err(StatusCode::BAD_REQUEST.into_response());
+        return Err(bare(StatusCode::BAD_REQUEST));
     };
     refuse_invalid(&serde_json::json!({ "routes": routes }))?;
     write_settings(state, move |o| {
@@ -2414,7 +2418,7 @@ async fn handle_put_settings(
             .insert("routes".into(), routes);
     })
     .await
-    .map_err(IntoResponse::into_response)
+    .map_err(bare)
 }
 
 #[derive(Deserialize)]
