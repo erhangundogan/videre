@@ -407,11 +407,14 @@ bar opens a menu: **Help** opens this page in a new tab, **Feedback** the
 - **Gallery** edits the settings above, grouped by the page they belong to:
   People, for example, holds face learning, the clustering parameters and the
   people layout.
-- **Import and export** can:
-  - **Export settings** to `videre-gallery-settings.json`. Only the `routes`
-    section is exported; the page a library reopens at belongs to that
-    library.
-  - **Import settings** from such a file, into this or any other library.
+- **Gallery Import/Export** can:
+  - **Export settings** to `videre-gallery-settings.json`: the `routes` and
+    `faces` sections, so the page settings and the face learning and
+    clustering settings. The page a library reopens at belongs to that
+    library, and the library config is not included.
+  - **Import settings** from such a file, into this or any other library. A
+    file with only `routes`, exported by an earlier version, leaves the face
+    settings as they are.
   - **Reset to defaults**, clearing every saved choice except where the
     library reopens.
 

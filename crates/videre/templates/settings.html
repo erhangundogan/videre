@@ -30,7 +30,7 @@
 <nav class="settings-tabs" aria-label="Settings sections">
 <a href="/settings/config"{% if tab == "config" %} class="on" aria-current="page"{% endif %}>Library config</a>
 <a href="/settings/gallery"{% if tab == "gallery" %} class="on" aria-current="page"{% endif %}>Gallery</a>
-<a href="/settings/manage"{% if tab == "manage" %} class="on" aria-current="page"{% endif %}>Import and export</a>
+<a href="/settings/manage"{% if tab == "manage" %} class="on" aria-current="page"{% endif %}>Gallery Import/Export</a>
 </nav>
 {% if tab == "config" %}
 <p class="settings-intro">The settings <code>videre config</code> shows, stored in <code>{{ config_path }}</code>. A saved change is used by the next command run; when it applies to the running gallery or watch, its description says so.</p>
@@ -41,8 +41,8 @@
 <div id="settings-form" data-kind="gallery"></div>
 {% else %}
 <p class="settings-intro">Gallery settings for this library are stored in <code id="settings-path">{{ path }}</code>.</p>
-<h2>Import and export</h2>
-<p>Export saves this library's choices to a file. Import applies a file exported from any library; it does not change which page this library reopens at.</p>
+<h2>Gallery Import/Export</h2>
+<p>Export saves this library's gallery choices, the page settings and the face learning and clustering settings, to a file. Import applies a file exported from any library; it does not change which page this library reopens at. Library config is not included.</p>
 <div class="settings-actions">
 <button id="settings-export" type="button">Export settings</button>
 <label class="settings-import-label">Import settings<input id="settings-import" type="file" accept="application/json,.json"></label>

@@ -2401,21 +2401,38 @@ fn bare(code: StatusCode) -> Refusal {
     (code, Json(serde_json::Value::Null))
 }
 
-/// `PUT /api/settings`: import. Replaces `routes` wholesale and keeps the
-/// rest, so importing another library's settings never moves where this one
-/// resumes.
+/// The sections an import or reset replaces: the page preferences and the
+/// face settings. `resume` is left out, so importing another library's
+/// settings never moves where this one reopens.
+const PORTABLE_SECTIONS: [&str; 2] = ["routes", "faces"];
+
+/// `PUT /api/settings`: import. Each of `routes` and `faces` the body holds
+/// replaces that section wholesale; a section it lacks is kept, so a file
+/// exported before faces were exported leaves the face settings alone.
 async fn handle_put_settings(
     State(state): State<Arc<AppState>>,
     AxumJson(body): AxumJson<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, Refusal> {
-    let Some(routes) = body.get("routes").filter(|r| r.is_object()).cloned() else {
+    let mut sections = serde_json::Map::new();
+    for name in PORTABLE_SECTIONS {
+        match body.get(name) {
+            None => {}
+            Some(v) if v.is_object() => {
+                sections.insert(name.into(), v.clone());
+            }
+            Some(_) => return Err(bare(StatusCode::BAD_REQUEST)),
+        }
+    }
+    if sections.is_empty() {
         return Err(bare(StatusCode::BAD_REQUEST));
-    };
-    refuse_invalid(&serde_json::json!({ "routes": routes }))?;
+    }
+    let sections = serde_json::Value::Object(sections);
+    refuse_invalid(&sections)?;
     write_settings(state, move |o| {
-        o.as_object_mut()
-            .expect("stored overrides are an object")
-            .insert("routes".into(), routes);
+        let stored = o.as_object_mut().expect("stored overrides are an object");
+        for (name, value) in sections.as_object().expect("built as an object") {
+            stored.insert(name.clone(), value.clone());
+        }
     })
     .await
     .map_err(bare)
@@ -6538,10 +6555,64 @@ mod settings_api_tests {
     }
 
     #[tokio::test]
+    async fn import_carries_face_settings_and_a_file_without_them_keeps_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = app(gallery_state(dir.path()));
+        patch_settings(
+            &app,
+            json!({"faces": {"learning": true, "clustering": {"eps": 0.5}}}),
+        )
+        .await;
+
+        // An export made before faces were exported holds routes only.
+        let (status, body) = send(
+            &app,
+            "PUT",
+            "application/json",
+            r#"{"routes":{"date":{"pageSize":50}}}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["overrides"]["faces"]["learning"], true);
+
+        let (status, body) = send(
+            &app,
+            "PUT",
+            "application/json",
+            r#"{"routes":{},"faces":{"clustering":{"min_cluster_size":4}}}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body["overrides"],
+            json!({"faces": {"clustering": {"min_cluster_size": 4}}})
+        );
+
+        // Reset clears both.
+        let (_, body) = send(
+            &app,
+            "PUT",
+            "application/json",
+            r#"{"routes":{},"faces":{}}"#,
+        )
+        .await;
+        assert_eq!(body["overrides"], json!({}));
+
+        let (status, _) = send(
+            &app,
+            "PUT",
+            "application/json",
+            r#"{"faces":{"clustering":{"eps":9}}}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
     async fn malformed_bodies_are_refused() {
         let dir = tempfile::tempdir().unwrap();
         let app = app(gallery_state(dir.path()));
-        for body in [r#"{"routes":3}"#, "[]", "{}"] {
+        for body in [r#"{"routes":3}"#, r#"{"faces":[]}"#, "[]", "{}"] {
             let (status, _) = send(&app, "PUT", "application/json", body).await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
         }

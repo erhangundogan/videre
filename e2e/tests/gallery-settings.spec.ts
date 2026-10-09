@@ -71,7 +71,7 @@ test("export, reset and import round-trip the library's choices", async ({ page,
   await page.locator("#settings-export").click();
   const file = await (await download).path();
   const exported = JSON.parse(await readFile(file, "utf8"));
-  expect(exported).toEqual({ routes: { files: { view: "list" } } });
+  expect(exported).toEqual({ routes: { files: { view: "list" } }, faces: {} });
 
   page.once("dialog", (dialog) => dialog.accept());
   await page.locator("#settings-reset").click();

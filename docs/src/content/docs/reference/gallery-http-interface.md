@@ -47,7 +47,7 @@ and cannot answer these HTTP requests after the command exits.
 | `GET /events` | Automatic travel-trip overview |
 | `GET /events/{key}` | One trip's media (`key` is its first photo anchor's compact time and full hash) |
 | `GET /settings` | Redirects to `/settings/config` |
-| `GET /settings/{tab}` | The settings pages: `config`, `gallery`, or `manage` (import, export and reset) |
+| `GET /settings/{tab}` | The settings pages: `config`, `gallery`, or `manage` (gallery import, export and reset) |
 | `GET /smart` | Reserved |
 
 Date route segments are zero-padded where applicable: `YYYY`, `YYYY/MM` and
@@ -138,9 +138,10 @@ curl -X PATCH -H 'Content-Type: application/merge-patch+json' \
 
 ### `PUT /api/settings`
 
-Import. The body must hold a `routes` object, which replaces the stored
-`routes` wholesale; everything else in the file, including where the library
-reopens, is kept. `{"routes":{}}` resets every preference to its default.
+Import. The body must hold a `routes` or a `faces` object, or both; each one
+present replaces that stored section wholesale. Everything else in the file,
+including where the library reopens, is kept. `{"routes":{},"faces":{}}`
+resets every preference to its default. Values are checked as for `PATCH`.
 
 ### `PATCH /api/config`
 

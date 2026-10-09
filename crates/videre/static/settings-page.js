@@ -1,6 +1,6 @@
 // /settings/manage: export, import and reset of this library's gallery
-// settings through /api/settings. Export carries only `routes`, the portable
-// preferences; where a library resumes stays with that library.
+// settings through /api/settings. Export carries `routes` and `faces`, the
+// portable settings; where a library reopens stays with that library.
 (function(){
   var status=document.getElementById('settings-status');
   if(!document.getElementById('settings-export'))return;
@@ -25,7 +25,8 @@
   }
   document.getElementById('settings-export').addEventListener('click',function(){
     fetch('/api/settings').then(function(r){ return r.json(); }).then(function(r){
-      var out={routes:(r.overrides&&r.overrides.routes)||{}};
+      var o=r.overrides||{};
+      var out={routes:o.routes||{},faces:o.faces||{}};
       var a=document.createElement('a');
       a.href=URL.createObjectURL(new Blob([JSON.stringify(out,null,2)+'\n'],{type:'application/json'}));
       a.download='videre-gallery-settings.json';
@@ -43,15 +44,21 @@
       var doc;
       try{ doc=JSON.parse(text); }
       catch(err){ status.textContent='Not imported: the file is not valid JSON.'; return; }
-      if(!doc||typeof doc!=='object'||!doc.routes||typeof doc.routes!=='object'||Array.isArray(doc.routes)){
-        status.textContent='Not imported: the file has no "routes" object.';
+      var isObject=function(v){ return !!v&&typeof v==='object'&&!Array.isArray(v); };
+      if(!isObject(doc)||!(isObject(doc.routes)||isObject(doc.faces))){
+        status.textContent='Not imported: the file has no "routes" or "faces" object.';
         return;
       }
-      return send('PUT',{routes:doc.routes},'Imported.');
+      // A file exported before faces were exported has routes only; the face
+      // settings are then left as they are.
+      var body={};
+      if(isObject(doc.routes))body.routes=doc.routes;
+      if(isObject(doc.faces))body.faces=doc.faces;
+      return send('PUT',body,'Imported.');
     }).finally(function(){ input.value=''; });
   });
   document.getElementById('settings-reset').addEventListener('click',function(){
     if(!confirm('Reset every gallery setting for this library to its default?'))return;
-    send('PUT',{routes:{}},'Reset to defaults.');
+    send('PUT',{routes:{},faces:{}},'Reset to defaults.');
   });
 })();
