@@ -178,3 +178,14 @@ body.select-mode .card[data-hash].selected::after,body.select-mode .tile[data-ha
 .set-savebar button:disabled{opacity:.5;cursor:default}
 .set-status{margin-right:auto;font-size:13px;color:#52525b}
 .set-status.bad{color:#b91c1c}
+/* A page reached from the nav's ... menu (Settings, Diagnostics): centered,
+   with a strip of tabs, each its own route. */
+.tool-page{padding:24px 32px;max-width:860px;margin:0 auto;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+.tool-page h1{font-size:22px;margin:0 0 8px}
+.tool-page h2{font-size:16px;margin:24px 0 8px}
+.tool-page code{font-size:13px;word-break:break-all}
+.tool-tabs{display:flex;gap:4px;margin:0 0 16px;border-bottom:1px solid #d4d4d8}
+.tool-tabs a{padding:6px 14px;color:#52525b;text-decoration:none;border-bottom:2px solid transparent;margin-bottom:-1px}
+.tool-tabs a:hover{color:#18181b}
+.tool-tabs a.on{color:#18181b;border-bottom-color:#2a6db5;font-weight:600}
+.tool-intro{color:#52525b;margin:0 0 16px}

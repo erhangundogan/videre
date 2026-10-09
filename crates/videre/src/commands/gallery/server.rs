@@ -1995,6 +1995,19 @@ mod pages {
         pub config_json: String,
     }
 
+    #[derive(Template)]
+    #[template(path = "diagnostics.html")]
+    pub struct Diagnostics {
+        pub settings_script: String,
+        pub chrome: &'static str,
+        pub js: &'static str,
+        pub nav: Option<super::Section>,
+        /// `status`, `stats` or `logs`.
+        pub tab: &'static str,
+    }
+
+    pub const DIAGNOSTICS_JS: &str = include_str!("../../../static/diagnostics.js");
+
     pub const SETTINGS_PAGE_JS: &str = concat!(
         include_str!("../../../static/settings-page.js"),
         "\n",
@@ -2230,6 +2243,37 @@ async fn handle_settings_page(
     };
     Ok(axum::response::Html(
         page.render().expect("settings template"),
+    ))
+}
+
+/// `/diagnostics`, reached from the nav's `...` menu, opens its first tab.
+async fn handle_diagnostics_root() -> axum::response::Redirect {
+    axum::response::Redirect::to("/diagnostics/status")
+}
+
+/// `/diagnostics/status`, `/diagnostics/stats` and `/diagnostics/logs`: what
+/// `videre status`, `videre stats` and the command logs say. The page reads
+/// each from its `/api/diagnostics/*` endpoint, so a refresh needs no reload.
+async fn handle_diagnostics_page(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(tab): axum::extract::Path<String>,
+) -> Result<axum::response::Html<String>, StatusCode> {
+    use askama::Template;
+    let tab: &'static str = match tab.as_str() {
+        "status" => "status",
+        "stats" => "stats",
+        "logs" => "logs",
+        _ => return Err(StatusCode::NOT_FOUND),
+    };
+    let page = pages::Diagnostics {
+        settings_script: page_settings(&state).await,
+        chrome: CHROME_CSS,
+        js: pages::DIAGNOSTICS_JS,
+        nav: Some(Section::Diagnostics),
+        tab,
+    };
+    Ok(axum::response::Html(
+        page.render().expect("diagnostics template"),
     ))
 }
 
@@ -5892,6 +5936,8 @@ async fn serve_faces_async(
         .route("/map", get(handle_map))
         .route("/settings", get(handle_settings_root))
         .route("/settings/{tab}", get(handle_settings_page))
+        .route("/diagnostics", get(handle_diagnostics_root))
+        .route("/diagnostics/{tab}", get(handle_diagnostics_page))
         .route("/events/{key}", get(handle_events_key))
         .route("/events", get(handle_events))
         .route("/smart", get(handle_not_yet));
@@ -6801,6 +6847,38 @@ mod settings_api_tests {
     }
 
     #[tokio::test]
+    async fn diagnostics_has_three_tabs_and_opens_on_the_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+        let app = Router::new()
+            .route("/diagnostics", get(handle_diagnostics_root))
+            .route("/diagnostics/{tab}", get(handle_diagnostics_page))
+            .with_state(state);
+        let get_uri = |uri: &'static str| {
+            let app = app.clone();
+            async move {
+                app.oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                    .await
+                    .unwrap()
+            }
+        };
+
+        let response = get_uri("/diagnostics").await;
+        assert!(response.status().is_redirection());
+        assert_eq!(response.headers()[header::LOCATION], "/diagnostics/status");
+
+        for tab in ["status", "stats", "logs"] {
+            let html = page(&app, &format!("/diagnostics/{tab}")).await;
+            assert!(html.contains(&format!("data-tab=\"{tab}\"")), "{tab}");
+            assert!(html.contains("class=\"on\" aria-current=\"page\""), "{tab}");
+            assert!(html.contains("id=\"secnav-more\""), "carries the nav menu");
+        }
+
+        let response = get_uri("/diagnostics/kasaba").await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
     async fn gallery_pages_have_the_menu_with_a_settings_item() {
         // The menu lives in the shared `nav.html` include, so two pages built
         // on different templates are enough to show every page carries it.
@@ -6821,6 +6899,10 @@ mod settings_api_tests {
             assert!(html.contains("id=\"secnav-more\""), "{uri}");
             assert!(
                 html.contains("role=\"menuitem\" href=\"/settings\""),
+                "{uri}"
+            );
+            assert!(
+                html.contains("role=\"menuitem\" href=\"/diagnostics\""),
                 "{uri}"
             );
         }

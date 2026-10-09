@@ -70,6 +70,8 @@
     { "method": "GET",    "path": "/map" },
     { "method": "GET",    "path": "/settings" },
     { "method": "GET",    "path": "/settings/{tab}" },
+    { "method": "GET",    "path": "/diagnostics" },
+    { "method": "GET",    "path": "/diagnostics/{tab}" },
     { "method": "GET",    "path": "/events" },
     { "method": "GET",    "path": "/events/{key}" },
     { "method": "GET",    "path": "/smart" },

@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>videre diagnostics</title>
+<style>{{ chrome|safe }}</style>
+<style>
+.diag-section{margin:20px 0 0}
+.diag-section h2{font-size:13px;font-weight:600;color:#52525b;margin:0 0 6px}
+.diag-head{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+.diag-head .diag-note{color:#52525b}
+.diag-head .diag-pill:last-child{margin-left:auto}
+.diag-table{width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed;background:#fff;border:1px solid #e4e4e7;border-radius:10px;overflow:hidden}
+.diag-table th,.diag-table td{padding:6px 10px;border-bottom:1px solid #f0f0f2;text-align:left;vertical-align:top;overflow:hidden;text-overflow:ellipsis}
+.diag-table tr:last-child td{border-bottom:0}
+.diag-table th{font-weight:500;color:#71717a;font-size:12px;background:#fafafa}
+.diag-table td.diag-num{font-variant-numeric:tabular-nums;white-space:nowrap}
+.diag-table tr.diag-earlier td{color:#71717a}
+.diag-table tr.diag-earlier td:first-child{padding-left:24px}
+.diag-msg{white-space:pre-wrap;word-break:break-word}
+.diag-mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+.diag-pill{display:inline-block;padding:1px 8px;border-radius:999px;font-size:12px;white-space:nowrap}
+.diag-ok{background:#dcfce7;color:#166534}
+.diag-warn{background:#fef3c7;color:#92400e}
+.diag-err{background:#fee2e2;color:#991b1b}
+.diag-run{background:#dbeafe;color:#1e40af}
+.diag-idle{background:#f4f4f5;color:#52525b}
+.diag-bar{height:6px;border-radius:3px;background:#f0f0f2;overflow:hidden;margin-top:6px}
+.diag-bar i{display:block;height:100%;background:#2a6db5}
+.diag-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px}
+.diag-card{background:#fff;border:1px solid #e4e4e7;border-radius:10px;padding:10px 14px}
+.diag-card p{margin:0;font-size:12px;color:#71717a}
+.diag-card div{font-size:20px;font-weight:600;font-variant-numeric:tabular-nums}
+.diag-step{display:flex;align-items:center;gap:10px;margin:4px 0}
+.diag-step .diag-note{color:#52525b}
+.diag-code{display:inline-block;padding:8px 10px;background:#f4f4f5;border-radius:6px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;margin:4px 0}
+.diag-controls{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.diag-controls select,.diag-controls input,.diag-more{padding:5px 8px;border:1px solid #d4d4d8;border-radius:6px;background:#fff;font:inherit}
+.diag-controls input{flex:1;min-width:160px}
+.diag-more{margin:10px 0 0;cursor:pointer}
+.diag-more:hover{background:#f4f4f5}
+.diag-empty,.diag-foot{color:#71717a;margin:10px 0 0}
+.diag-error{color:#991b1b}
+.diag-table a{color:#2a6db5;text-decoration:none}
+.diag-table a:hover{text-decoration:underline}
+</style>
+</head>
+<body>
+{% include "nav.html" %}
+<main class="tool-page">
+<h1>Diagnostics</h1>
+<nav class="tool-tabs" aria-label="Diagnostics sections">
+<a href="/diagnostics/status"{% if tab == "status" %} class="on" aria-current="page"{% endif %}>Status</a>
+<a href="/diagnostics/stats"{% if tab == "stats" %} class="on" aria-current="page"{% endif %}>Stats</a>
+<a href="/diagnostics/logs"{% if tab == "logs" %} class="on" aria-current="page"{% endif %}>Logs</a>
+</nav>
+{% if tab == "status" %}
+<p class="tool-intro">What <code>videre status</code> reports: how far each stage has come, the latest runs, and what went wrong.</p>
+{% else if tab == "stats" %}
+<p class="tool-intro">What <code>videre stats</code> reports: what is in the library, and the disk videre uses for it.</p>
+{% else %}
+<p class="tool-intro">The library's command logs, newest first. Warnings and errors are always kept; info lines only while <code>log-level</code> is info.</p>
+{% endif %}
+<div id="diag" data-tab="{{ tab }}"><p class="diag-empty">Loading&hellip;</p></div>
+</main>
+<script>{{ js|safe }}</script>
+</body>
+</html>
