@@ -116,7 +116,7 @@ stays visible even when a file has none of the people or location data yet.
 | `/map/location/berlin?place=Mitte%2C%20DE` | One district of a city: exactly the files named for it |
 | `/map/location/berlin?at=52.52,13.405&radius=0.2` | A street group: a small circle inside a city |
 | `/events` | Substantial travel trips inferred from capture dates and photo locations; click one to see its media |
-| `/events/20200312T100000-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` | One trip's media, keyed by its first photo anchor's time and full content hash |
+| `/events/<time>-<hash>` | One trip's media, keyed by its first photo anchor's time and full content hash, such as `/events/20200312T100000-` followed by the 64-character hash |
 | `/smart` | Reserved, not built yet |
 
 **Library**, **Duplicates**, **Date**, **Events**, **People** and **Map** sit in a strip along
@@ -460,13 +460,13 @@ Marks and tags belong to the content, so every copy of a photo changes with
 it, exactly as with [`videre mark`](/commands/mark/) and
 [`videre tag`](/commands/tag/). Delete moves **every copy** of each selected
 item to the Trash (the confirmation counts them), each with its XMP sidecar,
-and the library stops
-listing them at once; their marks, tags and faces stay until
-[`videre prune`](/commands/prune/). A Delete is undone with
+and nothing of them is left behind: their marks, tags, faces, embeddings and
+thumbnails go at once, as [`videre prune`](/commands/prune/) would remove them.
+Face-learning evidence that depended on those faces is withdrawn, while the
+historical journal and person names are kept. A Delete is undone with
 [`videre dedupe undo`](/commands/dedupe/#undoing-a-trash-run), which puts back
-the most recent trash run, from the gallery or from `dedupe trash`. Prune also withdraws face-learning evidence
-that depended on those faces, while keeping the historical journal and person
-names. It waits until no other videre command or
+the most recent trash run, from the gallery or from `dedupe trash`; watch then
+processes the restored files again, as new ones. It waits until no other videre command or
 `watch` stage is working on the library.
 
 Select mode needs the running gallery: a static export has no Select button.

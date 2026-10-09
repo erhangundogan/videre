@@ -31,7 +31,7 @@ because they are for review by eye, not for automatic deletion.
 
 ## Keep your photos connected when running `prune`
 
-[`videre prune`](/commands/prune/) and `videre watch --prune` delete database
+[`videre prune`](/commands/prune/) and `videre watch` (unless `--no-prune`) delete database
 rows for files they cannot find on disk. If your library lives on an external
 drive and that drive is unplugged, every file looks missing.
 
