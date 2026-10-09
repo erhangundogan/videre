@@ -11,12 +11,14 @@ description: Which file types videre reads, and what it can do with each.
 |---|---|---|---|---|---|
 | jpg, jpeg, tiff | yes | yes | yes | yes | yes |
 | png, gif, webp, bmp | yes | no | yes | yes | yes |
-| heic | yes | yes | macOS only | macOS only | no |
+| heic | yes | yes | macOS only | macOS only | macOS only |
 | mov, mp4 | yes | no | macOS only | no | macOS only |
 | dng | yes | yes | no | no | no |
 
 Everything is scanned, hashed and exactly de-duplicated regardless. The gaps
-above are about what can be *decoded*, not what is recorded.
+above are about what can be *decoded*, not what is recorded. The near-duplicate
+fingerprint is made by [`embed`](/commands/embed/), from the image it decodes
+anyway, so a file has one once it has been embedded.
 
 `.dng` is skipped for search because no DNG decoder is available. Its EXIF
 metadata is still read.

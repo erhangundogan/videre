@@ -50,7 +50,8 @@ a file recorded in the other, because it cannot see it.
 | Per-model embeddings | separate |
 | Locks | separate |
 | Config (`.videre/config.toml`) | separate |
-| Thumbnail and geocoding caches | separate |
+| Thumbnail cache | separate |
+| Street map (`street-detail`) | separate |
 
 A command run against one library cannot read or write another's state, and
 `prune` sweeps only the cache entries belonging to the library it runs in, so it
@@ -63,17 +64,22 @@ everything on the machine unless you set `HF_HOME`. That is a benefit, not a
 leak: model *weights* are downloaded once and reused, while each library's own
 *embeddings* stay private to it. See [caches](/guides/caches/).
 
+**The world map and place names**, at `~/.cache/videre/geo/`, are the same for
+every library, so they are downloaded once for the machine.
+
 ## A scratch library
 
 Because a library is just a directory, an experiment is a throwaway directory:
 
 ```bash
-videre --library /tmp/videre-scratch scan ~/some-folder
+mkdir -p /tmp/videre-scratch
+cp ~/some-folder/*.jpg /tmp/videre-scratch/
+videre --library /tmp/videre-scratch scan
 ```
 
-Nothing you do there can touch a real collection: its database, config and
-caches all live under `/tmp/videre-scratch/.videre/`, and deleting the directory
-removes every trace.
+Nothing you do there can touch a real collection: its database and config live
+under `/tmp/videre-scratch/.videre/`, and deleting the directory removes them.
+Its thumbnails sit in a cache of their own, safe to delete too.
 
 ## Caveats
 

@@ -81,18 +81,18 @@ videre stats
 videre bounds every filesystem call, so a disconnected or sleeping drive fails
 in seconds instead of hanging forever.
 
-Whole-file reads scale their limit with file size, because a large file on a
-healthy disk legitimately takes longer than a small one. If your drive is slow
-but working, and large videos are being skipped, lower the assumed floor rate so
-each file is given more time:
+Hashing a file has no total time limit: as long as bytes keep arriving, however
+slowly, the read goes on. A file is skipped only when its read returns nothing
+for 20 seconds, or when its metadata does not answer within five. A skipped file
+is not marked done, so the next run tries it again. Other whole-file reads, such
+as XMP sidecars, scale their limit with the file's size; if those time out on a
+slow but healthy drive, lower the assumed floor rate:
 
 ```bash
 videre config set read-rate 5
 ```
 
-The default assumes 20 MB/s or better. The `stat` that reads the file size
-keeps a short fixed timeout on purpose, so a dead mount fails there rather than
-waiting for a size-scaled read that will never finish.
+See [tuning](/guides/tuning/#slow-drives-and-large-files).
 
 ## HEIC photos or videos are skipped on Linux
 
@@ -104,20 +104,21 @@ works normally.
 JPEG, PNG and the other common formats work everywhere. See
 [platform support](/reference/platforms/).
 
-## A command sits there doing nothing
+## A command says the library is busy
 
-One writer at a time. SQLite in WAL mode allows many readers alongside a single
-writer, so a command that needs to write waits while another holds the lock.
-
-The usual cause is [`videre watch`](/commands/watch/) running in the background.
-Check what is running:
+A command that would clash with work already running is refused at once rather
+than left waiting: the same command twice, or a command and the
+[`watch`](/commands/watch/) stage that does the same work. The usual cause is
+the `watch` that [`videre gallery`](/commands/gallery/) starts beside it. Check
+what is running:
 
 ```bash
-videre stats
+videre status
 ```
 
-It reports which pipeline step last ran, whether it succeeded, and whether a job
-marked running actually crashed.
+It shows what is running now, what ran last and whether it succeeded, and
+whether a job marked running actually crashed. Retry once it finishes; `watch`
+retries its own stages by itself.
 
 [`videre locations`](/commands/locations/) is the longest single writer: it
 recomputes every cluster in one transaction, so it holds the lock for the whole
@@ -133,67 +134,6 @@ That last part matters: face detection records images where it found **zero**
 faces, and scanning marks files it could not identify. Without that, every
 landscape photo would be re-examined on every run. See
 [long-running jobs](/guides/long-running-jobs/).
-
-## Rotated photos: wrong face clusters or bad search results
-
-Photos stored rotated on disk (an EXIF orientation tag other than 1, common in
-exports and files edited by other tools) are decoded the way you see them since
-videre 0.26.0. Files processed by an older version were detected and embedded
-on the stored pixel canvas, which can leave a person's own photos as
-unassigned singletons and make text search miss photos that are clearly there.
-Re-detecting those files fixes both; files scanned after upgrading need
-nothing.
-
-Two ways to recover, most precise first:
-
-**Rebuild everything.** Simple, and it re-runs hours of model work:
-
-```bash
-videre faces --reset
-videre embed --reprocess
-videre classify --reprocess
-```
-
-`faces --reset` deletes and re-creates every face row, so names you
-assigned in the gallery do not carry over and must be assigned again. It
-asks for confirmation first; add `--yes` for scripts.
-
-**Repair only the rotated files.** Names on untouched files survive. List the
-rotated JPEGs, map them to library hashes, delete exactly their derived rows,
-then re-run the commands normally:
-
-```bash
-# 1. list rotated JPEGs under the library
-exiftool -ext jpeg -ext jpg -if '$Orientation# != 1' \
-  -p '$Directory/$Filename' -r ~/Photos | sort > /tmp/rotated.txt
-
-# 2. their hashes, from the library database
-sqlite3 ~/Photos/.videre/hashes.db \
-  "SELECT hash FROM file_hashes" | python3 -c '
-import sqlite3, sys, os
-root = os.path.expanduser("~/Photos")
-wanted = {os.path.realpath(p) for p in open("/tmp/rotated.txt").read().split()}
-con = sqlite3.connect(f"{root}/.videre/hashes.db")
-for (h, p) in con.execute("SELECT hash, path FROM file_hashes"):
-    if os.path.realpath(p) in wanted:
-        print(h)' > /tmp/rotated_hashes.txt
-
-# 3. delete their derived rows (faces, and under each model database the
-#    embeddings; classifications lives in the main database)
-sqlite3 ~/Photos/.videre/hashes.db \
-  "DELETE FROM faces WHERE hash IN ($(sed "s/.*/'&'/" /tmp/rotated_hashes.txt | paste -sd, -));
-   DELETE FROM faces_scanned WHERE hash IN ($(sed "s/.*/'&'/" /tmp/rotated_hashes.txt | paste -sd, -));
-   DELETE FROM classifications WHERE hash IN ($(sed "s/.*/'&'/" /tmp/rotated_hashes.txt | paste -sd, -));"
-sqlite3 ~/Photos/.videre/embeddings/google--siglip2-base-patch16-224.db \
-  "DELETE FROM embeddings WHERE hash IN ($(sed "s/.*/'&'/" /tmp/rotated_hashes.txt | paste -sd, -));"
-
-# 4. re-run; only the repaired files are processed
-videre faces
-videre embed
-videre classify
-```
-
-Back up the database (or the whole `.videre` folder) before step 3.
 
 ## Intel Mac: it will not install
 

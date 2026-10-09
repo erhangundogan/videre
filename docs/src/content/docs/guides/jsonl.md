@@ -37,7 +37,7 @@ and a selection that matches nothing leaves an empty file, never a partial one.
 
 ## The format
 
-One JSON object per line, appended:
+One JSON object per line:
 
 ```json
 {"path":"/Photos/IMG_0042.jpg","hash":"5c5254e2...","meta_hash":"9e1f3c07...","size_bytes":4823921,"created_at":"2021-06-14T09:12:33","modified_at":"2021-06-14T09:12:33","ext":"jpg","mime":"image/jpeg","exif_date":"2021-06-14T09:12:33","gps_lat":52.5163,"gps_lon":13.3777,"width":4032,"height":3024}
@@ -86,8 +86,9 @@ JSONL is an export snapshot only. Nothing else reads it:
 | `embed`, `faces`, `classify`, `search` | No |
 | `scan` (incremental) | No, it needs a database to consult |
 
-There is also no perceptual fingerprint, no faces, no embeddings, and no
-resumability. A JSONL scan is a one-shot description of a folder.
+There are no faces, no embeddings, and no marks or tags: a JSONL export is a
+one-shot description of the files. The near-duplicate fingerprint, `phash`, is
+there once [`embed`](/commands/embed/) has computed it.
 
 ## When to use which
 

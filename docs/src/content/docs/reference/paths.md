@@ -14,6 +14,10 @@ directory at its root:
   locks/         # marks which command is currently running
   embeddings/    # per-model search data
   logs/          # per-command error logs, see Logging and error handling
+  gallery.json   # gallery settings, only what differs from the defaults
+  hashes_duplicates.html  # after `videre dedupe review`
+  trash/         # what each trash run moved, for `videre dedupe undo`
+  basemap/       # the street map, with `street-detail` on
 ```
 
 Nothing is created until you actually write something. Commands that only read
@@ -55,8 +59,9 @@ Within a selected library, a value is resolved:
 2. The library's own `.videre/config.toml`
 3. The built-in default
 
-The config keys are fixed: `db = "hashes.db"`, `jsonl = "hashes.jsonl"`,
-`default_model`, `xmp_precedence`, and `export_xmp_on_watch`. Each library has
+`db = "hashes.db"` and `jsonl = "hashes.jsonl"` are fixed declarations; every
+other key is a setting [`videre config`](/commands/config/) lists and edits, and
+the gallery's **Settings** page edits too. Each library has
 its own config, so a setting in one is invisible in another. Your `$HOME` has no
 special role: it becomes a library only if you deliberately select it as a
 library root.
@@ -102,21 +107,25 @@ stops the same command running twice against one library, and what lets
 maintenance (`prune`) exclude other work in that library while unrelated
 libraries proceed.
 
-Lock names include a hash of the library root's canonicalised path, so a
-symlink or a relative path to the same library resolves to the same locks, and
-two libraries in different directories never share one.
+The locks live inside the library's own state directory, so a symlink or a
+relative path to the same library reaches the same locks, and two libraries in
+different directories never share one. QuickLook conversions are the one limit
+shared across libraries; see [running things at once](/guides/long-running-jobs/).
 
 ## Caches
 
-Two caches sit outside the library, under your user cache directory:
+Three caches sit outside the library, under your user cache directory:
 
 ```
-~/.cache/videre/            # per-library thumbnail and geocoding caches
-~/.cache/huggingface/hub/   # shared model weights (honours HF_HOME)
+~/.cache/videre/libraries/<key>/   # one library's thumbnails
+~/.cache/videre/geo/               # world map and place names, shared
+~/.cache/huggingface/hub/          # shared model weights (honours HF_HOME)
 ```
 
-Each library has its own thumbnail and geocoding cache namespace, so one
-library's [`prune`](/commands/prune/) only reclaims its own entries. The Hugging
+Each library has its own thumbnail cache, so one library's
+[`prune`](/commands/prune/) only reclaims its own entries. The world map and the
+offline place names are the same for every library, so they are downloaded once
+for the machine. The Hugging
 Face model-weights cache is shared across every library on the machine, so a
 model is downloaded once. Deleting a cache is safe; everything in it regenerates
 on demand. [Caches and disk use](/guides/caches/) covers what each costs to lose.

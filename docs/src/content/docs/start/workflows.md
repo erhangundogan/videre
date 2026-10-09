@@ -199,7 +199,7 @@ HEIC stages. See the [caveats](/reference/cautions/).
 
 ```bash
 videre prune                              # orphaned embeddings and thumbnails
-du -sh ~/.cache/videre/thumbnails/        # the cache is often the bulk of it
+du -sh ~/.cache/videre/libraries/        # the thumbnail cache, often the bulk of it
 videre stats                              # what each model is using
 ```
 

@@ -22,16 +22,16 @@ sqlite3 .videre/hashes.db "SELECT COUNT(*) FROM file_hashes"
 `videre watch` and `videre gallery` are specifically designed to run
 at the same time.
 
-**Two different commands.** Locks are per command per database, so
+**Two different commands.** Locks are per command per library, so
 `videre embed` and `videre locations` can run together as far as locking is
 concerned.
 
-**The same command against different databases.** Locks are keyed by the
-database path, so two libraries never block each other.
+**The same command against different libraries.** Locks live in each
+library's own `.videre/locks/`, so two libraries never block each other.
 
 ## What is refused
 
-**The same command twice against one database.** The second invocation is
+**The same command twice against one library.** The second invocation is
 refused rather than allowed to interleave writes. This is what stops a cron job
 from stacking up when a run takes longer than its interval.
 
@@ -62,8 +62,7 @@ together is safe and nothing is skipped, but each runs slower than it would
 alone.
 
 **`videre locations` blocks writers for its whole run.** It does its work in a
-single transaction, measured at about 8 minutes on a 70,000 file library, and
-holds the write lock throughout. A concurrent `watch` write will wait. Run it
+single transaction and holds the write lock throughout. A concurrent `watch` write will wait. Run it
 when nothing else needs to write.
 
 ## Slow and unresponsive drives
@@ -133,19 +132,19 @@ so you know the full scope before starting.
 ## Checking on a background job
 
 ```bash
-videre stats
+videre status
 ```
 
 `(running now)` appears next to a command whose lock is currently held by a live
 process. That is how you tell a running job from a crashed one.
 
-`videre stats --check` exits nonzero if any command's last run failed or
-crashed, which is what to put in cron. A clean Ctrl-C records `interrupted` and
+`videre status --check` exits nonzero if any command's last run failed or
+crashed, or logged an error, which is what to put in cron. A clean Ctrl-C records `interrupted` and
 is deliberately **not** treated as a problem.
 
 If a job died without cleaning up, for example a `kill -9`, a power loss, or an
 out-of-memory kill, its row says `running` while no process holds the lock, and
-stats reports it as `crashed`. Simply rerun the command.
+status reports it as `crashed`. Simply rerun the command.
 
 ## Suggested order for a fresh library
 
