@@ -203,3 +203,40 @@ fn status_lists_earlier_runs_up_to_run_history() {
     assert_eq!(scan_lines(&lib).len(), 1, "only the latest run is kept");
     assert!(!set("0"), "at least one run is kept");
 }
+
+#[test]
+fn pipeline_times_are_local_and_the_columns_line_up() {
+    let lib = TestLibrary::new();
+    lib.copy_fixture("tiny.jpg", "photos/düğün.jpg");
+    lib.scan();
+    // Stored as UTC, as every run is: 10:00 UTC is 11:00 in Berlin in winter.
+    lib.conn()
+        .execute_batch(
+            "UPDATE pipeline_runs SET started_at = '2026-01-15 10:00:00' WHERE command = 'scan';
+             INSERT OR REPLACE INTO pipeline_runs (command, started_at, finished_at, status, duration_ms)
+             VALUES ('location-names', '2026-01-15 10:05:00', '2026-01-15 10:06:53', 'success', 113000);",
+        )
+        .unwrap();
+    let out = lib
+        .cmd()
+        .env("TZ", "Europe/Berlin")
+        .arg("status")
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    let line = |name: &str| {
+        text.lines()
+            .find(|l| l.trim_start().starts_with(&format!("{name} ")))
+            .unwrap_or_else(|| panic!("no {name} line: {text}"))
+            .to_string()
+    };
+    let scan = line("scan");
+    let names = line("location-names");
+    assert!(scan.contains("2026-01-15 11:00:00"), "{scan}");
+    assert!(names.contains("2026-01-15 11:05:00"), "{names}");
+    assert_eq!(
+        scan.find("2026-01-15"),
+        names.find("2026-01-15"),
+        "the date column lines up:\n{scan}\n{names}"
+    );
+}
