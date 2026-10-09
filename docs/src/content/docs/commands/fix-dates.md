@@ -125,8 +125,10 @@ the change. The hour the clocks go forward never happens, so a camera that
 showed it had not been changed yet, and the photo is read as the clock after
 the jump, one hour later.
 
-A date fix-dates cannot read at all is reported as an error and the file keeps
-its mtime; [`videre status`](/commands/status/) counts it as skipped.
+A date fix-dates cannot read at all is a warning, not an error: the file keeps
+its mtime, the summary counts it as skipped, and
+[`videre status`](/commands/status/) shows it as skipped. A file it could not
+write, such as one on a read-only volume, is an error.
 
 ## The confirmation prompt
 

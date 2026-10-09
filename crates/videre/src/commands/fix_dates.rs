@@ -111,6 +111,10 @@ fn run_fix_dates(
 
     let mut changed = 0usize;
     let mut skipped = 0usize;
+    // A date it cannot read is skipped, not failed: rerunning will not change
+    // it, so it is a warning, and an unattended `status --check` does not
+    // alert on it. Errors are the files it should have updated and could not.
+    let mut unreadable = 0usize;
     let mut errors = 0usize;
 
     for (path, exif_date) in &rows {
@@ -121,8 +125,8 @@ fn run_fix_dates(
             let s = videre_core::fix_dates_target::target_modified_at(exif_date)?;
             chrono::DateTime::parse_from_rfc3339(&s).ok()
         })() else {
-            tracing::error!("{path}: bad exif_date {exif_date:?}");
-            errors += 1;
+            tracing::warn!("{path}: skipping, its capture date cannot be read: {exif_date:?}");
+            unreadable += 1;
             continue;
         };
 
@@ -181,11 +185,13 @@ fn run_fix_dates(
     }
 
     if !args.silent {
-        let skipped_note = if skipped > 0 {
-            format!(", {skipped} no longer on disk (skipped)")
-        } else {
-            String::new()
-        };
+        let mut skipped_note = String::new();
+        if unreadable > 0 {
+            skipped_note.push_str(&format!(", {unreadable} skipped with an unreadable date"));
+        }
+        if skipped > 0 {
+            skipped_note.push_str(&format!(", {skipped} no longer on disk (skipped)"));
+        }
         tracing::info!(
             "{} file(s) with a capture date, {} {}, {} already correct, {} error(s){}.",
             total,
@@ -208,5 +214,7 @@ fn run_fix_dates(
         }
     }
 
-    Ok(errors)
+    // Both are files left as they were, which the run still reports through
+    // its exit code and its run summary.
+    Ok(errors + unreadable)
 }
