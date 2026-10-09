@@ -2788,3 +2788,109 @@ fn a_takeout_photo_is_filed_under_its_sidecar_day() {
         "{body}"
     );
 }
+
+/// A faces log with three lines, as the JSON file layer writes them.
+fn seed_faces_log(lib: &TestLibrary) {
+    let dir = lib.context().paths.state.join("logs");
+    std::fs::create_dir_all(&dir).unwrap();
+    let line = |ts: &str, level: &str, msg: &str, path: &str| {
+        format!(
+            r#"{{"timestamp":"{ts}","level":"{level}","fields":{{"message":"{msg}","kind":"source_unavailable","path":"{path}"}},"spans":[{{"name":"run","command":"faces","run":"R1"}}]}}"#
+        )
+    };
+    std::fs::write(
+        dir.join("faces.log"),
+        [
+            line("2026-10-01T08:00:00Z", "WARN", "eski uyarı", ""),
+            line(
+                "2026-10-05T08:00:00Z",
+                "WARN",
+                "QuickLook timed out",
+                "/x/Çiçek.HEIC",
+            ),
+            line("2026-10-06T08:00:00Z", "ERROR", "Şehir failed", ""),
+        ]
+        .join("\n")
+            + "\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn diagnostics_status_matches_status_json() {
+    let lib = fixture();
+    let server = Server::start(&lib);
+    let (status, body) = server.get("/api/diagnostics/status");
+    assert_eq!(status, 200, "{body}");
+    let page: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let out = lib.cmd().args(["status", "--json"]).output().unwrap();
+    let cli: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    // The logs differ by the runs themselves (the gallery, then status), so
+    // the comparison is of everything else.
+    for key in ["coverage", "pipelines", "dates", "embed_model", "costs"] {
+        assert_eq!(page["report"][key], cli["report"][key], "{key}: {body}");
+    }
+    assert_eq!(page["schema_version"], cli["schema_version"]);
+}
+
+#[test]
+fn diagnostics_stats_has_the_stats_sections() {
+    let lib = fixture();
+    let server = Server::start(&lib);
+    let (status, body) = server.get("/api/diagnostics/stats");
+    assert_eq!(status, 200, "{body}");
+    let page: serde_json::Value = serde_json::from_str(&body).unwrap();
+    for key in ["library", "by_type", "mismatches", "disk_use"] {
+        assert!(!page[key].is_null(), "{key} missing: {body}");
+    }
+    assert_eq!(page["by_type"][0]["ext"], "jpg", "{body}");
+}
+
+#[test]
+fn diagnostics_logs_filters_and_pages() {
+    let lib = fixture();
+    seed_faces_log(&lib);
+    let server = Server::start(&lib);
+    let messages = |path: &str| -> (Vec<String>, serde_json::Value) {
+        let (status, body) = server.get(path);
+        assert_eq!(status, 200, "{path}: {body}");
+        let page: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let lines = page["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| l["message"].as_str().unwrap().to_owned())
+            .collect();
+        (lines, page)
+    };
+    let (all, page) = messages("/api/diagnostics/logs?command=faces");
+    assert_eq!(all, ["Şehir failed", "QuickLook timed out", "eski uyarı"]);
+    assert!(page["commands"]
+        .as_array()
+        .unwrap()
+        .contains(&"faces".into()));
+    assert_eq!(page["more"], false);
+
+    let (errors, _) = messages("/api/diagnostics/logs?command=faces&level=error");
+    assert_eq!(errors, ["Şehir failed"]);
+    // Percent-encoded, as the page sends it: "çiçek".
+    let (found, page) = messages("/api/diagnostics/logs?q=%C3%A7i%C3%A7ek");
+    assert_eq!(found, ["QuickLook timed out"]);
+    assert_eq!(page["lines"][0]["kind"], "source_unavailable");
+    let (since, _) = messages("/api/diagnostics/logs?command=faces&since=2026-10-05T00:00:00Z");
+    assert_eq!(since.len(), 2);
+    let (older, _) = messages("/api/diagnostics/logs?command=faces&before=2026-10-05T08:00:00Z");
+    assert_eq!(older, ["eski uyarı"]);
+}
+
+#[test]
+fn diagnostics_logs_refuses_a_bad_level_or_time() {
+    let lib = fixture();
+    let server = Server::start(&lib);
+    let (status, body) = server.get("/api/diagnostics/logs?level=loud");
+    assert_eq!(status, 400, "{body}");
+    assert!(body.contains("level"), "{body}");
+    let (status, body) = server.get("/api/diagnostics/logs?since=yesterday");
+    assert_eq!(status, 400, "{body}");
+    assert!(body.contains("since"), "{body}");
+}

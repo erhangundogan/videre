@@ -87,6 +87,10 @@ time the command runs. The active file is never deleted.
 
 ## Reading the files
 
+The gallery's [Diagnostics](/commands/gallery/#diagnostics) page reads them for
+you: its Logs tab lists the lines of every command, newest first, filtered by
+command, level, time and text.
+
 The default format is JSON Lines, one object per line, as written by the Rust
 `tracing` library:
 

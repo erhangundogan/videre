@@ -1,6 +1,5 @@
 use crate::command_context::CommandContext;
-use videre::types::{ErrorJson, StatusJson, SCHEMA_VERSION};
-use videre_core::status_report::StatusReport;
+use videre::types::{ErrorJson, StatusJson};
 
 #[derive(clap::Args)]
 pub struct StatusArgs {
@@ -303,16 +302,7 @@ fn run_json(ctx: &CommandContext) -> anyhow::Result<StatusJson> {
         &ctx.library,
         videre_core::library_locks::ActivityMode::Shared,
     )?;
-    videre_core::embeddings_db::attach_for_read_or_placeholder_in(
-        &conn,
-        &ctx.library,
-        &ctx.library.settings.default_model,
-    )?;
-    let report: StatusReport = videre_core::status_report::compute_status_in(&conn, &ctx.library)?;
-    Ok(StatusJson {
-        schema_version: SCHEMA_VERSION,
-        report,
-    })
+    crate::diagnostics::status_json(&conn, &ctx.library)
 }
 
 /// ` (13 file(s) skipped)` for a run that skipped files, else nothing: the

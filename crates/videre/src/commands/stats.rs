@@ -1,5 +1,5 @@
 use crate::command_context::CommandContext;
-use videre::types::{ErrorJson, StatsJson, SCHEMA_VERSION};
+use videre::types::{ErrorJson, StatsJson};
 
 #[derive(clap::Args)]
 pub struct StatsArgs {
@@ -148,13 +148,6 @@ fn run_json(ctx: &CommandContext, all_mismatches: bool) -> anyhow::Result<StatsJ
         &ctx.library,
         videre_core::library_locks::ActivityMode::Shared,
     )?;
-    let library = videre_core::library_stats::compute_full_in(&conn, &ctx.library)?;
     let limit = if all_mismatches { None } else { Some(10) };
-    Ok(StatsJson {
-        schema_version: SCHEMA_VERSION,
-        library,
-        by_type: videre_core::library_stats::by_type(&conn, usize::MAX)?,
-        mismatches: videre_core::library_stats::mismatched_files(&conn, limit)?,
-        disk_use: videre_core::disk::usage_in(&ctx.library),
-    })
+    crate::diagnostics::stats_json(&conn, &ctx.library, limit)
 }

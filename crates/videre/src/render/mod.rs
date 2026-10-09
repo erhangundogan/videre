@@ -1183,6 +1183,8 @@ pub(crate) enum Section {
     /// `/settings`, reached from the nav's `...` menu rather than a section
     /// link, so no link is highlighted on it.
     Settings,
+    /// `/diagnostics`, from the same menu, likewise highlighting nothing.
+    Diagnostics,
 }
 
 impl Section {

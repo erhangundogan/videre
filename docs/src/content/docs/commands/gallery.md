@@ -434,6 +434,22 @@ street detail and from the next run or start for the rest.
 Copying `.videre/gallery.json` into another library's `.videre` folder works
 too.
 
+## Diagnostics
+
+**Diagnostics**, in the `...` menu above Settings, shows in the gallery what
+the terminal would tell you. It changes nothing.
+
+| Tab | What it shows |
+|---|---|
+| **Status** | What [`videre status`](/commands/status/) prints: how far each stage has come and what it skipped, each command's runs with the earlier ones beneath, recent problems, and the commands to run next. While `watch` runs, it reads again every 10 seconds. |
+| **Stats** | What [`videre stats`](/commands/stats/) prints: files, size, faces and duplicates, marks, embeddings per model, size by file type, the disk videre uses, and files whose name and content disagree. |
+| **Logs** | The [command logs](/guides/logging-and-errors/), newest first. Filter by command, level, time range and text in the message or path; case and Turkish letters do not matter, so `cicek` finds `ÇİÇEK.HEIC`. A path opens that file in the library. |
+
+A recent problem on Status links to its command's log lines. The Logs filters
+stay in the address, so a copied link shows the same lines. Warnings and errors
+are always logged; info lines exist only while `log-level` is `info` or
+`debug`.
+
 ## Selecting
 
 **Select**, at the right end of the toolbar of the Library, Date, Events and Map

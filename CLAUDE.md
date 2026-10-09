@@ -869,3 +869,9 @@ above.
   and `load` enforce); the settings pages draw from both and a save lands
   whole or not at all -> `gallery::settings::validate`, `library_config::edit_many`,
   `gallery::config_form`, `static/settings-form.js`
+- The Diagnostics page shows the same documents `status --json` and
+  `stats --json` print, from one builder each; its Logs tab reads lines back
+  by instant (timestamps of different precision do not sort as text), primary
+  files for warnings and trace files for info, and folds search text with
+  `person::search_fold` (`İ` lowercases to `i` plus a combining dot) ->
+  `crate::diagnostics`, `videre_core::error_log::read_lines`

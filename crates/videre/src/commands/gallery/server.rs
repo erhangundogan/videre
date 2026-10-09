@@ -1995,6 +1995,19 @@ mod pages {
         pub config_json: String,
     }
 
+    #[derive(Template)]
+    #[template(path = "diagnostics.html")]
+    pub struct Diagnostics {
+        pub settings_script: String,
+        pub chrome: &'static str,
+        pub js: &'static str,
+        pub nav: Option<super::Section>,
+        /// `status`, `stats` or `logs`.
+        pub tab: &'static str,
+    }
+
+    pub const DIAGNOSTICS_JS: &str = include_str!("../../../static/diagnostics.js");
+
     pub const SETTINGS_PAGE_JS: &str = concat!(
         include_str!("../../../static/settings-page.js"),
         "\n",
@@ -2233,6 +2246,37 @@ async fn handle_settings_page(
     ))
 }
 
+/// `/diagnostics`, reached from the nav's `...` menu, opens its first tab.
+async fn handle_diagnostics_root() -> axum::response::Redirect {
+    axum::response::Redirect::to("/diagnostics/status")
+}
+
+/// `/diagnostics/status`, `/diagnostics/stats` and `/diagnostics/logs`: what
+/// `videre status`, `videre stats` and the command logs say. The page reads
+/// each from its `/api/diagnostics/*` endpoint, so a refresh needs no reload.
+async fn handle_diagnostics_page(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(tab): axum::extract::Path<String>,
+) -> Result<axum::response::Html<String>, StatusCode> {
+    use askama::Template;
+    let tab: &'static str = match tab.as_str() {
+        "status" => "status",
+        "stats" => "stats",
+        "logs" => "logs",
+        _ => return Err(StatusCode::NOT_FOUND),
+    };
+    let page = pages::Diagnostics {
+        settings_script: page_settings(&state).await,
+        chrome: CHROME_CSS,
+        js: pages::DIAGNOSTICS_JS,
+        nav: Some(Section::Diagnostics),
+        tab,
+    };
+    Ok(axum::response::Html(
+        page.render().expect("diagnostics template"),
+    ))
+}
+
 /// `GET /api/settings`: the effective settings, the stored overrides, and
 /// which overrides were ignored for having the wrong type.
 async fn handle_get_settings(
@@ -2242,6 +2286,99 @@ async fn handle_get_settings(
     tokio::task::spawn_blocking(move || settings_json(super::settings::snapshot(&path)))
         .await
         .map_err(internal)
+}
+
+/// `GET /api/diagnostics/status`: the document `videre status --json` prints,
+/// for the Diagnostics page. Read-only, on its own connection.
+async fn handle_diagnostics_status(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<videre::types::StatusJson>, StatusCode> {
+    let library = state.context.library.clone();
+    tokio::task::spawn_blocking(move || {
+        let conn = videre_core::library_db::open_existing(&library)?;
+        crate::diagnostics::status_json(&conn, &library)
+    })
+    .await
+    .map_err(internal)?
+    .map(Json)
+    .map_err(internal)
+}
+
+/// `GET /api/diagnostics/stats`: the document `videre stats --json` prints,
+/// with the first ten mismatched files as it lists them.
+async fn handle_diagnostics_stats(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<videre::types::StatsJson>, StatusCode> {
+    let library = state.context.library.clone();
+    tokio::task::spawn_blocking(move || {
+        let conn = videre_core::library_db::open_existing(&library)?;
+        crate::diagnostics::stats_json(&conn, &library, Some(10))
+    })
+    .await
+    .map_err(internal)?
+    .map(Json)
+    .map_err(internal)
+}
+
+#[derive(serde::Deserialize)]
+struct LogsQuery {
+    command: Option<String>,
+    level: Option<String>,
+    since: Option<String>,
+    q: Option<String>,
+    before: Option<String>,
+}
+
+/// `GET /api/diagnostics/logs`: one page of the library's log lines, newest
+/// first (`error_log::read_lines`). `level` is `error`, `warn` (the default)
+/// or `info`; `since` and `before` are RFC 3339 instants.
+async fn handle_diagnostics_logs(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<LogsQuery>,
+) -> Response {
+    use videre_core::error_log::{LineLevel, LogQuery};
+    let empty = |s: Option<String>| s.filter(|s| !s.is_empty());
+    let min_level = match q.level.as_deref().unwrap_or("warn") {
+        "error" => LineLevel::Error,
+        "warn" | "" => LineLevel::Warn,
+        "info" => LineLevel::Info,
+        other => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("level must be error, warn or info, got {other:?}"),
+            )
+                .into_response()
+        }
+    };
+    let since = empty(q.since);
+    let before = empty(q.before);
+    for (name, value) in [("since", &since), ("before", &before)] {
+        if let Some(v) = value {
+            if chrono::DateTime::parse_from_rfc3339(v).is_err() {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    format!("{name} must be an RFC 3339 time, got {v:?}"),
+                )
+                    .into_response();
+            }
+        }
+    }
+    let query = LogQuery {
+        command: empty(q.command),
+        min_level,
+        since,
+        text: empty(q.q),
+        before,
+        ..LogQuery::default()
+    };
+    let library = state.context.library.clone();
+    match tokio::task::spawn_blocking(move || videre_core::error_log::read_lines(&library, &query))
+        .await
+    {
+        Ok(Ok(page)) => Json(page).into_response(),
+        Ok(Err(e)) => internal(e).into_response(),
+        Err(e) => internal(e).into_response(),
+    }
 }
 
 /// `GET /api/processing`: while `videre watch` runs, each of its stages with
@@ -5722,6 +5859,9 @@ async fn serve_faces_async(
         .route("/tiles/detail.pmtiles", get(handle_detail_tiles))
         .route("/fonts/{stack}/{range}", get(handle_fonts))
         .route("/api/processing", get(handle_processing))
+        .route("/api/diagnostics/status", get(handle_diagnostics_status))
+        .route("/api/diagnostics/stats", get(handle_diagnostics_stats))
+        .route("/api/diagnostics/logs", get(handle_diagnostics_logs))
         .route("/vendor/{version}/{asset}", get(handle_vendor_asset))
         // people
         .route(
@@ -5796,6 +5936,8 @@ async fn serve_faces_async(
         .route("/map", get(handle_map))
         .route("/settings", get(handle_settings_root))
         .route("/settings/{tab}", get(handle_settings_page))
+        .route("/diagnostics", get(handle_diagnostics_root))
+        .route("/diagnostics/{tab}", get(handle_diagnostics_page))
         .route("/events/{key}", get(handle_events_key))
         .route("/events", get(handle_events))
         .route("/smart", get(handle_not_yet));
@@ -6705,6 +6847,38 @@ mod settings_api_tests {
     }
 
     #[tokio::test]
+    async fn diagnostics_has_three_tabs_and_opens_on_the_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+        let app = Router::new()
+            .route("/diagnostics", get(handle_diagnostics_root))
+            .route("/diagnostics/{tab}", get(handle_diagnostics_page))
+            .with_state(state);
+        let get_uri = |uri: &'static str| {
+            let app = app.clone();
+            async move {
+                app.oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                    .await
+                    .unwrap()
+            }
+        };
+
+        let response = get_uri("/diagnostics").await;
+        assert!(response.status().is_redirection());
+        assert_eq!(response.headers()[header::LOCATION], "/diagnostics/status");
+
+        for tab in ["status", "stats", "logs"] {
+            let html = page(&app, &format!("/diagnostics/{tab}")).await;
+            assert!(html.contains(&format!("data-tab=\"{tab}\"")), "{tab}");
+            assert!(html.contains("class=\"on\" aria-current=\"page\""), "{tab}");
+            assert!(html.contains("id=\"secnav-more\""), "carries the nav menu");
+        }
+
+        let response = get_uri("/diagnostics/kasaba").await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
     async fn gallery_pages_have_the_menu_with_a_settings_item() {
         // The menu lives in the shared `nav.html` include, so two pages built
         // on different templates are enough to show every page carries it.
@@ -6725,6 +6899,10 @@ mod settings_api_tests {
             assert!(html.contains("id=\"secnav-more\""), "{uri}");
             assert!(
                 html.contains("role=\"menuitem\" href=\"/settings\""),
+                "{uri}"
+            );
+            assert!(
+                html.contains("role=\"menuitem\" href=\"/diagnostics\""),
                 "{uri}"
             );
         }

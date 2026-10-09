@@ -6,15 +6,6 @@
 <title>videre settings</title>
 <style>{{ chrome|safe }}</style>
 <style>
-.settings-page{padding:24px 32px;max-width:860px;margin:0 auto;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-.settings-page h1{font-size:22px;margin:0 0 8px}
-.settings-page h2{font-size:16px;margin:24px 0 8px}
-.settings-page code{font-size:13px;word-break:break-all}
-.settings-tabs{display:flex;gap:4px;margin:0 0 16px;border-bottom:1px solid #d4d4d8}
-.settings-tabs a{padding:6px 14px;color:#52525b;text-decoration:none;border-bottom:2px solid transparent;margin-bottom:-1px}
-.settings-tabs a:hover{color:#18181b}
-.settings-tabs a.on{color:#18181b;border-bottom-color:#2a6db5;font-weight:600}
-.settings-intro{color:#52525b;margin:0 0 16px}
 .settings-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:10px 0;}
 .settings-actions button,.settings-import-label{padding:6px 14px;border:1px solid #d4d4d8;border-radius:6px;background:#fff;font:inherit;cursor:pointer}
 .settings-actions button:hover,.settings-import-label:hover{background:#f4f4f5}
@@ -25,22 +16,22 @@
 </head>
 <body>
 {% include "nav.html" %}
-<main class="settings-page">
+<main class="tool-page">
 <h1>Settings</h1>
-<nav class="settings-tabs" aria-label="Settings sections">
+<nav class="tool-tabs" aria-label="Settings sections">
 <a href="/settings/config"{% if tab == "config" %} class="on" aria-current="page"{% endif %}>Library config</a>
 <a href="/settings/gallery"{% if tab == "gallery" %} class="on" aria-current="page"{% endif %}>Gallery</a>
 <a href="/settings/manage"{% if tab == "manage" %} class="on" aria-current="page"{% endif %}>Gallery Import/Export</a>
 </nav>
 {% if tab == "config" %}
-<p class="settings-intro">The settings <code>videre config</code> shows, stored in <code>{{ config_path }}</code>. A saved change is used by the next command run; when it applies to the running gallery or watch, its description says so.</p>
+<p class="tool-intro">The settings <code>videre config</code> shows, stored in <code>{{ config_path }}</code>. A saved change is used by the next command run; when it applies to the running gallery or watch, its description says so.</p>
 <script>var VIDERE_CONFIG={{ config_json|safe }};</script>
 <div id="settings-form" data-kind="config"></div>
 {% else if tab == "gallery" %}
-<p class="settings-intro">How the gallery shows this library, stored in <code id="settings-path">{{ path }}</code>. Only values that differ from the defaults are saved, and a saved change applies when a page next loads.</p>
+<p class="tool-intro">How the gallery shows this library, stored in <code id="settings-path">{{ path }}</code>. Only values that differ from the defaults are saved, and a saved change applies when a page next loads.</p>
 <div id="settings-form" data-kind="gallery"></div>
 {% else %}
-<p class="settings-intro">Gallery settings for this library are stored in <code id="settings-path">{{ path }}</code>.</p>
+<p class="tool-intro">Gallery settings for this library are stored in <code id="settings-path">{{ path }}</code>.</p>
 <h2>Gallery Import/Export</h2>
 <p>Export saves this library's gallery choices, the page settings and the face learning and clustering settings, to a file. Import applies a file exported from any library; it does not change which page this library reopens at. Library config is not included.</p>
 <div class="settings-actions">

@@ -48,6 +48,8 @@ and cannot answer these HTTP requests after the command exits.
 | `GET /events/{key}` | One trip's media (`key` is its first photo anchor's compact time and full hash) |
 | `GET /settings` | Redirects to `/settings/config` |
 | `GET /settings/{tab}` | The settings pages: `config`, `gallery`, or `manage` (gallery import, export and reset) |
+| `GET /diagnostics` | Redirects to `/diagnostics/status` |
+| `GET /diagnostics/{tab}` | The Diagnostics pages: `status`, `stats`, or `logs` |
 | `GET /smart` | Reserved |
 
 Date route segments are zero-padded where applicable: `YYYY`, `YYYY/MM` and
@@ -778,6 +780,48 @@ curl "http://127.0.0.1:7878/api/processing"
 { "watch": true, "stages": [{ "stage": "faces", "outstanding": 12 }] }
 ```
 
+### `GET /api/diagnostics/status`
+
+The document [`videre status --json`](/commands/status/) prints, for the
+Diagnostics page: coverage, pipeline runs with their history, watch liveness,
+the latest run of each command as its log records it, and date sources.
+
+### `GET /api/diagnostics/stats`
+
+The document [`videre stats --json`](/commands/stats/) prints, with the first
+ten mismatched files.
+
+### `GET /api/diagnostics/logs`
+
+One page of the library's log lines, newest first, across commands and rotated
+files. Query parameters, all optional:
+
+| Parameter | Meaning |
+|---|---|
+| `command` | Only this command's logs |
+| `level` | `error`, `warn` (default: warnings and errors) or `info`, which reads the trace files and needs `log-level` info |
+| `since` | Only lines at or after this RFC 3339 time |
+| `q` | Only lines whose message or path contains this, ignoring case and diacritics (`cicek` finds `ÇİÇEK`) |
+| `before` | Only lines before this RFC 3339 time: the last line's `ts`, for the next page |
+
+A bad `level` or time is `400`.
+
+```bash
+curl "http://127.0.0.1:7878/api/diagnostics/logs?command=faces&level=error"
+```
+
+```json
+{
+  "lines": [{ "ts": "2026-10-09T15:50:01.2Z", "level": "warn", "command": "faces",
+              "run": "…", "stage": null, "kind": "source_unavailable",
+              "path": "/Photos/IMG_4411.HEIC", "message": "…" }],
+  "more": false, "unreadable": 0, "commands": ["faces", "gallery", "scan"], "no_trace": []
+}
+```
+
+`no_trace` names the commands that have no trace file when `level=info` asked
+for one. Pages hold 200 lines, more only to keep lines of one instant together.
+
 ### `GET /vendor/{version}/{asset}`
 
 Serves the vendored map libraries compiled into the binary, with a long-lived
@@ -1263,6 +1307,9 @@ content-length: 0
 | `GET /tiles/detail.pmtiles` | Serve the library's street map (Range) |
 | `GET /fonts/{stack}/{range}` | Serve the glyphs street and place names are drawn with |
 | `GET /api/processing` | Stages watch still has files to process |
+| `GET /api/diagnostics/status` | What `videre status --json` prints |
+| `GET /api/diagnostics/stats` | What `videre stats --json` prints |
+| `GET /api/diagnostics/logs` | Read the log lines, filtered and paged |
 | `GET /vendor/{version}/{asset}` | Serve a vendored map library (MapLibre, pmtiles) |
 | `GET /api/people` | Search people |
 | `POST /api/people` | Create a person from faces |

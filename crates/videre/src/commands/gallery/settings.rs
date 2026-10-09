@@ -339,8 +339,8 @@ fn same_value(a: &Value, b: &Value) -> bool {
 
 const RESUME_MAX: usize = 2048;
 
-/// Paths that are not pages. `/settings` and its tabs are refused separately: it is a
-/// detour, not a place to come back to.
+/// Paths that are not pages. `/settings`, `/diagnostics` and their tabs are
+/// refused separately: each is a detour, not a place to come back to.
 const NOT_RESUMABLE: &[&str] = &["/api/", "/tiles/", "/vendor/"];
 
 /// The effective settings the server works from, read when a page renders
@@ -369,6 +369,8 @@ pub(crate) fn resume_route(effective: &Value) -> String {
         && !route.contains('\\')
         && path != "/settings"
         && !path.starts_with("/settings/")
+        && path != "/diagnostics"
+        && !path.starts_with("/diagnostics/")
         && !NOT_RESUMABLE.iter().any(|p| route.starts_with(p));
     if ok {
         route.to_string()
@@ -618,6 +620,8 @@ mod tests {
             "/settings",
             "/settings/gallery",
             "/settings?x=1",
+            "/diagnostics",
+            "/diagnostics/logs?command=faces",
             "map",
             "/\\evil",
             "",
