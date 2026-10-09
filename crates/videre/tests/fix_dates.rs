@@ -357,3 +357,34 @@ fn a_photo_from_the_hour_the_clocks_change_gets_a_date() {
         "{text}"
     );
 }
+
+#[test]
+fn a_date_it_cannot_read_is_a_skip_not_an_error() {
+    // Nothing is wrong that the user can fix by rerunning, so it must not
+    // make an unattended `status --check` alert.
+    let lib = TestLibrary::new();
+    let file = lib.context().paths.root.join("okunamayan.jpg");
+    std::fs::write(&file, b"img").unwrap();
+    lib.init_db()
+        .execute(
+            "INSERT INTO file_hashes (path, hash, exif_date) VALUES (?1, 'hbozuk', 'bozuk tarih')",
+            [file.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+
+    let out = run_fix_dates(&lib, &["--yes"], None);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "a skipped file still exits 1");
+    assert!(
+        stderr.contains("1 skipped with an unreadable date"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("0 error(s)"), "{stderr}");
+
+    let check = lib.cmd().args(["status", "--check"]).output().unwrap();
+    assert!(
+        check.status.success(),
+        "{}",
+        String::from_utf8_lossy(&check.stdout)
+    );
+}

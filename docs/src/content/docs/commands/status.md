@@ -164,3 +164,9 @@ cron or launchd can act on the exit code:
 ```
 
 A cleanly interrupted run (Ctrl-C) never triggers alerts.
+
+A skipped file is a warning: one that cannot be decoded, or a date fix-dates
+cannot read, is left as it is and rerunning would not change it. An error is
+something that went wrong, such as a file that could not be written. An error
+counts until that command runs again, so once you have dealt with it, rerun
+the command (or `videre pipeline`) to clear the alert.
