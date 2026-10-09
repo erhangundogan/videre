@@ -59,6 +59,10 @@ th.preview-th{width:130px}
    of the controls' height so they never collide, whatever its size. */
 .lightbox img,.lightbox video{min-height:44px}
 .lightbox img,.lightbox video{max-width:90vw;max-height:74vh;object-fit:contain}
+/* In place of a video the browser cannot decode (see openLb). */
+.lb-unplayable{margin:0;padding:56px 24px 24px;align-self:stretch;box-sizing:border-box;max-width:min(440px,90vw);background:#18181b;text-align:center;color:#e5e7eb;line-height:1.5}
+.lb-unplayable a{color:#93c5fd;text-decoration:none}
+.lb-unplayable a:hover{text-decoration:underline}
 /* Click/scroll to zoom the photo; drag to pan. While zoomed the stage grows to
    a large viewport and the metadata bar hides, so there is room to pan the
    full-resolution image, which is loaded on the first zoom. */

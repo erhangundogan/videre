@@ -522,12 +522,28 @@ function openLb(url,type,metaJson){
   lbz={scale:1,x:0,y:0,full:false};
   img.style.transform='';
   var stage0=img.closest('.lb-stage'); if(stage0)stage0.classList.remove('zooming');
+  var unplayable=document.getElementById('lb-unplayable');
+  unplayable.hidden=true;
   if(type==='video'){
     img.style.display='none';vid.style.display='block';
-    vid.src=url;vid.play();
+    // A browser plays few formats: a Motion JPEG or ProRes .mov fails to
+    // load, and the player would sit there dead. Say so, and offer the file.
+    vid.onerror=function(){
+      vid.style.display='none';
+      var a=unplayable.querySelector('a');
+      a.href=url;
+      a.setAttribute('download',(meta&&meta.name)||'');
+      unplayable.hidden=false;
+    };
+    vid.src=url;
+    // The failure is reported by the error event; a rejected play() is that
+    // same failure (or a blocked autoplay), not something to throw.
+    var playing=vid.play(); if(playing&&playing.catch)playing.catch(function(){});
   } else {
     // Stop any video that was playing, so stepping from a clip to a photo does
-    // not leave audio running behind the hidden <video>.
+    // not leave audio running behind the hidden <video>. Emptying src fires an
+    // error of its own, which is not this item's.
+    vid.onerror=null;
     vid.pause();vid.src='';
     vid.style.display='none';img.style.display='block';img.src=url;
   }
@@ -535,7 +551,9 @@ function openLb(url,type,metaJson){
 }
 function closeLb(){
   var vid=document.getElementById('lb-vid');
+  vid.onerror=null;
   vid.pause();vid.src='';
+  document.getElementById('lb-unplayable').hidden=true;
   lbz={scale:1,x:0,y:0,full:false};
   var ci=document.getElementById('lb-img');
   ci.style.transform='';
