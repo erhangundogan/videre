@@ -95,6 +95,13 @@ run-history <n>` keeps between 1 and 100. A run that died is kept as `crashed`
 when the next run of that command starts. `--json` lists the earlier runs as
 `history` under each command.
 
+What [`videre watch`](/commands/watch/) runs on the files it sees change updates
+a command's line but is not kept as an earlier run: watch reruns its stages
+every time files change, sometimes every second or two while another command
+is writing to the library, and those runs would push the long ones out.
+
+Times are shown in your local time, the same clock as the problems below them.
+
 ## Watch
 
 ```
