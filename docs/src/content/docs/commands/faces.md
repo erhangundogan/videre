@@ -11,6 +11,7 @@ videre faces                           # detect, group, and store (resumable)
 videre faces --limit 500               # only process 500 new images, then stop
 videre faces --recluster               # regroup unassigned faces without re-detecting
 videre faces --reset                   # wipe all face state and start over (asks first)
+videre faces --retry-skipped           # try again the files skipped after two failed decodes
 videre faces --dry-run                 # detect but write nothing
 videre faces --profile                 # print per-stage timing when finished
 videre faces --silent                  # no per-image progress
@@ -328,9 +329,10 @@ together they overwhelm it.
 
 Measured with `faces` and `embed` running together: a HEIC load averaged over 16
 seconds against about 7.6 uncontended, and one file exceeded the timeout that
-converted in 0.39 s on its own. Nothing is lost, since a skipped file is not
-marked as done and retries next run, but it is much slower than running them one
-after the other.
+converted in 0.39 s on its own. A file that times out once is not marked as
+done and retries next run; one that times out twice is skipped until
+`--retry-skipped`. Either way it is much slower than running them one after the
+other.
 :::
 
 **Warm the HEIC cache first** if your library is HEIC-heavy. Detection reads
@@ -357,7 +359,10 @@ rerun continues correctly; it just redoes a little.
 or unreadable file stops costing a timeout on every run (and every `watch`
 cycle) instead of being re-attempted forever. A single failure never skips a
 file, so a one-off timeout from contention still retries; two do.
-`videre faces --reset` clears those records along with everything else.
+[`videre status`](/commands/status/) counts them as skipped.
+`videre faces --retry-skipped` tries them again, keeping every face already
+found; use it once whatever caused the failures is over. `videre faces --reset`
+clears those records too, along with everything else.
 
 **A failing library volume stops the run.** An unreadable *file* is skipped as
 above, and a drive whose files cannot be read at all keeps skipping them on

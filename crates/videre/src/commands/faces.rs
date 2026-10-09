@@ -73,6 +73,10 @@ pub struct FacesArgs {
     /// Detect, but write nothing. With --reset, show what would be deleted
     #[arg(long)]
     dry_run: bool,
+    /// Try again the files skipped after their decode failed twice (a
+    /// QuickLook timeout, for example). Faces already found are kept
+    #[arg(long, conflicts_with = "reset")]
+    retry_skipped: bool,
     /// Suppress progress output on stderr (errors always shown)
     #[arg(long)]
     silent: bool,
@@ -459,16 +463,13 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
     // --reset needs no special case here: reset_all already cleared the
     // scanned markers and decode failures, so the normal skip set below is
     // empty and every hash is processed, exactly like a first-ever run.
-    let mut skip_hashes: std::collections::HashSet<String> =
-        face_db::scanned_hashes(&conn)?.into_iter().collect();
-    skip_hashes.extend(face_db::hashes_with_faces(&conn)?);
-    // Drop hashes the face decode has already failed on enough times: they
-    // would only re-pay the same timeout for the same guaranteed failure.
-    skip_hashes.extend(decode_failures::failed_hashes(
-        &conn,
-        decode_failures::STAGE_FACES,
-        decode_failures::FAILURE_THRESHOLD,
-    )?);
+    let skip_hashes = detection_skip_set(&conn, args.retry_skipped)?;
+    // The files given another chance start from a clean record, so one more
+    // failure counts as the first strike, not the third. A dry run only
+    // counts them.
+    if args.retry_skipped && !args.dry_run {
+        decode_failures::clear_stage(&conn, decode_failures::STAGE_FACES)?;
+    }
 
     // Dedup by hash, drop skipped, cap at --limit for a partial/lazy pass.
     let to_process = face_db::select_unscanned(&all_paths, &skip_hashes, args.limit);
@@ -692,9 +693,51 @@ pub(crate) fn format_clustering_only_summary(
     }
 }
 
+/// The hashes face detection passes over: every one already processed
+/// (`faces_scanned`, which includes images with no faces), every one with
+/// faces, and every one its decode failed on twice, which would only re-pay
+/// the same timeout for the same failure. `retry_skipped` leaves those last
+/// out, so a file skipped for a transient failure (a QuickLook timeout under
+/// contention) gets another chance; without it nothing ever retried them.
+fn detection_skip_set(
+    conn: &rusqlite::Connection,
+    retry_skipped: bool,
+) -> anyhow::Result<std::collections::HashSet<String>> {
+    let mut skip: std::collections::HashSet<String> =
+        face_db::scanned_hashes(conn)?.into_iter().collect();
+    skip.extend(face_db::hashes_with_faces(conn)?);
+    if !retry_skipped {
+        skip.extend(decode_failures::failed_hashes(
+            conn,
+            decode_failures::STAGE_FACES,
+            decode_failures::FAILURE_THRESHOLD,
+        )?);
+    }
+    Ok(skip)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_skipped_file_is_tried_again_only_with_retry_skipped() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        videre_core::face_db::create_faces_table(&conn).unwrap();
+        decode_failures::ensure_table(&conn).unwrap();
+        videre_core::face_db::mark_scanned(&conn, "htamam").unwrap();
+        for _ in 0..decode_failures::FAILURE_THRESHOLD {
+            decode_failures::record(&conn, "hbozuk", decode_failures::STAGE_FACES, "zaman aşımı")
+                .unwrap();
+        }
+
+        let skip = detection_skip_set(&conn, false).unwrap();
+        assert!(skip.contains("htamam") && skip.contains("hbozuk"));
+
+        let skip = detection_skip_set(&conn, true).unwrap();
+        assert!(skip.contains("htamam"), "work already done stays done");
+        assert!(!skip.contains("hbozuk"), "a skipped file is tried again");
+    }
 
     #[test]
     fn reset_prompt_names_all_learning_state_it_deletes() {

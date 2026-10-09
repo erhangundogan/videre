@@ -288,7 +288,8 @@ CREATE TABLE pipeline_run_history (
 Files a stage tried and could not turn into pixels, per stage (`embed`,
 `faces`, `thumbnail`). A file is skipped once `fail_count` reaches 2, so one
 that hangs QuickLook stops costing its timeout on every run; any success clears
-its row, and `embed --reprocess` tries embed's again.
+its row. `faces --retry-skipped` tries faces' again, and `embed --reprocess`
+embed's.
 [`videre status`](/commands/status/) reports these files as skipped.
 
 ```sql
