@@ -272,7 +272,9 @@ fn write_html(
     let conn = videre_core::library_db::open_existing(&ctx.library)?;
     let paths: Vec<String> = outcome.rows.iter().map(|r| r.path.clone()).collect();
     let rows = crate::render::rows_for_paths(&conn, &paths);
-    crate::render::write_static_page(&conn, &output, &[], None, Some(&rows))
+    let bytes = crate::render::write_static_page(&conn, &output, &[], None, Some(&rows))?;
+    tracing::info!("Wrote {} ({} KB)", output.display(), bytes / 1024);
+    Ok(())
 }
 
 fn run_text(args: &SearchArgs, ctx: &CommandContext) -> Result<()> {

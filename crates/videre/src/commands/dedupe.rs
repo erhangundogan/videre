@@ -303,12 +303,13 @@ fn run_review(args: &ReviewArgs, ctx: &CommandContext) -> anyhow::Result<()> {
     };
     with_library(ctx, |conn| {
         let found = selected_groups(&args.scope, ctx, conn, true)?;
-        crate::render::write_review_page(conn, &output, &found)?;
+        let bytes = crate::render::write_review_page(conn, &output, &found)?;
         if !args.scope.silent {
             tracing::info!(
-                "Wrote {} group(s) to {}",
+                "Wrote {} group(s) to {} ({} KB)",
                 found.groups.len(),
-                output.display()
+                output.display(),
+                bytes / 1024
             );
         }
         Ok(())

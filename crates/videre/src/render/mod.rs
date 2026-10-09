@@ -1055,11 +1055,13 @@ pub(crate) fn group_rows(
 }
 
 /// `videre dedupe review`: `found`'s groups as a static page.
+/// Writes the review page and returns its size in bytes, for the caller's
+/// one line saying where it went.
 pub(crate) fn write_review_page(
     conn: &Connection,
     output: &Path,
     found: &videre::duplicates::Found,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<usize> {
     let groups = group_rows(conn, &found.groups);
     let dup = DupPage {
         kinds: found.wanted.clone(),
@@ -1285,7 +1287,7 @@ pub(crate) fn write_static_page(
     groups: &[KindGroup],
     dup: Option<DupPage>,
     flat: Option<&[FileRow]>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<usize> {
     let stats = query_stats(conn);
     let faces_by_hash = videre_core::face_db::labeled_faces_by_hash(conn).unwrap_or_default();
     let db_path = conn.path().map(|p| p.to_string()).unwrap_or_default();
@@ -1332,8 +1334,9 @@ pub(crate) fn write_static_page(
     let html = render(&set);
     std::fs::write(output, &html)
         .map_err(|e| anyhow::anyhow!("failed to write {}: {e}", output.display()))?;
-    tracing::info!("Wrote {} ({} KB)", output.display(), html.len() / 1024);
-    Ok(())
+    // The size, not a line of its own: each command says once where it wrote,
+    // and whether to say it at all (`--silent`).
+    Ok(html.len())
 }
 
 /// Which gallery a [`RenderSet`] describes. Replaces the old all_files/keep_files

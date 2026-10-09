@@ -187,6 +187,29 @@ fn search_html_writes_a_page() {
 }
 
 #[test]
+fn review_says_once_where_it_wrote_the_page() {
+    let (lib, _) = fixture(false);
+    let out = lib.cmd().args(["dedupe", "review"]).output().unwrap();
+    assert!(out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(stderr.matches("Wrote ").count(), 1, "{stderr}");
+    assert!(
+        stderr.contains("1 group(s)") && stderr.contains("KB)"),
+        "{stderr}"
+    );
+
+    let quiet = lib
+        .cmd()
+        .args(["dedupe", "review", "--silent"])
+        .output()
+        .unwrap();
+    assert!(
+        !String::from_utf8_lossy(&quiet.stderr).contains("Wrote "),
+        "--silent says nothing"
+    );
+}
+
+#[test]
 fn both_static_pages_are_in_help() {
     let lib = TestLibrary::new();
     for (cmd, needle) in [("dedupe", "review"), ("search", "--html")] {
