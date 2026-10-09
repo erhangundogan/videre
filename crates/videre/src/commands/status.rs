@@ -57,14 +57,15 @@ fn run_text(args: &StatusArgs, ctx: &CommandContext) -> anyhow::Result<()> {
     println!("Coverage (model {}):", report.embed_model);
     for c in &report.coverage {
         // total = done + outstanding + skipped, so done must subtract both;
-        // skipped files are undecodable, not done.
+        // skipped files are not done.
         let done = c.total - c.outstanding - c.skipped;
-        // Files the stage has given up decoding are not work it will do, so they
-        // are named separately rather than folded into outstanding.
-        let skipped_note = if c.skipped > 0 {
-            format!(", {} skipped as undecodable", c.skipped)
-        } else {
-            String::new()
+        // Files the stage cannot process (undecodable, or a date fix-dates
+        // cannot read) are not work it will do, so they are named separately
+        // rather than folded into outstanding.
+        let skipped_note = match (c.skipped, c.stage) {
+            (0, _) => String::new(),
+            (n, "fix-dates") => format!(", {n} skipped with an unreadable date"),
+            (n, _) => format!(", {n} skipped as undecodable"),
         };
         if c.stale {
             // Prune or dedupe shrank the data without leaving an unassigned row,

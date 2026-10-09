@@ -10,18 +10,41 @@ use chrono::TimeZone;
 
 /// Given a stored `exif_date` ("YYYY-MM-DDTHH:MM:SS", camera-local, no
 /// timezone), return the rfc3339 timestamp fix-dates would write to
-/// `modified_at`, or `None` when it cannot be parsed or resolves to an
-/// ambiguous local time.
+/// `modified_at`, or `None` when it cannot be parsed.
 pub fn target_modified_at(exif_date: &str) -> Option<String> {
     let ndt = chrono::NaiveDateTime::parse_from_str(exif_date, "%Y-%m-%dT%H:%M:%S").ok()?;
-    let local_dt = chrono::Local.from_local_datetime(&ndt).single()?;
-    Some(local_dt.to_rfc3339())
+    Some(local_instant(ndt)?.to_rfc3339())
+}
+
+/// A wall-clock time as an instant in the machine's zone, including the two
+/// hours a year a clock change makes awkward. The hour the clocks go back
+/// happens twice: its first pass is taken. The hour the clocks go forward
+/// never happens: a camera that showed it had not been changed yet, so it is
+/// read as the clock after the jump, one hour later. Refusing both left 30
+/// photos of a real library failing on every fix-dates run.
+fn local_instant(ndt: chrono::NaiveDateTime) -> Option<chrono::DateTime<chrono::Local>> {
+    use chrono::LocalResult;
+    let t = match chrono::Local.from_local_datetime(&ndt) {
+        LocalResult::Single(t) => t,
+        LocalResult::Ambiguous(a, b) => a.min(b),
+        LocalResult::None => chrono::Local
+            .from_local_datetime(&(ndt + chrono::Duration::hours(1)))
+            .earliest()?,
+    };
+    // The platform's zone data can answer a repeated hour with its second pass
+    // alone (macOS does): an hour earlier showing the same clock is the first.
+    let earlier = t - chrono::Duration::hours(1);
+    Some(if earlier.naive_local() == ndt {
+        earlier
+    } else {
+        t
+    })
 }
 
 /// Whether a row's stored `modified_at` already equals what fix-dates would
 /// write for its `exif_date`, compared as instants so an equal time written
-/// with a different offset still matches. `None` when the `exif_date` has no
-/// target (unparseable or ambiguous), which fix-dates reports as an error.
+/// with a different offset still matches. `None` when the `exif_date` cannot be
+/// parsed, which fix-dates reports as an error.
 ///
 /// The one test of "would fix-dates change this row?": `videre status` counts
 /// the rows where this is `Some(false)`, and fix-dates writes only those, so

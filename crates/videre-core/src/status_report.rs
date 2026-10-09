@@ -29,7 +29,8 @@ pub struct StageCoverage {
     /// Files this stage has given up decoding (at the two-strike threshold) and
     /// deliberately no longer attempts. They are excluded from `outstanding` so
     /// the count reflects what the command can actually act on, and reported
-    /// here so `done + outstanding + skipped == total` still holds. Zero for
+    /// here so `done + outstanding + skipped == total` still holds. For
+    /// fix-dates, the rows whose date it cannot read; zero for the other
     /// stages with no decode step (`decode_failures` never records them).
     pub skipped: i64,
     /// True only for the locations stage when the live GPS fingerprint differs
@@ -186,11 +187,17 @@ fn fix_dates_coverage(conn: &Connection) -> Result<StageCoverage> {
     })?;
     let mut total = 0i64;
     let mut outstanding = 0i64;
+    // A date fix-dates cannot read is an error on every run, never done:
+    // counted apart so status neither calls the stage up to date nor
+    // suggests a run that would change nothing.
+    let mut skipped = 0i64;
     for row in rows {
         let (exif_date, modified_at) = row?;
         total += 1;
-        if crate::fix_dates_target::is_current(&exif_date, modified_at.as_deref()) == Some(false) {
-            outstanding += 1;
+        match crate::fix_dates_target::is_current(&exif_date, modified_at.as_deref()) {
+            Some(false) => outstanding += 1,
+            None => skipped += 1,
+            Some(true) => {}
         }
     }
     Ok(StageCoverage {
@@ -200,7 +207,7 @@ fn fix_dates_coverage(conn: &Connection) -> Result<StageCoverage> {
         total,
         next_command: Some("videre fix-dates"),
         heavy: false,
-        skipped: 0,
+        skipped,
     })
 }
 
@@ -686,6 +693,20 @@ mod tests {
             fix.outstanding, 0,
             "equivalent RFC3339 representations describe the same file time"
         );
+    }
+
+    #[test]
+    fn a_date_fix_dates_cannot_read_is_skipped_not_done() {
+        let conn = seed_db("status_cov_fix_dates_bad");
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash, ext, exif_date)
+             VALUES ('/a/bozuk.jpg', 'h1', 'jpg', '2021:07:04 15:30:00')",
+            [],
+        )
+        .unwrap();
+        let cov = coverage_in(&conn, TEST_MODEL, TEST_MODEL).unwrap();
+        let fix = cov.iter().find(|c| c.stage == "fix-dates").unwrap();
+        assert_eq!((fix.total, fix.outstanding, fix.skipped), (1, 0, 1));
     }
 
     #[test]
