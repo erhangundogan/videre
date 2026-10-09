@@ -543,10 +543,22 @@ mod tests {
         insert_file(&conn, "/a/3.jpg", "h3", "jpg");
         // h3 is permanently undecodable for embed; h2 for faces.
         for _ in 0..crate::decode_failures::FAILURE_THRESHOLD {
-            crate::decode_failures::record(&conn, "h3", crate::decode_failures::STAGE_EMBED, "x")
-                .unwrap();
-            crate::decode_failures::record(&conn, "h2", crate::decode_failures::STAGE_FACES, "x")
-                .unwrap();
+            crate::decode_failures::record(
+                &conn,
+                "h3",
+                crate::decode_failures::STAGE_EMBED,
+                "x",
+                None,
+            )
+            .unwrap();
+            crate::decode_failures::record(
+                &conn,
+                "h2",
+                crate::decode_failures::STAGE_FACES,
+                "x",
+                None,
+            )
+            .unwrap();
         }
 
         let cov = coverage_in(&conn, TEST_MODEL, TEST_MODEL).unwrap();
@@ -572,7 +584,7 @@ mod tests {
         let conn = seed_db("status_cov_one_strike");
         crate::decode_failures::ensure_table(&conn).unwrap();
         insert_file(&conn, "/a/1.jpg", "h1", "jpg");
-        crate::decode_failures::record(&conn, "h1", crate::decode_failures::STAGE_EMBED, "x")
+        crate::decode_failures::record(&conn, "h1", crate::decode_failures::STAGE_EMBED, "x", None)
             .unwrap();
 
         let cov = coverage_in(&conn, TEST_MODEL, TEST_MODEL).unwrap();

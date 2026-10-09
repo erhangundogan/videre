@@ -13,9 +13,16 @@
 //! past the timeout, and the file converts fine uncontended next run), so a
 //! single failure must not condemn a file. A row records how many times a stage
 //! has failed on a hash; a consumer skips only once the count reaches
-//! [`FAILURE_THRESHOLD`], and any success [`clear`]s the row, so a
-//! contention victim that later succeeds never sticks while a genuinely
-//! undecodable file crosses the threshold and is skipped for good.
+//! [`FAILURE_THRESHOLD`], and any success [`clear`]s the row.
+//!
+//! What a skip means depends on why the decode failed, which each row keeps as
+//! its `kind` (the [`ErrorKind`](crate::error_kind::ErrorKind) code). A file
+//! that is not a decodable image (`decode_failed`) is skipped for good: it
+//! cannot change without its content, and so its hash, changing too. Anything
+//! else, a QuickLook timeout above all, is skipped only for [`RETRY_AFTER`]
+//! after its last failure and then tried again by any run, watch included.
+//! Skipping every failure for good left a photo with no faces after one busy
+//! evening, with nothing that would ever try it again.
 
 use rusqlite::Connection;
 use std::collections::HashSet;
@@ -31,6 +38,12 @@ pub const STAGE_THUMBNAIL: &str = "thumbnail";
 /// that would decode fine uncontended.
 pub const FAILURE_THRESHOLD: u32 = 2;
 
+/// How long a failure that may not repeat (a timeout, an unreadable drive, or
+/// an unknown cause) keeps its file skipped before it is tried again: long
+/// enough that watch does not pay a timeout every cycle, short enough that a
+/// file caught in one busy evening is processed the next day.
+pub const RETRY_AFTER: &str = "-1 day";
+
 /// Create the table if it is absent. Idempotent; safe on every open.
 pub fn ensure_table(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
@@ -40,23 +53,42 @@ pub fn ensure_table(conn: &Connection) -> rusqlite::Result<()> {
             error       TEXT NOT NULL,
             fail_count  INTEGER NOT NULL DEFAULT 1,
             last_failed_at TEXT DEFAULT (datetime('now')),
+            kind        TEXT,
             PRIMARY KEY (hash, stage)
         );",
-    )
+    )?;
+    // Added in place to a table from before the kind was kept; its rows have
+    // none, so they count as a failure that may not repeat.
+    let has_kind = conn
+        .prepare("SELECT 1 FROM pragma_table_info('decode_failures') WHERE name = 'kind'")?
+        .exists([])?;
+    if !has_kind {
+        conn.execute_batch("ALTER TABLE decode_failures ADD COLUMN kind TEXT")?;
+    }
+    Ok(())
 }
 
 /// Record one decode failure for `(hash, stage)`: insert the row at count 1, or
 /// bump an existing row's count and store the latest error. Idempotent in shape,
 /// not in effect: each call is one more strike.
-pub fn record(conn: &Connection, hash: &str, stage: &str, error: &str) -> rusqlite::Result<()> {
+/// `kind` is why it failed, as tagged where the cause was known; `None` when it
+/// was not, which is treated as a failure that may not repeat.
+pub fn record(
+    conn: &Connection,
+    hash: &str,
+    stage: &str,
+    error: &str,
+    kind: Option<crate::error_kind::ErrorKind>,
+) -> rusqlite::Result<()> {
     conn.execute(
-        "INSERT INTO decode_failures (hash, stage, error, fail_count, last_failed_at)
-             VALUES (?1, ?2, ?3, 1, datetime('now'))
+        "INSERT INTO decode_failures (hash, stage, error, fail_count, last_failed_at, kind)
+             VALUES (?1, ?2, ?3, 1, datetime('now'), ?4)
          ON CONFLICT(hash, stage) DO UPDATE SET
              fail_count = fail_count + 1,
              error = excluded.error,
-             last_failed_at = excluded.last_failed_at",
-        rusqlite::params![hash, stage, error],
+             last_failed_at = excluded.last_failed_at,
+             kind = excluded.kind",
+        rusqlite::params![hash, stage, error, kind.map(|k| k.code())],
     )?;
     Ok(())
 }
@@ -93,11 +125,22 @@ pub fn failed_hashes(
     if !crate::db::table_exists(conn, "decode_failures")? {
         return Ok(HashSet::new());
     }
-    let mut stmt =
-        conn.prepare("SELECT hash FROM decode_failures WHERE stage = ?1 AND fail_count >= ?2")?;
-    let rows = stmt.query_map(rusqlite::params![stage, min_count], |r| {
-        r.get::<_, String>(0)
-    })?;
+    // A table from before the kind was kept has no such column yet.
+    ensure_table(conn)?;
+    let mut stmt = conn.prepare(
+        "SELECT hash FROM decode_failures
+         WHERE stage = ?1 AND fail_count >= ?2
+           AND (kind = ?3 OR last_failed_at > datetime('now', ?4))",
+    )?;
+    let rows = stmt.query_map(
+        rusqlite::params![
+            stage,
+            min_count,
+            crate::error_kind::ErrorKind::DecodeFailed.code(),
+            RETRY_AFTER
+        ],
+        |r| r.get::<_, String>(0),
+    )?;
     let failed: HashSet<String> = rows.collect::<rusqlite::Result<_>>()?;
     if !failed.is_empty() {
         tracing::debug!(
@@ -135,15 +178,15 @@ mod tests {
     #[test]
     fn record_creates_a_row_at_count_one() {
         let conn = db();
-        record(&conn, "h1", STAGE_EMBED, "boom").unwrap();
+        record(&conn, "h1", STAGE_EMBED, "boom", None).unwrap();
         assert_eq!(fail_count(&conn, "h1", STAGE_EMBED).unwrap(), 1);
     }
 
     #[test]
     fn record_increments_on_repeat_and_keeps_latest_error() {
         let conn = db();
-        record(&conn, "h1", STAGE_EMBED, "first").unwrap();
-        record(&conn, "h1", STAGE_EMBED, "second").unwrap();
+        record(&conn, "h1", STAGE_EMBED, "first", None).unwrap();
+        record(&conn, "h1", STAGE_EMBED, "second", None).unwrap();
         assert_eq!(fail_count(&conn, "h1", STAGE_EMBED).unwrap(), 2);
         let err: String = conn
             .query_row(
@@ -158,9 +201,9 @@ mod tests {
     #[test]
     fn failed_hashes_respects_the_threshold() {
         let conn = db();
-        record(&conn, "once", STAGE_EMBED, "e").unwrap();
-        record(&conn, "twice", STAGE_EMBED, "e").unwrap();
-        record(&conn, "twice", STAGE_EMBED, "e").unwrap();
+        record(&conn, "once", STAGE_EMBED, "e", None).unwrap();
+        record(&conn, "twice", STAGE_EMBED, "e", None).unwrap();
+        record(&conn, "twice", STAGE_EMBED, "e", None).unwrap();
         let set = failed_hashes(&conn, STAGE_EMBED, FAILURE_THRESHOLD).unwrap();
         assert!(
             !set.contains("once"),
@@ -169,11 +212,89 @@ mod tests {
         assert!(set.contains("twice"), "two failures crosses the threshold");
     }
 
+    /// Moves a row's last failure `days` into the past.
+    fn age(conn: &Connection, hash: &str, days: i64) {
+        conn.execute(
+            "UPDATE decode_failures SET last_failed_at = datetime('now', ?2) WHERE hash = ?1",
+            rusqlite::params![hash, format!("-{days} days")],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_broken_file_stays_skipped_and_a_timeout_is_retried_a_day_later() {
+        use crate::error_kind::ErrorKind;
+        let conn = db();
+        for _ in 0..FAILURE_THRESHOLD {
+            record(
+                &conn,
+                "bozuk",
+                STAGE_FACES,
+                "not an image",
+                Some(ErrorKind::DecodeFailed),
+            )
+            .unwrap();
+            record(
+                &conn,
+                "yavaş",
+                STAGE_FACES,
+                "qlmanage timed out",
+                Some(ErrorKind::SourceUnavailable),
+            )
+            .unwrap();
+        }
+        let now = failed_hashes(&conn, STAGE_FACES, FAILURE_THRESHOLD).unwrap();
+        assert!(
+            now.contains("bozuk") && now.contains("yavaş"),
+            "both rest for now"
+        );
+
+        age(&conn, "bozuk", 2);
+        age(&conn, "yavaş", 2);
+        let later = failed_hashes(&conn, STAGE_FACES, FAILURE_THRESHOLD).unwrap();
+        assert!(
+            later.contains("bozuk"),
+            "a broken file cannot heal by waiting"
+        );
+        assert!(!later.contains("yavaş"), "a timeout is tried again");
+    }
+
+    #[test]
+    fn a_failure_of_unknown_kind_is_retried_like_a_timeout() {
+        // Rows recorded before the kind was kept, and failures whose cause was
+        // not known, are given another chance rather than condemned.
+        let conn = db();
+        record(&conn, "eski", STAGE_EMBED, "e", None).unwrap();
+        record(&conn, "eski", STAGE_EMBED, "e", None).unwrap();
+        age(&conn, "eski", 2);
+        assert!(failed_hashes(&conn, STAGE_EMBED, FAILURE_THRESHOLD)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn a_table_from_before_the_kind_gains_it_in_place() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE decode_failures (hash TEXT NOT NULL, stage TEXT NOT NULL,
+                 error TEXT NOT NULL, fail_count INTEGER NOT NULL DEFAULT 1,
+                 last_failed_at TEXT DEFAULT (datetime('now')), PRIMARY KEY (hash, stage));
+             INSERT INTO decode_failures (hash, stage, error, fail_count)
+                 VALUES ('eski', 'faces', 'qlmanage timed out', 2);",
+        )
+        .unwrap();
+        ensure_table(&conn).unwrap();
+        age(&conn, "eski", 2);
+        assert!(failed_hashes(&conn, STAGE_FACES, FAILURE_THRESHOLD)
+            .unwrap()
+            .is_empty());
+    }
+
     #[test]
     fn clear_removes_a_hash_so_it_is_tried_again() {
         let conn = db();
-        record(&conn, "h1", STAGE_EMBED, "e").unwrap();
-        record(&conn, "h1", STAGE_EMBED, "e").unwrap();
+        record(&conn, "h1", STAGE_EMBED, "e", None).unwrap();
+        record(&conn, "h1", STAGE_EMBED, "e", None).unwrap();
         clear(&conn, "h1", STAGE_EMBED).unwrap();
         assert_eq!(fail_count(&conn, "h1", STAGE_EMBED).unwrap(), 0);
         assert!(failed_hashes(&conn, STAGE_EMBED, FAILURE_THRESHOLD)
@@ -184,9 +305,9 @@ mod tests {
     #[test]
     fn clear_stage_removes_only_that_stage() {
         let conn = db();
-        record(&conn, "h1", STAGE_EMBED, "e").unwrap();
-        record(&conn, "h2", STAGE_EMBED, "e").unwrap();
-        record(&conn, "h1", STAGE_FACES, "e").unwrap();
+        record(&conn, "h1", STAGE_EMBED, "e", None).unwrap();
+        record(&conn, "h2", STAGE_EMBED, "e", None).unwrap();
+        record(&conn, "h1", STAGE_FACES, "e", None).unwrap();
         let removed = clear_stage(&conn, STAGE_EMBED).unwrap();
         assert_eq!(removed, 2, "both embed rows removed");
         assert_eq!(
@@ -199,8 +320,8 @@ mod tests {
     #[test]
     fn stages_are_independent() {
         let conn = db();
-        record(&conn, "h1", STAGE_EMBED, "e").unwrap();
-        record(&conn, "h1", STAGE_EMBED, "e").unwrap();
+        record(&conn, "h1", STAGE_EMBED, "e", None).unwrap();
+        record(&conn, "h1", STAGE_EMBED, "e", None).unwrap();
         // Same hash, different stage: its own count, untouched by the embed one.
         assert_eq!(fail_count(&conn, "h1", STAGE_FACES).unwrap(), 0);
         assert!(!failed_hashes(&conn, STAGE_FACES, FAILURE_THRESHOLD)

@@ -235,8 +235,10 @@ fn run_embed(
             // write can happen inside the rayon closure).
             // Each success also carries the near-duplicate fingerprint, taken
             // from the decoded image before the model's resize.
-            type Decoded =
-                std::result::Result<(String, Option<candle_core::Tensor>, u64), (String, String)>;
+            type Decoded = std::result::Result<
+                (String, Option<candle_core::Tensor>, u64),
+                (String, String, Option<videre_core::error_kind::ErrorKind>),
+            >;
             let outcomes: Vec<Decoded> = chunk
                 .par_iter()
                 .map(|p| {
@@ -255,9 +257,11 @@ fn run_embed(
                         Ok((t, phash)) => Ok((p.hash.clone(), t, phash)),
                         Err(e) => {
                             let reason = format!("{e:#}");
-                            // The kind was attached where the cause was known.
+                            // The kind was attached where the cause was known,
+                            // and decides whether the skip is for good.
+                            let kind = videre_core::error_kind::ErrorKind::in_chain(&e);
                             progress.skip(&p.path, e);
-                            Err((p.hash.clone(), reason))
+                            Err((p.hash.clone(), reason, kind))
                         }
                     }
                 })
@@ -275,12 +279,13 @@ fn run_embed(
                     }
                     // Record the failure so a later run can skip it once it has
                     // failed FAILURE_THRESHOLD times.
-                    Err((hash, err)) => {
+                    Err((hash, err, kind)) => {
                         let _ = decode_failures::record(
                             conn,
                             &hash,
                             decode_failures::STAGE_EMBED,
                             &err,
+                            kind,
                         );
                     }
                 }

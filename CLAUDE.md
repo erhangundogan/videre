@@ -481,10 +481,14 @@ Two tables exist purely for this, and both record work that produced no rows:
   every `watch` cycle). The skip is deliberately **two-strike**, not one: a
   QuickLook timeout can be transient (cross-process `qlmanage` contention, see
   that section), so a consumer skips only at `fail_count >= FAILURE_THRESHOLD`
-  (2), and any success `clear`s the row. `faces --retry-skipped` and
-  `embed --reprocess` are the retry hatches: they `clear_stage` the recorded
-  failures so a fixed file is tried again. :warning: Not `faces --reprocess`:
-  that is an alias of `--reset`, which deletes every face and name. A faces *detection* failure is not a decode failure and is not
+  (2), and any success `clear`s the row. Each row keeps the failure's
+  `ErrorKind`: only `decode_failed` is skipped for good; a timeout, an I/O
+  failure or an unknown cause (old rows included) rests for `RETRY_AFTER` (a
+  day) and is then tried again by any run, watch included. Counting every
+  failure as permanent left photos without faces after one evening of
+  QuickLook contention, with nothing to retry them. `embed --reprocess` also
+  clears its stage. :warning: `faces --reprocess` is an alias of `--reset`,
+  which deletes every face and name; it is no retry hatch. A faces *detection* failure is not a decode failure and is not
   recorded (`WorkerMsg::DecodeError` vs `ImageError`). The gallery's on-demand
   thumbnail endpoint uses the same table under `STAGE_THUMBNAIL`: a HEIC whose
   QuickLook conversion keeps failing is refused before the conversion once at

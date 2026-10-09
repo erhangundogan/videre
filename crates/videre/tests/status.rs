@@ -39,6 +39,7 @@ fn status_reports_a_decode_failed_file_as_skipped_not_outstanding() {
                 &hash,
                 videre_core::decode_failures::STAGE_EMBED,
                 "x",
+                None,
             )
             .unwrap();
         }

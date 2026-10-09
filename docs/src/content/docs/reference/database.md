@@ -288,8 +288,10 @@ CREATE TABLE pipeline_run_history (
 Files a stage tried and could not turn into pixels, per stage (`embed`,
 `faces`, `thumbnail`). A file is skipped once `fail_count` reaches 2, so one
 that hangs QuickLook stops costing its timeout on every run; any success clears
-its row. `faces --retry-skipped` tries faces' again, and `embed --reprocess`
-embed's.
+its row. `kind` is why it failed, an [error kind](/guides/logging-and-errors/#error-kinds):
+a `decode_failed` file is skipped for good, and any other failure, a timeout
+above all, only for a day after `last_failed_at`, then tried again.
+`embed --reprocess` tries embed's skipped files at once.
 [`videre status`](/commands/status/) reports these files as skipped.
 
 ```sql
@@ -299,6 +301,7 @@ CREATE TABLE decode_failures (
     error       TEXT NOT NULL,
     fail_count  INTEGER NOT NULL DEFAULT 1,
     last_failed_at TEXT DEFAULT (datetime('now')),
+    kind        TEXT,
     PRIMARY KEY (hash, stage)
 );
 ```

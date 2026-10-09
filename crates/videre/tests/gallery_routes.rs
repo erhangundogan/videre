@@ -289,6 +289,7 @@ fn a_heic_at_the_failure_threshold_is_refused_without_reconverting() {
                 "heic1",
                 videre_core::decode_failures::STAGE_THUMBNAIL,
                 "seeded",
+                None,
             )
             .unwrap();
         }
@@ -331,6 +332,7 @@ fn gallery_start_clears_thumbnail_decode_failures() {
             "heic1",
             videre_core::decode_failures::STAGE_THUMBNAIL,
             "previous run",
+            None,
         )
         .unwrap();
     }
@@ -376,6 +378,7 @@ fn a_video_at_the_thumbnail_failure_threshold_is_refused() {
                 "vid1",
                 videre_core::decode_failures::STAGE_THUMBNAIL,
                 "seeded",
+                None,
             )
             .unwrap();
         }
