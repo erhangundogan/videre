@@ -7514,6 +7514,58 @@ mod bulk_delete_tests {
         assert_eq!(rows, 1, "back in the library");
     }
 
+    /// A Delete leaves nothing of the item behind: what hung off its hash
+    /// (marks, tags, faces, embeddings) goes with it, as after `dedupe trash`.
+    #[tokio::test]
+    async fn a_gallery_delete_cleans_up_what_hung_off_the_item() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let state = library(&root, &[]);
+        let photo = root.join(format!("silinip-temizlenen-{}.jpg", std::process::id()));
+        std::fs::write(&photo, "beğenilmiş fotoğraf").unwrap();
+        let hash: String = {
+            let conn = state.conn.lock().unwrap();
+            crate::indexing::index_paths(
+                &conn,
+                &state.context.library,
+                vec![photo.clone()],
+                videre_core::marks::XmpPrecedence::Db,
+                true,
+            )
+            .unwrap();
+            let hash: String = conn
+                .query_row("SELECT hash FROM file_hashes", [], |r| r.get(0))
+                .unwrap();
+            videre_core::marks::ensure_marks_table(&conn).unwrap();
+            conn.execute(
+                "INSERT INTO marks (hash, liked, updated_at) VALUES (?1, 1, datetime('now'))",
+                [hash.as_str()],
+            )
+            .unwrap();
+            hash
+        };
+
+        let (status, body) = delete(
+            &app(state.clone()),
+            json!({ "hashes": [hash], "dry_run": false }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let conn = state.conn.lock().unwrap();
+        let marks: i64 = conn
+            .query_row("SELECT COUNT(*) FROM marks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(marks, 0, "the deleted item's like went with it");
+        let pruned: String = conn
+            .query_row(
+                "SELECT status FROM pipeline_runs WHERE command = 'prune'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pruned, "success", "recorded as a prune run");
+    }
+
     #[tokio::test]
     async fn delete_waits_for_the_library_to_be_free() {
         let dir = tempfile::tempdir().unwrap();
