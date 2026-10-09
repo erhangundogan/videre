@@ -643,7 +643,7 @@ pub fn read_lines(ctx: &LibraryContext, q: &LogQuery) -> Result<LogPage> {
         }
     }
     // Newest first; the sort is stable, so one file's lines keep their order.
-    found.sort_by(|a, b| b.0.cmp(&a.0));
+    found.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
     let mut end = found.len().min(q.limit.max(1));
     while end < found.len() && found[end].0 == found[end - 1].0 {
         end += 1;
