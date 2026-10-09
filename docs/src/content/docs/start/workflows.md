@@ -18,26 +18,28 @@ the index.
 ## The pipeline
 
 ```
-videre scan                         <- everything starts here
+videre scan                           <- everything starts here
   │
-  ├── videre gallery                browse files, duplicates and dates
-  ├── videre dedupe review          find duplicates and review via static HTML file
+  ├── videre gallery                  browse library, duplicates, dates, events and map
+  ├── videre dedupe                   print out and review duplicates in console
   │     │
-  │     └── videre dedupe trash  move the duplicate copies to the trash
+  │     ├── videre dedupe review      review duplicates via static HTML file  
+  │     └── videre dedupe trash       move the duplicate copies to the trash
+  │           │
+  │           └── videre dedupe undo  if you need to undo trash operation
   │
-  ├── videre fix-dates              correct file dates
-  │
-  ├── videre status                 see videre pipeline status and next actions
-  ├── videre stats                  what's in the library
-  ├── videre locations              group by place  
-  ├── videre mark                   rate, like, label, pick your media files
-  ├── videre tag                    add word or phrase to your media files
-  ├── videre embed                  prepare search  (slow, one-time)
+  ├── videre fix-dates                correct file dates
+  ├── videre status                   see videre pipeline status and next actions
+  ├── videre stats                    what's in the library
+  ├── videre locations                group by place  
+  ├── videre mark                     rate, like, label, pick your media files
+  ├── videre tag                      add word or phrase to your media files
+  ├── videre embed                    prepare search  (slow, one-time)
   │     │
-  │     ├── videre search "..."     by description
-  │     ├── videre search --image   by example
-  │     ├── videre gallery          in-page similarity
-  │     └── videre classify         tag screenshots/documents/memes
+  │     ├── videre search "..."       by description
+  │     ├── videre search --image     by example
+  │     ├── videre gallery            in-page similarity
+  │     └── videre classify           tag screenshots/documents/memes
   │           │
   │           ├── videre mark --category
   │           ├── videre tag --category
