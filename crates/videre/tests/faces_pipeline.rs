@@ -19,8 +19,22 @@ fn faces_skips_a_hash_recorded_as_decode_failed() {
             .query_row("SELECT hash FROM file_hashes LIMIT 1", [], |r| r.get(0))
             .unwrap();
         decode_failures::ensure_table(&conn).unwrap();
-        decode_failures::record(&conn, &hash, decode_failures::STAGE_FACES, "timed out").unwrap();
-        decode_failures::record(&conn, &hash, decode_failures::STAGE_FACES, "timed out").unwrap();
+        decode_failures::record(
+            &conn,
+            &hash,
+            decode_failures::STAGE_FACES,
+            "timed out",
+            None,
+        )
+        .unwrap();
+        decode_failures::record(
+            &conn,
+            &hash,
+            decode_failures::STAGE_FACES,
+            "timed out",
+            None,
+        )
+        .unwrap();
         hash
     };
 

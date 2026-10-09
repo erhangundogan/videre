@@ -5443,6 +5443,9 @@ async fn handle_raw_file(
                         &hash,
                         videre_core::decode_failures::STAGE_THUMBNAIL,
                         "gallery HEIC conversion failed",
+                        // The conversion's cause is not kept here, so the skip
+                        // lasts a day, not for good.
+                        None,
                     );
                 }
             }

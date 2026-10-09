@@ -15,7 +15,6 @@ offers, and a command only offers the ones it can actually answer.
 ```bash
 videre embed --type video                      # only videos
 videre faces --after 2024-06 --before 2024-09  # only that summer
-videre --library ~/Photos scan --ext heic,mov # record only these two formats
 videre classify --location "Berlin, Germany"   # only photos taken near Berlin
 videre search --missing gps                     # photos with no coordinates
 ```
@@ -78,16 +77,18 @@ refuse `person:` and `category:` in a query for the same reason they have no
 | [`tag`](/commands/tag/) | all of them (its own `--add`/`--remove` are the setters) |
 | [`embed`](/commands/embed/), [`faces`](/commands/faces/) | everything except `--person` and `--category` |
 | [`mark`](/commands/mark/) | all except the mark-value filters; the only mark/tag filter it takes is `--tag` |
-| [`scan`](/commands/scan/), [`watch`](/commands/watch/) | `--type`, `--ext`, `--mime` |
+| [`watch`](/commands/watch/) | `--type`, `--ext`, `--mime` |
+| [`scan`](/commands/scan/) | none |
 
 The gaps are deliberate rather than unfinished.
 
-`scan` and `watch` walk the whole selected library, and a walk has not opened
-the file yet. Nothing on disk says when a photo was taken until something reads
-it, and reading every file is the expensive work you were trying to narrow. So
-they take only the flags answerable from a filename (`--type`, `--ext`,
-`--mime`), and no `--path`: their scope is the library you select, so to walk a
-different subset you point them at a different library.
+`watch` walks the whole selected library, and a walk has not opened the file
+yet. Nothing on disk says when a photo was taken until something reads it, and
+reading every file is the expensive work you were trying to narrow. So it takes
+only the flags answerable from a filename (`--type`, `--ext`, `--mime`), and no
+`--path`. `scan` takes none: it always records the whole library, and is cheap
+on files that have not changed. To walk a different subset, point either at a
+different library.
 
 `embed` and `faces` decline `--person` and `--category`, because both are
 derived from the very data those commands produce. Selecting the input by a

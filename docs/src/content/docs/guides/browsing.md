@@ -87,8 +87,8 @@ usually a better fix than retuning the whole clustering.
 Clicking a face opens the full-resolution original, served by the backend rather
 than linked, since a page on `http://` cannot navigate to `file://`.
 
-Names are written back as you go. Stop with Ctrl-C or **Save & Close**, then
-[`search --person`](/commands/search/) works.
+Names are saved as you assign them, so
+[`search --person`](/commands/search/) works at once.
 
 Retuning later with [`faces --recluster`](/commands/faces/) does **not** lose
 names, because they are stored per face rather than per group.
@@ -109,16 +109,13 @@ demand.
 | [/duplicates](http://127.0.0.1:7878/duplicates) | Duplicate groups |
 | [/date](http://127.0.0.1:7878/date) | Year, month, day drill-down |
 | [/people](http://127.0.0.1:7878/people) | Face groups, and where you name them |
+| [/events](http://127.0.0.1:7878/events) | Trips inferred from dates and places |
+| [/map](http://127.0.0.1:7878/map) | Places on a world map, with their files below |
+| [/settings](http://127.0.0.1:7878/settings) | Library config, gallery settings, and their import and export |
 
 A strip along the top of every page switches between them, so none of them needs
-to be typed.
-
-Duplicates used to share `/` with the file list. They have their own route now,
-so the page everyone lands on shows files and nothing else.
-
-Those used to be flags on a single page, and combining them needed a table to
-explain which one won. Routes need no such explanation, which is why they
-replaced the flags in 0.18.0.
+to be typed. [`videre gallery`](/commands/gallery/#what-is-on-each-page) lists
+every route.
 
 ### HEIC is faster here than it looks
 
@@ -137,17 +134,13 @@ videre gallery
 
 Static reports link to your photos with `file://`, which resolves only on the
 machine that generated them. Sent to someone else, the page loads and every
-image is broken.
-
-To produce something that travels, embed the images:
+image is broken. Embedding the images is not offered, so a review page is for
+the machine holding the photos. To write it somewhere other than the default,
+give a path:
 
 ```bash
-videre dedupe review for-sharing.html
+videre dedupe review ~/Desktop/duplicates.html
 ```
-
-The page links to your files by path, so it is small but only complete on the
-machine holding them. Embedding the images instead is not currently offered:
-`report --heic` used to do it, and went with that command in 0.20.0.
 
 ## Caveats
 
@@ -166,8 +159,9 @@ running.
 After deleting duplicates, regenerate it.
 
 **Files missing from disk are still listed.** A static page reads the database,
-so a photo deleted outside videre appears until
-[`videre prune`](/commands/prune/) removes its row.
+so a photo deleted outside videre appears until its row is removed by
+[`videre prune`](/commands/prune/) or the hourly cleanup of
+[`watch`](/commands/watch/).
 
 **Similarity search needs [`videre embed`](/commands/embed/), and lives only in
 `gallery`.** A static page cannot carry it: matching against every vector needs

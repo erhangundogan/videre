@@ -124,6 +124,8 @@ pub enum WorkerMsg {
     DecodeError {
         hash: String,
         error: String,
+        /// Why, when the cause was known; decides whether the skip is for good.
+        kind: Option<videre_core::error_kind::ErrorKind>,
     },
     ImageError,
     EmbedBatchError {
@@ -298,11 +300,13 @@ fn run_face_pipeline_impl(
                                     let error = format!("{e:#}");
                                     // The kind was attached where the cause
                                     // was known (drive, permission, decode).
+                                    let kind = videre_core::error_kind::ErrorKind::in_chain(&e);
                                     progress.skip(path, e);
                                     if tx
                                         .send(WorkerMsg::DecodeError {
                                             hash: hash.clone(),
                                             error,
+                                            kind,
                                         })
                                         .is_err()
                                     {
@@ -566,7 +570,7 @@ fn record_face_message(
                 );
             }
         }
-        WorkerMsg::DecodeError { hash, error } => {
+        WorkerMsg::DecodeError { hash, error, kind } => {
             if !dry_run {
                 // Record the decode failure so a later run can skip it
                 // once it has failed FAILURE_THRESHOLD times.
@@ -575,6 +579,7 @@ fn record_face_message(
                     &hash,
                     videre_core::decode_failures::STAGE_FACES,
                     &error,
+                    kind,
                 );
             }
         }

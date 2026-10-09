@@ -3,13 +3,15 @@ title: Caches and disk use
 description: Everything videre stores on disk, how big it gets, and what clearing it costs.
 ---
 
-videre keeps three caches. All are derived, so all can be deleted, but they cost
+videre keeps five caches. All are derived, so all can be deleted, but they cost
 very different amounts to rebuild.
 
 | Cache | Where | Typical size | Cost to lose |
 |---|---|---|---|
-| Thumbnails and decodes | `~/.cache/videre/thumbnails/` | **tens of GB** | Seconds each, re-decoded on demand |
-| Model weights | `~/.cache/huggingface/hub/` | ~960 MB | A download |
+| Thumbnails and decodes | `~/.cache/videre/libraries/<key>/thumbnails/` | **tens of GB** | Seconds each, re-decoded on demand |
+| Model weights | `~/.cache/huggingface/hub/` | ~1.6 GB | A download |
+| World map and place names | `~/.cache/videre/geo/`, shared | ~50 MB | A download |
+| Street map | `<library>/.videre/basemap/`, with `street-detail` on | ~55 MB per city | A download |
 | Geocoded place names | inside the database | tiny | One network lookup each |
 
 Embeddings are **not** a cache. They are hours of computation and are covered
@@ -136,7 +138,7 @@ offline.
 du -sh <library>/.videre/            # database, config, embeddings
 du -sh <library>/.videre/embeddings/ # ~130-190 MB per model per 70k photos
 du -sh ~/.cache/videre/libraries/     # usually the largest
-du -sh ~/.cache/huggingface/hub/      # ~960 MB with defaults
+du -sh ~/.cache/huggingface/hub/      # ~1.6 GB with defaults
 videre stats                          # per-model embedding sizes
 ```
 

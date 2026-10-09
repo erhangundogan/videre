@@ -39,13 +39,17 @@ CREATE TABLE file_hashes (
     location_name TEXT,
     location_cluster_id INTEGER,
     xmp_sidecar_mtime TEXT,
+    capture_date TEXT,
+    date_source TEXT,
+    gps_source  TEXT,
     FOREIGN KEY (location_cluster_id) REFERENCES location_clusters(id)
         ON DELETE RESTRICT ON UPDATE RESTRICT
 );
 ```
 
-This is the table's shape. Schema 3 libraries are upgraded to schema 4 on a
-writable open. Older libraries with incompatible content keys are refused:
+This is the table's shape at schema 5. A schema 3 or 4 library is upgraded in
+place on a writable open; schema 5 adds the three date and GPS source columns,
+which the next scan fills without rehashing. Older libraries with incompatible content keys are refused:
 remove their `.videre` directory and run `videre scan`.
 
 | Column | Notes |
@@ -56,14 +60,18 @@ remove their `.videre` directory and run `videre scan`.
 | `mime` | Detected from the file's leading bytes, not its name |
 | `phash` | Near-duplicate fingerprint (64-bit dHash), written by [`embed`](/commands/embed/). NULL until then, and again after the file's content changes |
 | `exif_date` | Camera-local, no timezone. `0000-*` values are discarded as absent |
+| `capture_date` | The one date for the file, a local wall clock (`YYYY-MM-DDTHH:MM:SS`), from the first of: EXIF, a video's Apple creation date, a Google Takeout sidecar, a video's `mvhd` time, the file's modification time |
+| `date_source` | Where `capture_date` came from: `exif`, `video`, `sidecar`, `mvhd` or `mtime`. NULL until the next scan resolves it |
+| `gps_source` | Where the coordinates came from: `exif`, or `sidecar` for a Takeout sidecar's `geoData`. NULL with no GPS |
 | `location_name` | Filled in lazily, not by `scan`. See [`watch --location`](/commands/watch/) |
 | `location_cluster_id` | Set by [`videre locations`](/commands/locations/) |
 
 `created_at` is always empty on Linux; the birth time needs a macOS syscall.
 
 Date filters on [`videre search`](/commands/search/) do not match `exif_date`
-directly. They match the **effective date**: `exif_date` when present and not
-`0000-*`, otherwise `modified_at`. That is the same rule
+directly. They match the **effective date**: `capture_date`, and for a row not
+yet resolved, `exif_date` when present and not `0000-*`, otherwise
+`modified_at`. That is the same rule
 [`videre dedupe`](/commands/dedupe/) uses to pick which copy to keep.
 
 :::note[hash is the join key, not path]
@@ -272,6 +280,57 @@ CREATE TABLE pipeline_run_history (
     status       TEXT NOT NULL,
     duration_ms  INTEGER,
     summary      TEXT
+);
+```
+
+## decode_failures
+
+Files a stage tried and could not turn into pixels, per stage (`embed`,
+`faces`, `thumbnail`). A file is skipped once `fail_count` reaches 2, so one
+that hangs QuickLook stops costing its timeout on every run; any success clears
+its row. `kind` is why it failed, an [error kind](/guides/logging-and-errors/#error-kinds):
+a `decode_failed` file is skipped for good, and any other failure, a timeout
+above all, only for a day after `last_failed_at`, then tried again.
+`embed --reprocess` tries embed's skipped files at once.
+[`videre status`](/commands/status/) reports these files as skipped.
+
+```sql
+CREATE TABLE decode_failures (
+    hash        TEXT NOT NULL,
+    stage       TEXT NOT NULL,
+    error       TEXT NOT NULL,
+    fail_count  INTEGER NOT NULL DEFAULT 1,
+    last_failed_at TEXT DEFAULT (datetime('now')),
+    kind        TEXT,
+    PRIMARY KEY (hash, stage)
+);
+```
+
+## pixel_signatures
+
+A small greyscale copy of an image, kept to confirm that two files of different
+sizes are one picture resized ([`dedupe --kind resized`](/commands/dedupe/)).
+Made only for candidates, and forgotten when the image is rotated.
+
+```sql
+CREATE TABLE pixel_signatures (
+    hash   TEXT PRIMARY KEY,
+    luma   BLOB NOT NULL,
+    width  INTEGER NOT NULL,
+    height INTEGER NOT NULL
+);
+```
+
+## library_state
+
+Small bookkeeping values the library keeps about itself, such as the GPS
+fingerprint the last [`videre locations`](/commands/locations/) ran on and how
+long the last regroup took. Internal; nothing to edit.
+
+```sql
+CREATE TABLE library_state (
+    key   TEXT PRIMARY KEY,
+    value INTEGER NOT NULL
 );
 ```
 

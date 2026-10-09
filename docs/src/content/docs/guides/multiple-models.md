@@ -69,9 +69,8 @@ than a hardcoded table, so an unfamiliar model reports honestly.
 
 Asking for a model you have not prepared gives an error listing the ones you do
 have, rather than silently returning nothing.
-[`videre dedupe review`](/commands/dedupe/) is the exception: a missing model disables
-its similarity button with a note rather than failing a report that is otherwise
-fine.
+[`videre gallery`](/commands/gallery/) is the exception: without the model's data
+it still serves every page, and leaves out **Similar** with a note.
 
 ## Classification is per model too
 
@@ -115,13 +114,10 @@ rm -rf ~/.cache/huggingface/hub/models--google--siglip2-base-patch16-384
 They are stored [per library and per model](/reference/models/#where-the-data-is-kept),
 so a second library repeats the cost.
 
-**Do not run two `embed` passes at once.** They both convert HEIC, and
-contending for that makes both dramatically slower. See
-[long-running jobs](/guides/long-running-jobs/).
+**One `embed` at a time per library.** A second `embed` on the same library is
+refused while one runs, whatever its model, so prepare models one after the
+other. See [long-running jobs](/guides/long-running-jobs/).
 
 **`--batch` is capped at 96 regardless of model.** Above roughly 121 the batched
 path silently produces wrong vectors, so higher values are reduced with a
 warning. See [`videre embed`](/commands/embed/).
-
-**Libraries from before 0.10** report their model as missing. See
-[upgrading](/reference/models/#upgrading-from-before-010); nothing is deleted.

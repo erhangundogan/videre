@@ -1272,8 +1272,8 @@ fn run_faces_stage(
             // Also skip hashes the face decode has already failed on enough
             // times. This matters most in watch: it re-runs on every cycle, so
             // without this an undecodable file pays its timeout every loop
-            // forever. Recording happens in the pipeline; `videre faces
-            // --reprocess` is the retry hatch.
+            // forever. Recording happens in the pipeline; a skip for anything
+            // but a broken file lapses after a day (`decode_failures`).
             decode_failures::ensure_table(conn)?;
             skip_hashes.extend(decode_failures::failed_hashes(
                 conn,

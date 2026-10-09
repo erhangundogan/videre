@@ -29,6 +29,7 @@ backing up):
 ```
 .videre/hashes.db          # the database: names, faces, scan rows, everything
 .videre/config.toml        # small, and annoying to reconstruct
+.videre/gallery.json       # gallery settings, face learning and clustering
 .videre/embeddings/        # optional, saves hours of recompute
 ```
 
@@ -80,6 +81,7 @@ DEST="/backups/videre/$(date +%F)"
 mkdir -p "$DEST"
 sqlite3 .videre/hashes.db ".backup $DEST/hashes.db"
 cp .videre/config.toml "$DEST/" 2>/dev/null || true
+cp .videre/gallery.json "$DEST/" 2>/dev/null || true
 cp -r .videre/embeddings "$DEST/" 2>/dev/null || true
 ```
 

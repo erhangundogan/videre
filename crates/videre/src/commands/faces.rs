@@ -459,16 +459,7 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
     // --reset needs no special case here: reset_all already cleared the
     // scanned markers and decode failures, so the normal skip set below is
     // empty and every hash is processed, exactly like a first-ever run.
-    let mut skip_hashes: std::collections::HashSet<String> =
-        face_db::scanned_hashes(&conn)?.into_iter().collect();
-    skip_hashes.extend(face_db::hashes_with_faces(&conn)?);
-    // Drop hashes the face decode has already failed on enough times: they
-    // would only re-pay the same timeout for the same guaranteed failure.
-    skip_hashes.extend(decode_failures::failed_hashes(
-        &conn,
-        decode_failures::STAGE_FACES,
-        decode_failures::FAILURE_THRESHOLD,
-    )?);
+    let skip_hashes = detection_skip_set(&conn)?;
 
     // Dedup by hash, drop skipped, cap at --limit for a partial/lazy pass.
     let to_process = face_db::select_unscanned(&all_paths, &skip_hashes, args.limit);
@@ -690,6 +681,25 @@ pub(crate) fn format_clustering_only_summary(
         ),
         None => format!("no faces in database to cluster (eps={eps:.2})"),
     }
+}
+
+/// The hashes face detection passes over: every one already processed
+/// (`faces_scanned`, which includes images with no faces), every one with
+/// faces, and every one its decode is resting from. A broken file rests for
+/// good; a timeout only for a day (`decode_failures`), so a file caught in a
+/// busy evening is tried again without anyone asking.
+fn detection_skip_set(
+    conn: &rusqlite::Connection,
+) -> anyhow::Result<std::collections::HashSet<String>> {
+    let mut skip: std::collections::HashSet<String> =
+        face_db::scanned_hashes(conn)?.into_iter().collect();
+    skip.extend(face_db::hashes_with_faces(conn)?);
+    skip.extend(decode_failures::failed_hashes(
+        conn,
+        decode_failures::STAGE_FACES,
+        decode_failures::FAILURE_THRESHOLD,
+    )?);
+    Ok(skip)
 }
 
 #[cfg(test)]

@@ -484,6 +484,7 @@ fn reset_with_yes_clears_every_face_state_without_needing_models() {
         "orphan",
         videre_core::decode_failures::STAGE_FACES,
         "bad image",
+        None,
     )
     .unwrap();
     videre_core::decode_failures::record(
@@ -491,6 +492,7 @@ fn reset_with_yes_clears_every_face_state_without_needing_models() {
         "orphan",
         videre_core::decode_failures::STAGE_EMBED,
         "bad image",
+        None,
     )
     .unwrap();
     drop(conn);

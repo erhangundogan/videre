@@ -25,6 +25,8 @@ videre search '"at the beach" (person:Alice OR person:Bob) -tag:screenshot' --da
 | `--type`, `--ext`, `--mime` | what kind of file it is |
 | `--path` | which folder it is in |
 | `--has`, `--missing` | whether metadata exists. Supported fields: `gps`, `date` |
+| `--rating`, `--pick`, `--label`, `--like` | the [marks](/commands/mark/) you set |
+| `--tag` | carries this [tag](/commands/tag/). Repeatable; all must be present |
 
 Every condition must hold, so adding a flag can only narrow the result.
 
@@ -285,9 +287,8 @@ to `--date 2024-12` even if its file was created last week.
 the model scores only the survivors. A composed query does less work than an
 unfiltered one.
 
-**`-k` applies to everything now.** `--person` and `--category` previously
-returned every match; they are now truncated like any other search, and ordered
-deterministically. Pass a large `-k` if you want the full set.
+**`-k` limits every search**, filters alone included, in a fixed order. Pass a
+large `-k` if you want the full set.
 
 **Each filter has its own prerequisite.** `--person` needs
 [`videre faces`](/commands/faces/) plus naming, `--category` needs
@@ -298,10 +299,9 @@ Missing one gives no results rather than an error.
 **`--location` reaches the network.** It geocodes the place name once and caches
 the answer. It is the only search filter that does.
 
-**Sub-second date precision varies.** Some stored dates carry a timezone offset
-and some do not, depending on the source. Comparison is textual, which is exact
-at day granularity and what every `--date` form uses. Only hand-written
-`--after`/`--before` bounds with a time component can land on the difference.
+**Dates are local clock times.** Every stored date is the local wall clock the
+photo was taken at, the form EXIF writes, whatever its source, so a
+`--after`/`--before` bound with a time component compares like for like.
 
 ## Available to agents too
 

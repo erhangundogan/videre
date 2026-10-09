@@ -27,8 +27,22 @@ fn embed_skips_a_hash_recorded_as_failed_and_loads_no_model() {
             .query_row("SELECT hash FROM file_hashes LIMIT 1", [], |r| r.get(0))
             .expect("the scanned photo has a hash");
         decode_failures::ensure_table(&conn).unwrap();
-        decode_failures::record(&conn, &hash, decode_failures::STAGE_EMBED, "timed out").unwrap();
-        decode_failures::record(&conn, &hash, decode_failures::STAGE_EMBED, "timed out").unwrap();
+        decode_failures::record(
+            &conn,
+            &hash,
+            decode_failures::STAGE_EMBED,
+            "timed out",
+            None,
+        )
+        .unwrap();
+        decode_failures::record(
+            &conn,
+            &hash,
+            decode_failures::STAGE_EMBED,
+            "timed out",
+            None,
+        )
+        .unwrap();
     }
 
     let embed = lib
@@ -77,8 +91,8 @@ fn embed_reprocess_clears_recorded_decode_failures() {
             .query_row("SELECT hash FROM file_hashes LIMIT 1", [], |r| r.get(0))
             .unwrap();
         decode_failures::ensure_table(&conn).unwrap();
-        decode_failures::record(&conn, &hash, decode_failures::STAGE_EMBED, "x").unwrap();
-        decode_failures::record(&conn, &hash, decode_failures::STAGE_EMBED, "x").unwrap();
+        decode_failures::record(&conn, &hash, decode_failures::STAGE_EMBED, "x", None).unwrap();
+        decode_failures::record(&conn, &hash, decode_failures::STAGE_EMBED, "x", None).unwrap();
         hash
     };
 
@@ -332,8 +346,22 @@ fn embed_with_zero_work_keeps_an_existing_model_database() {
     {
         let conn = lib.conn();
         decode_failures::ensure_table(&conn).unwrap();
-        decode_failures::record(&conn, &hash, decode_failures::STAGE_EMBED, "timed out").unwrap();
-        decode_failures::record(&conn, &hash, decode_failures::STAGE_EMBED, "timed out").unwrap();
+        decode_failures::record(
+            &conn,
+            &hash,
+            decode_failures::STAGE_EMBED,
+            "timed out",
+            None,
+        )
+        .unwrap();
+        decode_failures::record(
+            &conn,
+            &hash,
+            decode_failures::STAGE_EMBED,
+            "timed out",
+            None,
+        )
+        .unwrap();
     }
 
     let embed = lib

@@ -38,7 +38,7 @@ You should end up with `~/Takeout/Google Photos/` containing folders like
 
 ## 3. What Takeout got wrong
 
-Look at the extracted folder and you will see two problems.
+Look at the extracted folder and you will see three problems.
 
 **Photos without a camera date have today's date.** WhatsApp and Viber images,
 screenshots and scans carry no date of their own, so they arrive dated the day
@@ -52,7 +52,7 @@ times, so a 40 GB library can extract to considerably more.
 as the original, `IMG_1.jpg`, and Google's render of the edit,
 `IMG_1-edited.jpg`, side by side.
 
-videre fixes both.
+videre fixes all three.
 
 ## 4. Check the export
 
@@ -110,8 +110,9 @@ videre dedupe review                  # look at what would go
 videre dedupe trash                 # move the copies to the trash, once you agree
 ```
 
-`videre dedupe review` opens a page in your browser showing every duplicate group, with
-KEEP and REMOVE badges. Look before you delete.
+`videre dedupe review` writes a page, and prints its path, showing every
+duplicate group with KEEP and REMOVE badges; open it in your browser. Look
+before you delete.
 
 This is where the album duplication disappears. Those copies are byte-identical,
 so removing them loses nothing at all.

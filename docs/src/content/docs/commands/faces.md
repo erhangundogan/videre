@@ -328,9 +328,9 @@ together they overwhelm it.
 
 Measured with `faces` and `embed` running together: a HEIC load averaged over 16
 seconds against about 7.6 uncontended, and one file exceeded the timeout that
-converted in 0.39 s on its own. Nothing is lost, since a skipped file is not
-marked as done and retries next run, but it is much slower than running them one
-after the other.
+converted in 0.39 s on its own. A file that times out is not lost: it rests
+for a day at most, then is tried again by the next run or `watch`. But it is
+much slower than running them one after the other.
 :::
 
 **Warm the HEIC cache first** if your library is HEIC-heavy. Detection reads
@@ -353,11 +353,15 @@ can lose up to `workers x batch` images of progress, which is 160 with the
 defaults on a 10-core machine. Everything already committed is safe and the
 rerun continues correctly; it just redoes a little.
 
-**A file that cannot be decoded is skipped after it fails twice**, so a broken
-or unreadable file stops costing a timeout on every run (and every `watch`
-cycle) instead of being re-attempted forever. A single failure never skips a
-file, so a one-off timeout from contention still retries; two do.
-`videre faces --reset` clears those records along with everything else.
+**A file that fails to decode twice is skipped**, so it stops costing a timeout
+on every run (and every `watch` cycle). A single failure never skips a file.
+How long the skip lasts depends on why it failed: a file that is not a
+decodable image is skipped for good, since only a change to the file could fix
+it, and a changed file is a new one to videre. A timeout, an unreachable drive
+or an unknown cause is skipped for a day, then tried again by itself, so a file
+caught while QuickLook was busy gets its faces without you doing anything.
+[`videre status`](/commands/status/) counts skipped files.
+`videre faces --reset` clears these records too, along with everything else.
 
 **A failing library volume stops the run.** An unreadable *file* is skipped as
 above, and a drive whose files cannot be read at all keeps skipping them on
