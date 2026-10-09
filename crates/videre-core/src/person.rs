@@ -129,6 +129,21 @@ pub fn normalize(raw: &str) -> Option<String> {
     (!out.is_empty()).then_some(out)
 }
 
+/// Text folded for a substring search that ignores case and diacritics: the
+/// same letter fold as [`normalize`], then lowercase, keeping punctuation,
+/// spaces and digits, so a path or message keeps its shape.
+///
+/// ```
+/// use videre_core::person::search_fold;
+/// assert_eq!(search_fold("/Fotoğraflar/ÇİÇEK.HEIC"), "/fotograflar/cicek.heic");
+/// assert!(search_fold("Şehir failed").contains(&search_fold("ŞEHİR")));
+/// ```
+pub fn search_fold(text: &str) -> String {
+    text.chars()
+        .flat_map(|c| fold(c).unwrap_or(c).to_lowercase())
+        .collect()
+}
+
 /// The display form: what was typed, tidied but not transformed.
 ///
 /// Trims and collapses internal whitespace, so `"Ahmet   Ari"` becomes

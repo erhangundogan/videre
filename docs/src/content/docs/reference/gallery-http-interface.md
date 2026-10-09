@@ -801,7 +801,7 @@ files. Query parameters, all optional:
 | `command` | Only this command's logs |
 | `level` | `error`, `warn` (default: warnings and errors) or `info`, which reads the trace files and needs `log-level` info |
 | `since` | Only lines at or after this RFC 3339 time |
-| `q` | Only lines whose message or path contains this, ignoring case |
+| `q` | Only lines whose message or path contains this, ignoring case and diacritics (`cicek` finds `ÇİÇEK`) |
 | `before` | Only lines before this RFC 3339 time: the last line's `ts`, for the next page |
 
 A bad `level` or time is `400`.

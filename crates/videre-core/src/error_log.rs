@@ -524,7 +524,7 @@ pub struct LogQuery {
     pub min_level: LineLevel,
     /// Only lines at or after this RFC 3339 instant.
     pub since: Option<String>,
-    /// Only lines whose message or path contains this, ignoring case.
+    /// Only lines whose message or path contains this, ignoring case and diacritics (`person::search_fold`).
     pub text: Option<String>,
     /// Only lines before this RFC 3339 instant: the previous page's last.
     pub before: Option<String>,
@@ -582,7 +582,7 @@ pub fn read_lines(ctx: &LibraryContext, q: &LogQuery) -> Result<LogPage> {
     let needle = q
         .text
         .as_deref()
-        .map(str::to_lowercase)
+        .map(crate::person::search_fold)
         .filter(|t| !t.is_empty());
     let mut no_trace = Vec::new();
     let mut unreadable = 0u64;
@@ -628,11 +628,11 @@ pub fn read_lines(ctx: &LibraryContext, q: &LogQuery) -> Result<LogPage> {
                     continue;
                 }
                 if let Some(needle) = &needle {
-                    let hit = line.message.to_lowercase().contains(needle)
+                    let hit = crate::person::search_fold(&line.message).contains(needle)
                         || line
                             .path
                             .as_deref()
-                            .is_some_and(|p| p.to_lowercase().contains(needle));
+                            .is_some_and(|p| crate::person::search_fold(p).contains(needle));
                     if !hit {
                         continue;
                     }
@@ -1067,6 +1067,10 @@ mod tests {
         // The path is searched too, and case does not matter, Turkish included.
         assert_eq!(q(&|q| q.text = Some("çek.heic".into())), "timed out");
         assert_eq!(q(&|q| q.text = Some("şehir".into())), "Şehir failed");
+        // A dotted capital İ lowers to i plus a combining dot, which would
+        // never match the plain i in the path.
+        assert_eq!(q(&|q| q.text = Some("ÇİÇEK".into())), "timed out");
+        assert_eq!(q(&|q| q.text = Some("ŞEHİR".into())), "Şehir failed");
     }
 
     #[test]
