@@ -59,8 +59,11 @@ pub fn run(args: ConfigArgs, ctx: &CommandContext) -> Result<()> {
 /// Street detail off means no street map on disk: the download was the
 /// consent's only product, so withdrawing the consent deletes it.
 fn forget_street_detail(ctx: &CommandContext) -> Result<()> {
-    if videre_core::basemap_detail::remove(&ctx.library.paths.state)? {
-        eprintln!("street-detail off: deleted the downloaded street map");
+    if let Some(bytes) = videre_core::basemap_detail::remove(&ctx.library.paths.state)? {
+        eprintln!(
+            "street-detail off: deleted the downloaded street map ({:.0} MB)",
+            bytes as f64 / 1e6
+        );
     }
     Ok(())
 }

@@ -10,6 +10,7 @@
 //! see `dedupe review` and `search --html`.
 
 mod bulk;
+mod config_form;
 mod events;
 mod learning;
 mod recluster;

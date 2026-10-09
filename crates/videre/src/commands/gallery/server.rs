@@ -2292,6 +2292,54 @@ async fn handle_patch_settings(
         .map_err(IntoResponse::into_response)
 }
 
+/// `PATCH /api/config`: `{cli-name: value | null}`, the settings page's save
+/// of `videre config` keys. Every key is checked first and the file written
+/// once, so a save lands whole or not at all. A change the running gallery
+/// uses applies before this answers: street detail turned off deletes the
+/// street map, and the map's remembered flag follows.
+async fn handle_patch_config(
+    State(state): State<Arc<AppState>>,
+    AxumJson(body): AxumJson<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, axum::response::Response> {
+    use videre_core::library_config::{self, ConfigKey};
+    let changes = super::config_form::parse(&body).map_err(|errors| {
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({ "errors": errors })),
+        )
+            .into_response()
+    })?;
+    tokio::task::spawn_blocking(move || {
+        let _guard = guard_operation(&state).map_err(IntoResponse::into_response)?;
+        let library = &state.context.library;
+        library_config::edit_many(library, &changes).map_err(|e| {
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({ "error": format!("{e:#}") })),
+            )
+                .into_response()
+        })?;
+        let config =
+            library_config::load(&library.paths).map_err(|e| internal(e).into_response())?;
+        let mut deleted = None;
+        if changes.iter().any(|(k, _)| *k == ConfigKey::StreetDetail) {
+            if !config.street_detail {
+                deleted = videre_core::basemap_detail::remove(&library.paths.state)
+                    .map_err(|e| internal(e).into_response())?;
+            }
+            state
+                .street_detail
+                .store(config.street_detail, std::sync::atomic::Ordering::Relaxed);
+        }
+        Ok(Json(serde_json::json!({
+            "values": super::config_form::values_json(&config),
+            "deleted_street_map_bytes": deleted,
+        })))
+    })
+    .await
+    .map_err(|e| internal(e).into_response())?
+}
+
 /// 422 with each refused value's message by dotted path, before anything is
 /// written. Only the incoming values are checked: a value already on disk
 /// that is out of range (a hand edit) must not block every later save.
@@ -5587,6 +5635,7 @@ async fn serve_faces_async(
                 .patch(handle_patch_settings)
                 .put(handle_put_settings),
         )
+        .route("/api/config", patch(handle_patch_config))
         .route("/api/events", get(handle_events_api))
         .route("/api/events/{key}/files", get(handle_events_files))
         .route("/api/search", get(handle_search))
@@ -6159,7 +6208,84 @@ mod settings_api_tests {
                     .patch(handle_patch_settings)
                     .put(handle_put_settings),
             )
+            .route("/api/config", patch(handle_patch_config))
             .with_state(state)
+    }
+
+    async fn patch_config(app: &Router, body: Value) -> (StatusCode, Value) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri("/api/config")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_config_save_writes_every_key_or_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+        let config = state.context.library.paths.config.clone();
+        let app = app(state);
+
+        let (status, body) =
+            patch_config(&app, json!({"run-history": 5, "log-level": "info"})).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["values"]["run-history"], 5);
+        let before = std::fs::read(&config).unwrap();
+
+        let (status, body) = patch_config(&app, json!({"log-keep": 9, "run-history": 101})).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            body["errors"],
+            json!({"run-history": "Enter a whole number from 1 to 100"})
+        );
+        let (status, body) = patch_config(&app, json!({"kasaba": true})).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(body["errors"]["kasaba"], "Not a setting");
+        assert_eq!(std::fs::read(&config).unwrap(), before);
+
+        let (status, body) = patch_config(&app, json!({"run-history": null})).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body["values"]["run-history"], 3,
+            "unset is the default again"
+        );
+    }
+
+    #[tokio::test]
+    async fn turning_street_detail_off_deletes_the_street_map_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+        let paths = state.context.library.paths.clone();
+        std::fs::write(&paths.config, "street_detail = true\n").unwrap();
+        let archive = videre_core::basemap_detail::archive_path(&paths.state);
+        std::fs::create_dir_all(archive.parent().unwrap()).unwrap();
+        std::fs::write(&archive, vec![0u8; 1234]).unwrap();
+        state
+            .street_detail
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let app = app(state.clone());
+
+        let (status, body) = patch_config(&app, json!({"street-detail": false})).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["deleted_street_map_bytes"], 1234);
+        assert!(!archive.exists());
+        assert!(!state
+            .street_detail
+            .load(std::sync::atomic::Ordering::Relaxed));
     }
 
     async fn send(app: &Router, method: &str, ctype: &str, body: &str) -> (StatusCode, Value) {
