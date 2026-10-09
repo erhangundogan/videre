@@ -75,7 +75,7 @@ window.addEventListener('pagehide',flushSettings);
   if(!VIDERE_SETTINGS_LIVE)return;
   function record(){
     var here=location.pathname+location.search;
-    if(location.pathname==='/settings'||setting('resume.route')===here)return;
+    if(location.pathname==='/settings'||location.pathname.indexOf('/settings/')===0||setting('resume.route')===here)return;
     saveSetting('resume.route',here);
   }
   ['pushState','replaceState'].forEach(function(name){

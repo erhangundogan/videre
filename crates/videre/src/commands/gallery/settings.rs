@@ -110,7 +110,9 @@ pub(crate) fn page_script(s: &Snapshot, live: bool) -> String {
          <script>{SETTINGS_JS}</script>",
         js(&s.effective),
         js(&defaults()),
-        js(&Value::Object(schema())),
+        // As written, not through `schema()`: its map sorts the keys, and the
+        // settings page lists them in the file's order.
+        SCHEMA_JSON.trim().replace('<', "\\u003c"),
         js(&error),
     )
 }
@@ -337,7 +339,7 @@ fn same_value(a: &Value, b: &Value) -> bool {
 
 const RESUME_MAX: usize = 2048;
 
-/// Paths that are not pages. `/settings` is refused separately: it is a
+/// Paths that are not pages. `/settings` and its tabs are refused separately: it is a
 /// detour, not a place to come back to.
 const NOT_RESUMABLE: &[&str] = &["/api/", "/tiles/", "/vendor/"];
 
@@ -366,6 +368,7 @@ pub(crate) fn resume_route(effective: &Value) -> String {
         && !route.starts_with("//")
         && !route.contains('\\')
         && path != "/settings"
+        && !path.starts_with("/settings/")
         && !NOT_RESUMABLE.iter().any(|p| route.starts_with(p));
     if ok {
         route.to_string()
@@ -613,6 +616,7 @@ mod tests {
             "/tiles/basemap.pmtiles",
             "/vendor/1/x.js",
             "/settings",
+            "/settings/gallery",
             "/settings?x=1",
             "map",
             "/\\evil",

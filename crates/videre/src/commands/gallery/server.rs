@@ -1986,9 +1986,20 @@ mod pages {
         /// The library's `gallery.json`, shown so hand editing is findable.
         pub path: String,
         pub nav: Option<super::Section>,
+        /// `config`, `gallery` or `manage`.
+        pub tab: &'static str,
+        /// The library's `config.toml`, shown on the config tab.
+        pub config_path: String,
+        /// The config form's keys and values (`config_form::page_json`), read
+        /// once when the page renders; `null` on the other tabs.
+        pub config_json: String,
     }
 
-    pub const SETTINGS_PAGE_JS: &str = include_str!("../../../static/settings-page.js");
+    pub const SETTINGS_PAGE_JS: &str = concat!(
+        include_str!("../../../static/settings-page.js"),
+        "\n",
+        include_str!("../../../static/settings-form.js"),
+    );
     pub const FACES_CSS: &str = include_str!("../../../static/faces.css");
     /// The People script, with the shared multi-select component ahead of it.
     pub const FACES_JS: &str = concat!(
@@ -2177,18 +2188,49 @@ fn settings_json(s: super::settings::Snapshot) -> Json<serde_json::Value> {
     }))
 }
 
-/// `/settings`: import, export and reset of the library's gallery settings,
-/// reached from the nav's `...` menu.
-async fn handle_settings_page(State(state): State<Arc<AppState>>) -> axum::response::Html<String> {
+/// `/settings`, reached from the nav's `...` menu, opens its first tab.
+async fn handle_settings_root() -> axum::response::Redirect {
+    axum::response::Redirect::to("/settings/config")
+}
+
+/// `/settings/config` (the `videre config` keys), `/settings/gallery` (the
+/// gallery settings) and `/settings/manage` (import, export and reset). The
+/// config is read here, once per render, and handed to the page.
+async fn handle_settings_page(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(tab): axum::extract::Path<String>,
+) -> Result<axum::response::Html<String>, StatusCode> {
     use askama::Template;
+    let tab: &'static str = match tab.as_str() {
+        "config" => "config",
+        "gallery" => "gallery",
+        "manage" => "manage",
+        _ => return Err(StatusCode::NOT_FOUND),
+    };
+    let config_json = if tab == "config" {
+        let paths = state.context.library.paths.clone();
+        let page = tokio::task::spawn_blocking(move || {
+            super::config_form::page_json(videre_core::library_config::load(&paths))
+        })
+        .await
+        .map_err(internal)?;
+        page.to_string().replace('<', "\\u003c")
+    } else {
+        "null".to_string()
+    };
     let page = pages::Settings {
         settings_script: page_settings(&state).await,
         chrome: CHROME_CSS,
         js: pages::SETTINGS_PAGE_JS,
         path: settings_file(&state).display().to_string(),
         nav: Some(Section::Settings),
+        tab,
+        config_path: state.context.library.paths.config.display().to_string(),
+        config_json,
     };
-    axum::response::Html(page.render().expect("settings template"))
+    Ok(axum::response::Html(
+        page.render().expect("settings template"),
+    ))
 }
 
 /// `GET /api/settings`: the effective settings, the stored overrides, and
@@ -5728,7 +5770,8 @@ async fn serve_faces_async(
         .route("/date", get(handle_gallery_date))
         .route("/map/location/{name}", get(handle_map_location))
         .route("/map", get(handle_map))
-        .route("/settings", get(handle_settings_page))
+        .route("/settings", get(handle_settings_root))
+        .route("/settings/{tab}", get(handle_settings_page))
         .route("/events/{key}", get(handle_events_key))
         .route("/events", get(handle_events))
         .route("/smart", get(handle_not_yet));
@@ -6530,27 +6573,57 @@ mod settings_api_tests {
     }
 
     #[tokio::test]
-    async fn the_settings_page_offers_import_export_and_reset() {
+    async fn settings_has_three_tabs_and_opens_on_the_config() {
         let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+        std::fs::write(&state.context.library.paths.config, "run_history = 7\n").unwrap();
         let app = Router::new()
-            .route("/settings", get(handle_settings_page))
-            .with_state(gallery_state(dir.path()));
-        let html = page(&app, "/settings").await;
+            .route("/settings", get(handle_settings_root))
+            .route("/settings/{tab}", get(handle_settings_page))
+            .with_state(state);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/settings")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(response.status().is_redirection());
+        assert_eq!(response.headers()[header::LOCATION], "/settings/config");
+
+        let html = page(&app, "/settings/config").await;
+        assert!(html.contains("data-kind=\"config\""));
+        assert!(
+            html.contains("\"cli\":\"run-history\""),
+            "the config is in the page"
+        );
+        assert!(html.contains("\"value\":7"), "read when the page rendered");
+        assert!(html.contains("id=\"secnav-more\""), "carries the nav menu");
+
+        let html = page(&app, "/settings/gallery").await;
+        assert!(html.contains("data-kind=\"gallery\""));
+        assert!(html.contains(".videre/gallery.json"), "shows the file path");
+
+        let html = page(&app, "/settings/manage").await;
         for id in ["settings-export", "settings-import", "settings-reset"] {
             assert!(html.contains(&format!("id=\"{id}\"")), "{id}");
         }
-        assert!(html.contains(".videre/gallery.json"), "shows the file path");
-        assert!(html.contains("id=\"secnav-more\""), "carries the nav menu");
-        for (key, max) in [
-            ("routes.files.pageSize", 500),
-            ("routes.date.pageSize", 500),
-            ("routes.search.pageSize", 200),
-            ("routes.people.pageSize", 1000),
-            ("routes.duplicates.pageSize", 1000),
-        ] {
-            let input = format!("data-setting=\"{key}\" min=\"1\" max=\"{max}\"");
-            assert!(html.contains(&input), "{input}");
-        }
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/settings/kasaba")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
