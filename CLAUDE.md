@@ -817,7 +817,9 @@ above.
 - Location clustering has no n*n matrix: cells first, then sparse average
   linkage -> `videre_core::location_cluster::cluster_by_distance`
 - Source-file decodes are orientation-correct -> `videre_core::image_decode`
-- `watch --prune` cannot override the guards -> `commands::prune::PruneArgs::for_watch_stage`
+- Watch prunes by default (`--no-prune` opts out) and cannot override the
+  guards; dedupe and the gallery's Delete and Trash clean up as they remove ->
+  `commands::prune::PruneArgs::for_watch_stage`, `commands::prune::clean_up_after_removal`
 - `videre locations` is a global recompute -> `commands::locations`
 - One clustering parameter set; flag > `gallery.json` `faces.clustering` >
   built-in, per field (watch: no flag layer) -> `videre_ml::cluster_params`,

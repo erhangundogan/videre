@@ -15,7 +15,7 @@ videre --library ~/Photos watch        # watch a different library
 videre watch --scan --faces            # only these stages
 videre watch --heic                    # only pre-convert HEIC thumbnails
 videre watch --location                # only look up place names
-videre watch --prune                   # also clean stale entries (off by default)
+videre watch --no-prune                # every stage but the cleanup
 videre watch --silent                  # no per-stage output
 videre watch --type image              # only watch for new images
 ```
@@ -58,9 +58,11 @@ directory and `.xmp` sidecars are filtered out of the event stream.
 
 ## Stages
 
-If none of `--scan`, `--faces`, `--heic`, `--location` or `--embed` are given,
-all five run. `--prune` and `--export-xmp` are the exceptions: they are opt-in
-and never default on.
+If none of `--scan`, `--faces`, `--heic`, `--location`, `--embed` or
+`--prune` are given, all six run, so a file deleted or moved outside videre
+leaves the library without a manual [`videre prune`](/commands/prune/).
+`--no-prune` leaves the cleanup out. `--export-xmp` is the exception: it is
+opt-in and never defaults on.
 
 A file watch picks up goes through every stage in the same batch: it is
 scanned, its faces are detected and grouped with their people, it is embedded
@@ -88,7 +90,7 @@ opens a list of what each stage has left, and disappears at zero.
 | `--heic` | Pre-converts and caches HEIC thumbnails |
 | `--location` | Looks up place names for GPS coordinates that have none, and gives each new photo its place on the map (at the default radius; a manual radius is respected) |
 | `--embed` | Embeds and classifies new files with the library's model, the same work as [`videre embed`](/commands/embed/) and [`videre classify`](/commands/classify/). It never downloads the model: until `videre embed` has fetched it once, watch says so once and the files stay outstanding in [`videre status`](/commands/status/) |
-| `--prune` | Same cleanup as [`videre prune`](/commands/prune/); runs on the startup and maintenance passes, not per event |
+| `--prune` | Same cleanup as [`videre prune`](/commands/prune/); runs on the startup and maintenance passes, not per event. On by default; `--no-prune` leaves it out |
 | `--export-xmp` | Writes labels to `.xmp` sidecars, same as [`videre export`](/commands/export/). Each batch writes its own files' sidecars; the startup and maintenance passes rewrite every file's |
 
 Grouping faces into people and photos into places are whole-library passes,
@@ -146,14 +148,14 @@ videre --library ~/Photos watch --heic       # Ctrl-C once the counts settle
 videre faces
 ```
 
-**Include cleanup**, if your photos live on an always-connected disk:
+**Leave out cleanup**, if you would rather prune by hand:
 
 ```bash
-videre --library ~/Photos watch --scan --faces --heic --location --prune
+videre --library ~/Photos watch --no-prune
 ```
 
-Passing `--prune` requires listing the other stages you want, since naming any
-stage disables the defaults.
+Naming stages runs only those, so add `--prune` to a list to keep the cleanup:
+`videre watch --scan --faces --prune`.
 
 ## Running it for real
 

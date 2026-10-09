@@ -460,13 +460,13 @@ Marks and tags belong to the content, so every copy of a photo changes with
 it, exactly as with [`videre mark`](/commands/mark/) and
 [`videre tag`](/commands/tag/). Delete moves **every copy** of each selected
 item to the Trash (the confirmation counts them), each with its XMP sidecar,
-and the library stops
-listing them at once; their marks, tags and faces stay until
-[`videre prune`](/commands/prune/). A Delete is undone with
+and nothing of them is left behind: their marks, tags, faces, embeddings and
+thumbnails go at once, as [`videre prune`](/commands/prune/) would remove them.
+Face-learning evidence that depended on those faces is withdrawn, while the
+historical journal and person names are kept. A Delete is undone with
 [`videre dedupe undo`](/commands/dedupe/#undoing-a-trash-run), which puts back
-the most recent trash run, from the gallery or from `dedupe trash`. Prune also withdraws face-learning evidence
-that depended on those faces, while keeping the historical journal and person
-names. It waits until no other videre command or
+the most recent trash run, from the gallery or from `dedupe trash`; watch then
+processes the restored files again, as new ones. It waits until no other videre command or
 `watch` stage is working on the library.
 
 Select mode needs the running gallery: a static export has no Select button.
