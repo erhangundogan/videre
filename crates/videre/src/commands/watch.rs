@@ -1004,7 +1004,14 @@ fn tracked_stage(
     };
     match videre_core::library_locks::try_command(&ctx.library, lock) {
         Ok(guard) => {
-            videre_core::pipeline_runs::track_in_as(conn, &ctx.library, &guard, lock, command, f)?;
+            videre_core::pipeline_runs::track_cycle_in_as(
+                conn,
+                &ctx.library,
+                &guard,
+                lock,
+                command,
+                f,
+            )?;
             Ok(StageOutcome::Ran)
         }
         Err(_) => {
