@@ -1,6 +1,6 @@
 ---
 title: videre prune
-description: Clean up database entries for files you have deleted. Never touches real files.
+description: Clean up database entries for files deleted or moved outside videre. Never touches real files.
 ---
 
 Syncs the database with what is actually on disk. It **never deletes real
@@ -18,19 +18,28 @@ videre prune --force                   # allow an unusually large cleanup
 
 ## When to run it
 
-The usual moment is right after deleting duplicates:
+After a change made outside videre. videre's own commands clean up after
+themselves: [`dedupe trash`](/commands/dedupe/) and `dedupe delete` run this
+pass for the copies they remove, and [`fix-dates`](/commands/fix-dates/)
+deletes nothing and keeps each row's stored time in step with the file. Run it
+by hand when:
 
-```bash
-videre dedupe trash          # files are gone from disk (moved to the trash)...
-videre prune                   # ...now the database agrees
-```
+- **you deleted files** in Finder, the Photos app or any other tool. The files
+  are gone, but their rows stay;
+- **you deleted files in the gallery**. They leave the library at once, but
+  their marks, tags and faces stay until pruned;
+- **you moved, renamed or reorganised folders**. Rows are keyed by path, so a
+  moved file looks like a deletion plus a new file: [`scan`](/commands/scan/)
+  records the new path, and the old row lingers until pruned;
+- **a folder is gone for good**, such as one on a drive you no longer have:
+  `videre prune --prune-unreachable`. An unreachable folder is otherwise left
+  alone, in case its drive is only unplugged.
 
-Until you do, `videre stats` still counts the deleted files, and reports still
-list them (they are filtered out at generation time, but the rows remain).
+Until then, `videre stats` still counts the files, and reports still list them
+(they are filtered out at generation time, but the rows remain).
 
-Also worth running after moving or reorganising folders by hand, since rows are
-keyed by path: a moved file looks like a deletion plus a new file, and the old
-row lingers until pruned.
+[`videre watch --prune`](/commands/watch/) does this as files disappear. It is
+off by default.
 
 Always look first on a library you care about:
 

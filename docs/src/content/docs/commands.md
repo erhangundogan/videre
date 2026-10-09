@@ -52,5 +52,6 @@ Most commands share these:
 | `search --date` / `--after` / `--before` | nothing beyond `scan` |
 
 [Workflows](/start/workflows/) has the full dependency map, what to run
-*afterwards* (`prune` is the one people forget), recipes for the common jobs,
+*afterwards* (`prune`, after deleting or moving files outside videre, is the
+one people forget), recipes for the common jobs,
 and rough costs for the long ones.

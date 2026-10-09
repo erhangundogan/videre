@@ -40,7 +40,6 @@ you are still in `~/Photos`. From anywhere else, name it explicitly with
 videre dedupe                # list which copies could go
 videre dedupe review         # ...or review them in a browser first
 videre dedupe trash        # move the copies to the trash (asks first)
-videre prune                 # tidy the database afterwards
 ```
 
 By default `videre dedupe` only prints a list for you to check; `trash` is
@@ -88,8 +87,8 @@ with every flag.
 ## What needs what
 
 Each of the above is a small pipeline: `search` needs `embed` first,
-`search --person` needs `faces` plus naming, and `prune` belongs after anything
-that deletes files.
+`search --person` needs `faces` plus naming, and `prune` belongs after files
+are deleted or moved outside videre.
 
 [Workflows](/start/workflows/) has the full map, plus recipes for the common
 jobs and rough costs for the long ones.

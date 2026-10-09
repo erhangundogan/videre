@@ -108,7 +108,6 @@ first. See [`fix-dates`](/commands/fix-dates/).
 ```bash
 videre dedupe review                  # look at what would go
 videre dedupe trash                 # move the copies to the trash, once you agree
-videre prune                          # tidy the database afterwards
 ```
 
 `videre dedupe review` opens a page in your browser showing every duplicate group, with
