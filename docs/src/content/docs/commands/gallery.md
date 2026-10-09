@@ -116,7 +116,7 @@ stays visible even when a file has none of the people or location data yet.
 | `/map/location/berlin?place=Mitte%2C%20DE` | One district of a city: exactly the files named for it |
 | `/map/location/berlin?at=52.52,13.405&radius=0.2` | A street group: a small circle inside a city |
 | `/events` | Substantial travel trips inferred from capture dates and photo locations; click one to see its media |
-| `/events/20200312T100000-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` | One trip's media, keyed by its first photo anchor's time and full content hash |
+| `/events/<time>-<hash>` | One trip's media, keyed by its first photo anchor's time and full content hash, such as `/events/20200312T100000-` followed by the 64-character hash |
 | `/smart` | Reserved, not built yet |
 
 **Library**, **Duplicates**, **Date**, **Events**, **People** and **Map** sit in a strip along

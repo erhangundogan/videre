@@ -1,0 +1,6 @@
+/* A table's first column names a flag, key or route: one token, never broken.
+   Left to wrap, `--location` split after its dashes and read as `--` above
+   `location`. A cell listing several tokens still wraps between them. */
+.sl-markdown-content td:first-child > code:only-child {
+	white-space: nowrap;
+}
