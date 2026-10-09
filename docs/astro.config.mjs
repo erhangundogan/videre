@@ -41,6 +41,7 @@ export default defineConfig({
 				replacesTitle: true,
 			},
 			favicon: '/favicon.svg',
+			customCss: ['./src/styles/custom.css'],
 			// Starlight emits twitter:card=summary_large_image but no image, which
 			// renders a large empty box on every platform that honours it. One
 			// static card, regenerated with `yarn og`, is far better than none.
