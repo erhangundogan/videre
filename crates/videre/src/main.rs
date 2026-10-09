@@ -4,6 +4,7 @@ use std::ffi::{OsStr, OsString};
 mod command_context;
 mod commands;
 mod completions;
+mod diagnostics;
 mod display_path;
 mod exit;
 mod indexing;
