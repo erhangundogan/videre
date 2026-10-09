@@ -394,34 +394,42 @@ fn resolved_lines(text: &str, command: &str) -> Vec<Option<(String, LogLine)>> {
         .collect()
 }
 
-/// The latest run of every command that has a primary log. Trace files are
-/// never read: errors and warnings are always in the primary file. A missing
-/// logs directory means nothing was recorded, and reading creates nothing.
-pub fn latest_runs(ctx: &LibraryContext) -> Result<Vec<CommandLogSummary>> {
-    let dir = ctx.paths.state.join(LOGS_DIR);
-    let owned = dir.clone();
-    let names = bounded_op(
-        &dir,
-        "read",
-        STAT_TIMEOUT,
-        move || match std::fs::read_dir(&owned) {
+/// The file names in the logs directory, bounded; none when it is missing.
+fn log_file_names(dir: &Path) -> Result<Vec<String>> {
+    let owned = dir.to_path_buf();
+    bounded_op(dir, "read", STAT_TIMEOUT, move || {
+        match std::fs::read_dir(&owned) {
             Ok(entries) => Ok(entries
                 .flatten()
                 .filter_map(|e| e.file_name().into_string().ok())
                 .collect::<Vec<_>>()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
             Err(e) => Err(e),
-        },
-    )?;
-    let mut commands: Vec<&str> = names
+        }
+    })
+}
+
+/// The commands with a primary log, sorted.
+fn logged_commands(names: &[String]) -> Vec<String> {
+    let mut commands: Vec<String> = names
         .iter()
         .filter_map(|n| n.strip_suffix(".log"))
         .filter(|c| !c.ends_with(".trace") && !c.is_empty())
+        .map(str::to_owned)
         .collect();
     commands.sort_unstable();
+    commands
+}
+
+/// The latest run of every command that has a primary log. Trace files are
+/// never read: errors and warnings are always in the primary file. A missing
+/// logs directory means nothing was recorded, and reading creates nothing.
+pub fn latest_runs(ctx: &LibraryContext) -> Result<Vec<CommandLogSummary>> {
+    let dir = ctx.paths.state.join(LOGS_DIR);
+    let names = log_file_names(&dir)?;
     let mut out = Vec::new();
-    for command in commands {
-        if let Some(summary) = latest_run_of(&dir, command, &names)? {
+    for command in logged_commands(&names) {
+        if let Some(summary) = latest_run_of(&dir, &command, &names)? {
             out.push(summary);
         }
     }
@@ -504,6 +512,151 @@ fn latest_run_of(dir: &Path, command: &str, names: &[String]) -> Result<Option<C
         }
     }
     Ok(Some(summary))
+}
+
+/// What [`read_lines`] returns: one page, newest first.
+#[derive(Debug, Clone)]
+pub struct LogQuery {
+    /// Only this command's files; `None` for every command.
+    pub command: Option<String>,
+    /// The least severe level shown: `Warn` shows warnings and errors. `Info`
+    /// or `Debug` read the trace files, which hold every level from theirs up.
+    pub min_level: LineLevel,
+    /// Only lines at or after this RFC 3339 instant.
+    pub since: Option<String>,
+    /// Only lines whose message or path contains this, ignoring case.
+    pub text: Option<String>,
+    /// Only lines before this RFC 3339 instant: the previous page's last.
+    pub before: Option<String>,
+    /// Lines per page. A page is longer only to keep one instant's lines
+    /// together, so `before` never skips any.
+    pub limit: usize,
+}
+
+impl Default for LogQuery {
+    fn default() -> Self {
+        Self {
+            command: None,
+            min_level: LineLevel::Warn,
+            since: None,
+            text: None,
+            before: None,
+            limit: 200,
+        }
+    }
+}
+
+/// One page of log lines, with what the controls need to describe it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LogPage {
+    pub lines: Vec<LogLine>,
+    /// More lines match beyond this page.
+    pub more: bool,
+    /// Lines in the files read that could not be parsed.
+    pub unreadable: u64,
+    /// Every command with a log, for the command filter.
+    pub commands: Vec<String>,
+    /// Commands with no trace file, when the query asked for info lines: their
+    /// `log_level` was below info, so only warnings and errors exist.
+    pub no_trace: Vec<String>,
+}
+
+fn instant(ts: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(ts)
+        .ok()
+        .map(|t| t.with_timezone(&chrono::Utc))
+}
+
+/// The lines of the library's logs that match `q`, newest first. Errors and
+/// warnings come from the primary files, info lines from the trace files
+/// (which repeat the warnings, so the two are never read together). Each
+/// command's files are read newest first, the active one then `.1`, `.2`.
+/// A missing logs directory reads as empty and is not created.
+pub fn read_lines(ctx: &LibraryContext, q: &LogQuery) -> Result<LogPage> {
+    let dir = ctx.paths.state.join(LOGS_DIR);
+    let names = log_file_names(&dir)?;
+    let commands = logged_commands(&names);
+    let traces = q.min_level >= LineLevel::Info;
+    let since = q.since.as_deref().and_then(instant);
+    let before = q.before.as_deref().and_then(instant);
+    let needle = q
+        .text
+        .as_deref()
+        .map(str::to_lowercase)
+        .filter(|t| !t.is_empty());
+    let mut no_trace = Vec::new();
+    let mut unreadable = 0u64;
+    let mut found: Vec<(chrono::DateTime<chrono::Utc>, LogLine)> = Vec::new();
+    for command in &commands {
+        if q.command.as_ref().is_some_and(|c| c != command) {
+            continue;
+        }
+        let base = if traces {
+            trace_log_name(command)
+        } else {
+            primary_log_name(command)
+        };
+        if traces && !names.contains(&base) {
+            no_trace.push(command.clone());
+            continue;
+        }
+        let mut files = vec![base.clone()];
+        for n in 1.. {
+            let name = format!("{base}.{n}");
+            if !names.contains(&name) {
+                break;
+            }
+            files.push(name);
+        }
+        for name in files {
+            let Some(text) = read_log(&dir.join(&name))? else {
+                continue;
+            };
+            for raw in text.lines().filter(|l| !l.trim().is_empty()) {
+                let Some(mut line) = parse_line(raw) else {
+                    unreadable += 1;
+                    continue;
+                };
+                let Some(at) = instant(&line.ts) else {
+                    unreadable += 1;
+                    continue;
+                };
+                if line.level > q.min_level
+                    || since.is_some_and(|s| at < s)
+                    || before.is_some_and(|b| at >= b)
+                {
+                    continue;
+                }
+                if let Some(needle) = &needle {
+                    let hit = line.message.to_lowercase().contains(needle)
+                        || line
+                            .path
+                            .as_deref()
+                            .is_some_and(|p| p.to_lowercase().contains(needle));
+                    if !hit {
+                        continue;
+                    }
+                }
+                line.command.get_or_insert_with(|| command.clone());
+                found.push((at, line));
+            }
+        }
+    }
+    // Newest first; the sort is stable, so one file's lines keep their order.
+    found.sort_by(|a, b| b.0.cmp(&a.0));
+    let mut end = found.len().min(q.limit.max(1));
+    while end < found.len() && found[end].0 == found[end - 1].0 {
+        end += 1;
+    }
+    let more = end < found.len();
+    found.truncate(end);
+    Ok(LogPage {
+        lines: found.into_iter().map(|(_, l)| l).collect(),
+        more,
+        unreadable,
+        commands,
+        no_trace,
+    })
 }
 
 #[cfg(test)]
@@ -812,5 +965,245 @@ mod tests {
         drop(stage);
         let line: serde_json::Value = serde_json::from_slice(&buf.0.lock().unwrap()).unwrap();
         assert_eq!(line["fields"]["stage"], "scan");
+    }
+
+    /// One JSON line as the file layer writes it, at a real timestamp.
+    fn at(command: &str, ts: &str, level: &str, msg: &str, path: &str) -> String {
+        format!(
+            r#"{{"timestamp":"{ts}","level":"{level}","fields":{{"message":"{msg}","kind":"decode_failed","path":"{path}"}},"spans":[{{"name":"run","command":"{command}","run":"R"}}]}}"#
+        )
+    }
+
+    fn write(dir: &Path, name: &str, lines: &[String]) {
+        std::fs::write(dir.join(name), lines.join("\n") + "\n").unwrap();
+    }
+
+    fn messages(page: &LogPage) -> Vec<&str> {
+        page.lines.iter().map(|l| l.message.as_str()).collect()
+    }
+
+    #[test]
+    fn read_lines_merges_commands_newest_first_across_rotations() {
+        let (_t, ctx) = library(true);
+        let dir = logs_dir_for_writing(&ctx).unwrap().unwrap();
+        write(
+            &dir,
+            "faces.log.1",
+            &[at("faces", "2026-10-01T08:00:00.5Z", "WARN", "f1", "")],
+        );
+        write(
+            &dir,
+            "faces.log",
+            &[at("faces", "2026-10-03T08:00:00.25Z", "ERROR", "f3", "")],
+        );
+        write(
+            &dir,
+            "scan.log",
+            &[at("scan", "2026-10-02T08:00:00.125Z", "WARN", "s2", "")],
+        );
+        let page = read_lines(&ctx, &LogQuery::default()).unwrap();
+        assert_eq!(messages(&page), ["f3", "s2", "f1"]);
+        assert_eq!(page.lines[1].command.as_deref(), Some("scan"));
+        assert_eq!(page.commands, ["faces", "scan"]);
+        assert!(!page.more);
+    }
+
+    #[test]
+    fn read_lines_orders_by_instant_not_by_text() {
+        // As text, "...01Z" sorts after "...01.5Z", though it is the earliest.
+        let (_t, ctx) = library(true);
+        let dir = logs_dir_for_writing(&ctx).unwrap().unwrap();
+        write(
+            &dir,
+            "scan.log",
+            &[
+                at("scan", "2026-10-02T08:00:01.25Z", "WARN", "later", ""),
+                at("scan", "2026-10-02T08:00:01.5Z", "WARN", "latest", ""),
+                at("scan", "2026-10-02T08:00:01Z", "WARN", "earliest", ""),
+            ],
+        );
+        let page = read_lines(&ctx, &LogQuery::default()).unwrap();
+        assert_eq!(messages(&page), ["latest", "later", "earliest"]);
+    }
+
+    #[test]
+    fn read_lines_filters_command_level_since_and_text() {
+        let (_t, ctx) = library(true);
+        let dir = logs_dir_for_writing(&ctx).unwrap().unwrap();
+        write(
+            &dir,
+            "faces.log",
+            &[
+                at("faces", "2026-10-01T08:00:00Z", "WARN", "old warning", ""),
+                at(
+                    "faces",
+                    "2026-10-05T08:00:00Z",
+                    "WARN",
+                    "timed out",
+                    "/Fotoğraflar/ÇİÇEK.HEIC",
+                ),
+                at("faces", "2026-10-06T08:00:00Z", "ERROR", "Şehir failed", ""),
+            ],
+        );
+        write(
+            &dir,
+            "scan.log",
+            &[at("scan", "2026-10-06T09:00:00Z", "WARN", "scan line", "")],
+        );
+        let q = |f: &dyn Fn(&mut LogQuery)| {
+            let mut q = LogQuery::default();
+            f(&mut q);
+            messages(&read_lines(&ctx, &q).unwrap()).join(",")
+        };
+        assert_eq!(
+            q(&|q| q.command = Some("faces".into())),
+            "Şehir failed,timed out,old warning"
+        );
+        assert_eq!(q(&|q| q.min_level = LineLevel::Error), "Şehir failed");
+        assert_eq!(
+            q(&|q| q.since = Some("2026-10-05T00:00:00Z".into())),
+            "scan line,Şehir failed,timed out"
+        );
+        // The path is searched too, and case does not matter, Turkish included.
+        assert_eq!(q(&|q| q.text = Some("çek.heic".into())), "timed out");
+        assert_eq!(q(&|q| q.text = Some("şehir".into())), "Şehir failed");
+    }
+
+    #[test]
+    fn read_lines_pages_with_before_and_says_more() {
+        let (_t, ctx) = library(true);
+        let dir = logs_dir_for_writing(&ctx).unwrap().unwrap();
+        let lines: Vec<String> = (1..=5)
+            .map(|i| {
+                at(
+                    "scan",
+                    &format!("2026-10-0{i}T08:00:00Z"),
+                    "WARN",
+                    &format!("m{i}"),
+                    "",
+                )
+            })
+            .collect();
+        write(&dir, "scan.log", &lines);
+        let first = read_lines(
+            &ctx,
+            &LogQuery {
+                limit: 2,
+                ..LogQuery::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(messages(&first), ["m5", "m4"]);
+        assert!(first.more);
+        let next = read_lines(
+            &ctx,
+            &LogQuery {
+                limit: 2,
+                before: Some(first.lines[1].ts.clone()),
+                ..LogQuery::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(messages(&next), ["m3", "m2"]);
+        assert!(next.more);
+    }
+
+    #[test]
+    fn a_page_never_splits_lines_of_one_instant() {
+        let (_t, ctx) = library(true);
+        let dir = logs_dir_for_writing(&ctx).unwrap().unwrap();
+        let ts = "2026-10-02T08:00:00Z";
+        write(
+            &dir,
+            "scan.log",
+            &[
+                at("scan", ts, "WARN", "a", ""),
+                at("scan", ts, "WARN", "b", ""),
+                at("scan", "2026-10-01T08:00:00Z", "WARN", "c", ""),
+            ],
+        );
+        let first = read_lines(
+            &ctx,
+            &LogQuery {
+                limit: 1,
+                ..LogQuery::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(first.lines.len(), 2, "both lines at {ts}");
+        let next = read_lines(
+            &ctx,
+            &LogQuery {
+                limit: 1,
+                before: Some(ts.into()),
+                ..LogQuery::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(messages(&next), ["c"]);
+    }
+
+    #[test]
+    fn info_reads_trace_files_and_names_commands_without_one() {
+        let (_t, ctx) = library(true);
+        let dir = logs_dir_for_writing(&ctx).unwrap().unwrap();
+        write(
+            &dir,
+            "scan.log",
+            &[at("scan", "2026-10-02T08:00:00Z", "WARN", "w", "")],
+        );
+        write(
+            &dir,
+            "scan.trace.log",
+            &[
+                at("scan", "2026-10-02T08:00:00Z", "WARN", "w", ""),
+                at("scan", "2026-10-02T08:00:01Z", "INFO", "busy", ""),
+            ],
+        );
+        write(
+            &dir,
+            "faces.log",
+            &[at("faces", "2026-10-02T08:00:00Z", "WARN", "fw", "")],
+        );
+        let page = read_lines(
+            &ctx,
+            &LogQuery {
+                min_level: LineLevel::Info,
+                ..LogQuery::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            messages(&page),
+            ["busy", "w"],
+            "the warning once, from the trace file"
+        );
+        assert_eq!(page.commands, ["faces", "scan"]);
+        assert_eq!(page.no_trace, ["faces"]);
+    }
+
+    #[test]
+    fn unparseable_lines_are_counted_not_shown() {
+        let (_t, ctx) = library(true);
+        let dir = logs_dir_for_writing(&ctx).unwrap().unwrap();
+        write(
+            &dir,
+            "scan.log",
+            &[
+                "garbage".to_string(),
+                at("scan", "2026-10-02T08:00:00Z", "WARN", "w", ""),
+            ],
+        );
+        let page = read_lines(&ctx, &LogQuery::default()).unwrap();
+        assert_eq!(messages(&page), ["w"]);
+        assert_eq!(page.unreadable, 1);
+    }
+
+    #[test]
+    fn a_missing_logs_dir_reads_as_empty_and_creates_nothing() {
+        let (_t, ctx) = library(true);
+        let page = read_lines(&ctx, &LogQuery::default()).unwrap();
+        assert!(page.lines.is_empty() && page.commands.is_empty());
+        assert!(!ctx.paths.state.join(LOGS_DIR).exists());
     }
 }
