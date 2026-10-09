@@ -689,6 +689,9 @@ mod tests {
                 "routes.search.pageSize",
             ]
         );
-        assert_eq!(errors["routes.files.pageSize"], "Enter a whole number from 1 to 500");
+        assert_eq!(
+            errors["routes.files.pageSize"],
+            "Enter a whole number from 1 to 500"
+        );
     }
 }

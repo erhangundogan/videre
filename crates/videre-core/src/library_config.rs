@@ -274,6 +274,280 @@ impl ConfigKey {
     }
 }
 
+/// The most I/O workers `max_io_workers` allows.
+pub const IO_WORKERS_MAX: i64 = 256;
+/// The most runs `run_history` keeps per command.
+pub const RUN_HISTORY_MAX: i64 = 100;
+/// `search_min_match` is a probability.
+pub const SEARCH_MIN_MATCH_RANGE: (f64, f64) = (0.0, 1.0);
+/// `similar_min_score` is a cosine.
+pub const SIMILAR_MIN_SCORE_RANGE: (f64, f64) = (-1.0, 1.0);
+
+/// What values a key takes, for a form that edits it. The limits are the
+/// ones [`edit`] enforces, read from the same constants; a test holds the two
+/// together.
+#[derive(Debug, Clone, Copy)]
+pub enum Kind {
+    Bool,
+    Int {
+        min: i64,
+        max: Option<i64>,
+    },
+    Number {
+        min: f64,
+        max: f64,
+    },
+    Choice(&'static [&'static str]),
+    /// An embedding model id, `owner/name`.
+    Model,
+}
+
+/// When a saved change is used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Applies {
+    /// By the running gallery at once, and by every later command.
+    Now,
+    /// By the next run of the commands that read it.
+    NextRun,
+    /// When the gallery or watch next starts.
+    NextStart,
+}
+
+/// One `videre config` key as a form shows it.
+#[derive(Debug, Clone, Copy)]
+pub struct KeySpec {
+    /// The name `videre config set` takes.
+    pub cli: &'static str,
+    pub key: ConfigKey,
+    pub label: &'static str,
+    pub hint: &'static str,
+    pub kind: Kind,
+    pub applies: Applies,
+    /// Whether the key may be absent, meaning a built-in behaviour rather
+    /// than a value (`similar-min-score` absent keeps every result).
+    pub optional: bool,
+}
+
+/// Every key `videre config` sets, in the order `videre config` shows them.
+pub const KEYS: &[KeySpec] = &[
+    KeySpec {
+        cli: "model",
+        key: ConfigKey::Model,
+        label: "Embedding model",
+        hint: "The model embed and search use, as owner/name",
+        kind: Kind::Model,
+        applies: Applies::NextRun,
+        optional: false,
+    },
+    KeySpec {
+        cli: "read-rate",
+        key: ConfigKey::ReadRate,
+        label: "Slowest read rate",
+        hint: "MB/s the drive is expected to keep up, which scales read timeouts",
+        kind: Kind::Int { min: 1, max: None },
+        applies: Applies::NextRun,
+        optional: true,
+    },
+    KeySpec {
+        cli: "io-workers",
+        key: ConfigKey::IoWorkers,
+        label: "I/O workers",
+        hint: "Most file reads in flight at once",
+        kind: Kind::Int {
+            min: 1,
+            max: Some(IO_WORKERS_MAX),
+        },
+        applies: Applies::NextRun,
+        optional: true,
+    },
+    KeySpec {
+        cli: "xmp",
+        key: ConfigKey::Xmp,
+        label: "XMP precedence",
+        hint: "Whose rating and label win when a sidecar and the library disagree",
+        kind: Kind::Choice(&["db", "file", "newest"]),
+        applies: Applies::NextRun,
+        optional: false,
+    },
+    KeySpec {
+        cli: "export-xmp-on-watch",
+        key: ConfigKey::ExportXmpOnWatch,
+        label: "Write XMP from watch",
+        hint: "Watch writes ratings and labels to XMP sidecars",
+        kind: Kind::Bool,
+        applies: Applies::NextStart,
+        optional: false,
+    },
+    KeySpec {
+        cli: "gallery-starts-watch",
+        key: ConfigKey::GalleryStartsWatch,
+        label: "Gallery starts watch",
+        hint: "The gallery keeps the library current while it runs",
+        kind: Kind::Bool,
+        applies: Applies::NextStart,
+        optional: false,
+    },
+    KeySpec {
+        cli: "watch-debounce-ms",
+        key: ConfigKey::WatchDebounceMs,
+        label: "Watch debounce",
+        hint: "Milliseconds watch waits for changes to settle",
+        kind: Kind::Int { min: 1, max: None },
+        applies: Applies::NextStart,
+        optional: true,
+    },
+    KeySpec {
+        cli: "watch-bulk-threshold",
+        key: ConfigKey::WatchBulkThreshold,
+        label: "Bulk import threshold",
+        hint: "Waiting files at which watch scans first and finishes once quiet",
+        kind: Kind::Int { min: 1, max: None },
+        applies: Applies::NextStart,
+        optional: true,
+    },
+    KeySpec {
+        cli: "watch-bulk-quiet-ms",
+        key: ConfigKey::WatchBulkQuietMs,
+        label: "Bulk quiet period",
+        hint: "Milliseconds without changes before a bulk import finishes",
+        kind: Kind::Int { min: 1, max: None },
+        applies: Applies::NextStart,
+        optional: true,
+    },
+    KeySpec {
+        cli: "log-level",
+        key: ConfigKey::LogLevel,
+        label: "Log level",
+        hint: "What the log files under .videre/logs record",
+        kind: Kind::Choice(&["error", "warn", "info", "debug"]),
+        applies: Applies::NextStart,
+        optional: false,
+    },
+    KeySpec {
+        cli: "log-format",
+        key: ConfigKey::LogFormat,
+        label: "Log format",
+        hint: "How log lines are written",
+        kind: Kind::Choice(&["json", "text"]),
+        applies: Applies::NextStart,
+        optional: false,
+    },
+    KeySpec {
+        cli: "log-max-size-mb",
+        key: ConfigKey::LogMaxSizeMb,
+        label: "Log size",
+        hint: "Megabytes at which a log file rotates",
+        kind: Kind::Int { min: 1, max: None },
+        applies: Applies::NextStart,
+        optional: false,
+    },
+    KeySpec {
+        cli: "log-keep",
+        key: ConfigKey::LogKeep,
+        label: "Logs kept",
+        hint: "Rotated files kept per log",
+        kind: Kind::Int { min: 0, max: None },
+        applies: Applies::NextStart,
+        optional: false,
+    },
+    KeySpec {
+        cli: "log-max-age-days",
+        key: ConfigKey::LogMaxAgeDays,
+        label: "Log age",
+        hint: "Days after which a rotated log is deleted",
+        kind: Kind::Int { min: 1, max: None },
+        applies: Applies::NextStart,
+        optional: false,
+    },
+    KeySpec {
+        cli: "search-min-match",
+        key: ConfigKey::SearchMinMatch,
+        label: "Search floor",
+        hint: "The least match probability a text search keeps; 0 keeps every result",
+        kind: Kind::Number {
+            min: SEARCH_MIN_MATCH_RANGE.0,
+            max: SEARCH_MIN_MATCH_RANGE.1,
+        },
+        applies: Applies::NextRun,
+        optional: false,
+    },
+    KeySpec {
+        cli: "similar-min-score",
+        key: ConfigKey::SimilarMinScore,
+        label: "Similar floor",
+        hint: "The least similarity an image search keeps; unset keeps every result",
+        kind: Kind::Number {
+            min: SIMILAR_MIN_SCORE_RANGE.0,
+            max: SIMILAR_MIN_SCORE_RANGE.1,
+        },
+        applies: Applies::NextRun,
+        optional: true,
+    },
+    KeySpec {
+        cli: "run-history",
+        key: ConfigKey::RunHistory,
+        label: "Run history",
+        hint: "Runs of each command videre status keeps",
+        kind: Kind::Int {
+            min: 1,
+            max: Some(RUN_HISTORY_MAX),
+        },
+        applies: Applies::NextRun,
+        optional: false,
+    },
+    KeySpec {
+        cli: "street-detail",
+        key: ConfigKey::StreetDetail,
+        label: "Street detail",
+        hint: "The map may download roads and street names for the areas of your photos. \
+               Turning this off deletes the downloaded street map",
+        kind: Kind::Bool,
+        applies: Applies::Now,
+        optional: false,
+    },
+];
+
+/// The key `videre config` names `cli`.
+pub fn spec_for(cli: &str) -> Option<&'static KeySpec> {
+    KEYS.iter().find(|s| s.cli == cli)
+}
+
+/// A key's value in `config` as JSON, built-in defaults filled in; `null`
+/// only for an optional key whose absence means a built-in behaviour.
+pub fn value_json(config: &LibraryConfig, key: ConfigKey) -> serde_json::Value {
+    use serde_json::json;
+    match key {
+        ConfigKey::Model => json!(config.default_model),
+        ConfigKey::ReadRate => json!(config
+            .min_read_rate_mb_s
+            .unwrap_or(crate::io_timeout::MIN_READ_RATE_MB_S_DEFAULT)),
+        ConfigKey::IoWorkers => json!(config.max_io_workers),
+        ConfigKey::Xmp => json!(config.xmp_precedence.as_str()),
+        ConfigKey::ExportXmpOnWatch => json!(config.export_xmp_on_watch),
+        ConfigKey::GalleryStartsWatch => json!(config.gallery_starts_watch),
+        ConfigKey::WatchDebounceMs => {
+            json!(config
+                .watch_debounce_ms
+                .unwrap_or(WATCH_DEBOUNCE_MS_DEFAULT))
+        }
+        ConfigKey::WatchBulkThreshold => json!(config
+            .watch_bulk_threshold
+            .unwrap_or(WATCH_BULK_THRESHOLD_DEFAULT)),
+        ConfigKey::WatchBulkQuietMs => json!(config
+            .watch_bulk_quiet_ms
+            .unwrap_or(WATCH_BULK_QUIET_MS_DEFAULT)),
+        ConfigKey::LogLevel => json!(config.log_level.as_str()),
+        ConfigKey::LogFormat => json!(config.log_format.as_str()),
+        ConfigKey::LogMaxSizeMb => json!(config.log_max_size_mb),
+        ConfigKey::LogKeep => json!(config.log_keep),
+        ConfigKey::LogMaxAgeDays => json!(config.log_max_age_days),
+        ConfigKey::SearchMinMatch => json!(config.search_min_match),
+        ConfigKey::SimilarMinScore => json!(config.similar_min_score),
+        ConfigKey::RunHistory => json!(config.run_history),
+        ConfigKey::StreetDetail => json!(config.street_detail),
+    }
+}
+
 /// The serialized spelling of one precedence value.
 fn xmp_precedence_str(p: XmpPrecedence) -> &'static str {
     p.as_str()
@@ -424,8 +698,8 @@ fn io_workers_setting(table: &toml::Table, file: &Path) -> Result<Option<usize>>
     let value = int_setting(table, file, "max_io_workers", 1)?;
     if let Some(n) = value {
         anyhow::ensure!(
-            n <= 256,
-            "malformed config {}: max_io_workers must be at most 256, got {n}",
+            n <= IO_WORKERS_MAX as u64,
+            "malformed config {}: max_io_workers must be at most {IO_WORKERS_MAX}, got {n}",
             file.display()
         );
     }
@@ -437,8 +711,8 @@ fn run_history_setting(table: &toml::Table, file: &Path) -> Result<u64> {
     let value = int_setting(table, file, "run_history", 1)?;
     if let Some(n) = value {
         anyhow::ensure!(
-            n <= 100,
-            "malformed config {}: run_history must be at most 100, got {n}",
+            n <= RUN_HISTORY_MAX as u64,
+            "malformed config {}: run_history must be at most {RUN_HISTORY_MAX}, got {n}",
             file.display()
         );
     }
@@ -530,9 +804,19 @@ fn config_from_table(table: &toml::Table, file: &Path) -> Result<LibraryConfig> 
         log_keep: int_setting(table, file, "log_keep", 0)?.unwrap_or(LOG_KEEP_DEFAULT),
         log_max_age_days: int_setting(table, file, "log_max_age_days", 1)?
             .unwrap_or(LOG_MAX_AGE_DAYS_DEFAULT),
-        search_min_match: number_setting(table, file, "search_min_match", 0.0..=1.0)?
-            .unwrap_or(SEARCH_MIN_MATCH_DEFAULT),
-        similar_min_score: number_setting(table, file, "similar_min_score", -1.0..=1.0)?,
+        search_min_match: number_setting(
+            table,
+            file,
+            "search_min_match",
+            SEARCH_MIN_MATCH_RANGE.0..=SEARCH_MIN_MATCH_RANGE.1,
+        )?
+        .unwrap_or(SEARCH_MIN_MATCH_DEFAULT),
+        similar_min_score: number_setting(
+            table,
+            file,
+            "similar_min_score",
+            SIMILAR_MIN_SCORE_RANGE.0..=SIMILAR_MIN_SCORE_RANGE.1,
+        )?,
         run_history: run_history_setting(table, file)?,
     })
 }
@@ -576,12 +860,22 @@ pub fn exists(paths: &LibraryPaths) -> Result<bool> {
 /// reject, `edit` must refuse to write, or the file and the edit disagree.
 fn validate_value(key: ConfigKey, value: &toml::Value) -> Result<()> {
     match (key, value) {
-        (ConfigKey::SearchMinMatch, v) => number_value(key, v, 0.0..=1.0),
-        (ConfigKey::SimilarMinScore, v) => number_value(key, v, -1.0..=1.0),
+        (ConfigKey::SearchMinMatch, v) => {
+            number_value(key, v, SEARCH_MIN_MATCH_RANGE.0..=SEARCH_MIN_MATCH_RANGE.1)
+        }
+        (ConfigKey::SimilarMinScore, v) => number_value(
+            key,
+            v,
+            SIMILAR_MIN_SCORE_RANGE.0..=SIMILAR_MIN_SCORE_RANGE.1,
+        ),
         (ConfigKey::Model, toml::Value::String(s)) => validate_model_id(s),
         (ConfigKey::ReadRate, toml::Value::Integer(n)) if *n > 0 => Ok(()),
-        (ConfigKey::IoWorkers, toml::Value::Integer(n)) if (1..=256).contains(n) => Ok(()),
-        (ConfigKey::RunHistory, toml::Value::Integer(n)) if (1..=100).contains(n) => Ok(()),
+        (ConfigKey::IoWorkers, toml::Value::Integer(n)) if (1..=IO_WORKERS_MAX).contains(n) => {
+            Ok(())
+        }
+        (ConfigKey::RunHistory, toml::Value::Integer(n)) if (1..=RUN_HISTORY_MAX).contains(n) => {
+            Ok(())
+        }
         (ConfigKey::Xmp, toml::Value::String(s)) => XmpPrecedence::parse(s).map(|_| ()),
         (
             ConfigKey::ExportXmpOnWatch | ConfigKey::GalleryStartsWatch | ConfigKey::StreetDetail,
@@ -626,10 +920,10 @@ fn validate_value(key: ConfigKey, value: &toml::Value) -> Result<()> {
             bail!("min_read_rate_mb_s must be greater than 0, got {n}")
         }
         (ConfigKey::IoWorkers, toml::Value::Integer(n)) => {
-            bail!("max_io_workers must be from 1 to 256, got {n}")
+            bail!("max_io_workers must be from 1 to {IO_WORKERS_MAX}, got {n}")
         }
         (ConfigKey::RunHistory, toml::Value::Integer(n)) => {
-            bail!("run_history must be from 1 to 100, got {n}")
+            bail!("run_history must be from 1 to {RUN_HISTORY_MAX}, got {n}")
         }
         (ConfigKey::RunHistory, other) => {
             bail!("run_history must be an integer, got {}", other.type_str())
@@ -774,12 +1068,19 @@ pub(crate) fn write_initial_if_absent(ctx: &LibraryContext) -> Result<()> {
 /// file later, but it never publishes, so releasing the lock after an error
 /// cannot allow stale bytes to overwrite a later edit.
 pub fn edit(ctx: &LibraryContext, key: ConfigKey, value: Option<toml::Value>) -> Result<()> {
+    edit_many(ctx, &[(key, value)])
+}
+
+/// Several [`edit`]s as one: every value is validated before the file is
+/// written once, so either every change lands or none does. The gallery's
+/// settings page saves this way.
+pub fn edit_many(ctx: &LibraryContext, changes: &[(ConfigKey, Option<toml::Value>)]) -> Result<()> {
     let path = &ctx.paths.config;
     // The one case that must create nothing at all is decided before any
     // lock: acquiring the init lock creates the locks directory, which is
     // fine for a write but must not happen for a no-op against an absent
     // config.
-    if value.is_none() && read_config(path)?.is_none() {
+    if changes.iter().all(|(_, v)| v.is_none()) && read_config(path)?.is_none() {
         return Ok(());
     }
     // A writer creates the state the init lock lives in; an edit is a write
@@ -809,20 +1110,27 @@ pub fn edit(ctx: &LibraryContext, key: ConfigKey, value: Option<toml::Value>) ->
         }
         None => initial_table(),
     };
-    match value {
-        Some(v) => {
-            validate_value(key, &v)?;
-            table.insert(key.name().to_string(), v);
+    for (key, value) in changes {
+        if let Some(v) = value {
+            validate_value(*key, v)?;
         }
-        None => {
-            if table.remove(key.name()).is_none() {
-                // The key is not there; rewriting the file would move bytes
-                // for no setting change at all. The file as a whole has
-                // already been validated above, so returning without
-                // rewriting cannot leave a broken file unexamined.
-                return Ok(());
+    }
+    let mut changed = false;
+    for (key, value) in changes {
+        match value {
+            Some(v) => {
+                table.insert(key.name().to_string(), v.clone());
+                changed = true;
             }
+            None => changed |= table.remove(key.name()).is_some(),
         }
+    }
+    if !changed {
+        // Only absent keys were removed; rewriting the file would move bytes
+        // for no setting change at all. The file as a whole has already been
+        // validated above, so returning without rewriting cannot leave a
+        // broken file unexamined.
+        return Ok(());
     }
     write_config(&ctx.paths.state, path, &table)
 }
@@ -850,6 +1158,128 @@ mod tests {
             std::fs::write(&ctx.paths.config, body).unwrap();
         }
         (temp, ctx)
+    }
+
+    #[test]
+    fn the_key_table_names_every_key_once() {
+        use ConfigKey::*;
+        let all = [
+            Model,
+            ReadRate,
+            IoWorkers,
+            Xmp,
+            ExportXmpOnWatch,
+            GalleryStartsWatch,
+            WatchDebounceMs,
+            WatchBulkThreshold,
+            WatchBulkQuietMs,
+            LogLevel,
+            LogFormat,
+            LogMaxSizeMb,
+            LogKeep,
+            LogMaxAgeDays,
+            SearchMinMatch,
+            SimilarMinScore,
+            RunHistory,
+            StreetDetail,
+        ];
+        assert_eq!(KEYS.len(), all.len());
+        for key in all {
+            assert_eq!(KEYS.iter().filter(|s| s.key == key).count(), 1, "{key:?}");
+        }
+        assert_eq!(spec_for("run-history").unwrap().key, RunHistory);
+    }
+
+    #[test]
+    fn the_table_limits_are_the_limits_an_edit_enforces() {
+        for spec in KEYS {
+            match spec.kind {
+                Kind::Int { min, max } => {
+                    assert!(validate_value(spec.key, &toml::Value::Integer(min)).is_ok());
+                    assert!(validate_value(spec.key, &toml::Value::Integer(min - 1)).is_err());
+                    if let Some(max) = max {
+                        assert!(validate_value(spec.key, &toml::Value::Integer(max)).is_ok());
+                        assert!(
+                            validate_value(spec.key, &toml::Value::Integer(max + 1)).is_err(),
+                            "{}",
+                            spec.cli
+                        );
+                    }
+                }
+                Kind::Number { min, max } => {
+                    for ok in [min, max] {
+                        assert!(validate_value(spec.key, &toml::Value::Float(ok)).is_ok());
+                    }
+                    for bad in [min - 0.01, max + 0.01] {
+                        assert!(validate_value(spec.key, &toml::Value::Float(bad)).is_err());
+                    }
+                }
+                Kind::Choice(options) => {
+                    for o in options {
+                        let v = toml::Value::String((*o).into());
+                        assert!(validate_value(spec.key, &v).is_ok(), "{o}");
+                    }
+                    let v = toml::Value::String("hiçbiri".into());
+                    assert!(validate_value(spec.key, &v).is_err());
+                }
+                Kind::Bool | Kind::Model => {}
+            }
+        }
+    }
+
+    #[test]
+    fn edit_many_writes_every_change_or_none() {
+        let (_t, ctx) = library_with_config("run_history = 5\n");
+        let before = std::fs::read(&ctx.paths.config).unwrap();
+        let bad = edit_many(
+            &ctx,
+            &[
+                (ConfigKey::LogKeep, Some(toml::Value::Integer(7))),
+                (ConfigKey::RunHistory, Some(toml::Value::Integer(101))),
+            ],
+        );
+        assert!(bad.is_err());
+        assert_eq!(std::fs::read(&ctx.paths.config).unwrap(), before);
+
+        edit_many(
+            &ctx,
+            &[
+                (ConfigKey::LogKeep, Some(toml::Value::Integer(7))),
+                (ConfigKey::RunHistory, None),
+            ],
+        )
+        .unwrap();
+        let config = load(&ctx.paths).unwrap();
+        assert_eq!(
+            (config.log_keep, config.run_history),
+            (7, RUN_HISTORY_DEFAULT)
+        );
+    }
+
+    #[test]
+    fn a_value_reads_back_as_json_with_its_built_in_default() {
+        let (_t, ctx) = library_with_config("run_history = 5\nstreet_detail = true\n");
+        let config = load(&ctx.paths).unwrap();
+        assert_eq!(
+            value_json(&config, ConfigKey::RunHistory),
+            serde_json::json!(5)
+        );
+        assert_eq!(
+            value_json(&LibraryConfig::default(), ConfigKey::RunHistory),
+            serde_json::json!(3)
+        );
+        assert_eq!(
+            value_json(&config, ConfigKey::StreetDetail),
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            value_json(&LibraryConfig::default(), ConfigKey::WatchDebounceMs),
+            serde_json::json!(WATCH_DEBOUNCE_MS_DEFAULT)
+        );
+        assert_eq!(
+            value_json(&LibraryConfig::default(), ConfigKey::SimilarMinScore),
+            serde_json::Value::Null
+        );
     }
 
     #[test]
