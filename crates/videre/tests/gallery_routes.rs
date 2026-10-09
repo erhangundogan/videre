@@ -65,6 +65,26 @@ fn free_port() -> u16 {
         .port()
 }
 
+/// A GET on `port`: (status code, body), or `None` when nothing answers with
+/// a status line.
+fn request(port: u16, path: &str) -> Option<(u16, String)> {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .ok()?;
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+    )
+    .ok()?;
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).ok()?;
+    let text = String::from_utf8_lossy(&raw).into_owned();
+    let status = text.split_whitespace().nth(1)?.parse().ok()?;
+    let body = text.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("");
+    Some((status, body.to_string()))
+}
+
 /// Held from picking a port until the child is accepting connections on it.
 static STARTUP: Mutex<()> = Mutex::new(());
 
@@ -95,49 +115,48 @@ impl Server {
         // it has tests of its own (tests/gallery_watch.rs).
         lib.no_gallery_watch();
         let _serialised = STARTUP.lock().unwrap_or_else(|e| e.into_inner());
-        let port = free_port();
-        let mut cmd = lib.cmd();
-        cmd.arg("gallery").arg("--port").arg(port.to_string());
-        if let Some(hf) = hf_home {
-            cmd.env("HF_HOME", hf);
-        }
-        let child = cmd.spawn().expect("failed to spawn videre gallery");
-        let server = Server { child, port };
-
-        let deadline = Instant::now() + Duration::from_secs(20);
-        while Instant::now() < deadline {
-            if TcpStream::connect(("127.0.0.1", port)).is_ok() {
-                return server;
+        // Our own library's settings path, which only our server reports.
+        let ours = lib.context().paths.root.display().to_string();
+        // :warning: `STARTUP` serialises this file's servers only. Another test
+        // binary, running in parallel, can be handed the same free port in the
+        // gap before our child binds it: a connection then reaches its server,
+        // ours exits for want of the port, and our first request is refused
+        // once the other one stops (seen on CI). So a server counts as started
+        // only when it serves our library, and a lost port is retried.
+        for _ in 0..5 {
+            let port = free_port();
+            let mut cmd = lib.cmd();
+            cmd.arg("gallery").arg("--port").arg(port.to_string());
+            if let Some(hf) = hf_home {
+                cmd.env("HF_HOME", hf);
             }
-            std::thread::sleep(Duration::from_millis(50));
+            let mut child = cmd.spawn().expect("failed to spawn videre gallery");
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while Instant::now() < deadline {
+                if child.try_wait().unwrap().is_some() {
+                    break; // the port was taken; try another
+                }
+                if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                    let serves_ours = request(port, "/api/settings")
+                        .is_some_and(|(_, body)| body.contains(&ours));
+                    if serves_ours && child.try_wait().unwrap().is_none() {
+                        return Server { child, port };
+                    }
+                    break; // someone else's server on our port
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            // Never through `stop_gallery`: its quit request would go to
+            // whatever server holds the port, which may not be ours.
+            let _ = child.kill();
+            let _ = child.wait();
         }
-        panic!("videre gallery did not start listening on port {port}");
+        panic!("videre gallery did not start serving this library");
     }
 
     /// Returns (status code, body).
     fn get(&self, path: &str) -> (u16, String) {
-        let mut stream = TcpStream::connect(("127.0.0.1", self.port))
-            .unwrap_or_else(|e| panic!("connect for {path}: {e}"));
-        stream
-            .set_read_timeout(Some(Duration::from_secs(20)))
-            .unwrap();
-        write!(
-            stream,
-            "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
-        )
-        .unwrap();
-        let mut raw = Vec::new();
-        stream.read_to_end(&mut raw).unwrap();
-        let text = String::from_utf8_lossy(&raw).into_owned();
-        let status = text
-            .split_whitespace()
-            .nth(1)
-            .and_then(|c| c.parse().ok())
-            .unwrap_or_else(|| {
-                panic!("no status line for {path}: {}", &text[..text.len().min(80)])
-            });
-        let body = text.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("");
-        (status, body.to_string())
+        request(self.port, path).unwrap_or_else(|| panic!("no answer for {path}"))
     }
 
     /// Sends a request with a body and returns (status, body). One connection
