@@ -294,6 +294,7 @@ pub(crate) async fn handle_delete(
         );
         report["trashed"] = json!(trashed);
         report["failed"] = Value::Array(failed_paths);
+        clean_up(library, &conn, &mut report);
         Ok(report)
     })
     .await;
@@ -391,10 +392,24 @@ pub(crate) async fn handle_duplicates_trash(
             "videre gallery: moved {removed} duplicate copy(ies) to the trash, {} failed",
             failures.len()
         );
-        Ok(json!({ "removed": removed, "already_gone": gone, "failed": failures }))
+        let mut report = json!({ "removed": removed, "already_gone": gone, "failed": failures });
+        clean_up(library, &conn, &mut report);
+        Ok(report)
     })
     .await;
     respond(result)
+}
+
+/// The cleanup a removal owes, run while the library is still held: what hung
+/// off the removed items goes now, not on a later prune. Best effort, since the
+/// removal itself succeeded; a failure is logged and named in the reply.
+fn clean_up(library: &videre_core::library::LibraryContext, conn: &Connection, report: &mut Value) {
+    if let Err(e) = crate::commands::prune::clean_up_after_removal(library, conn) {
+        tracing::warn!(
+            "videre gallery: cleaning up after the removal failed: {e:#}; videre prune finishes it"
+        );
+        report["cleanup_error"] = json!(format!("{e:#}"));
+    }
 }
 
 fn respond(result: Result<Result<Value, Refusal>, tokio::task::JoinError>) -> Response {
