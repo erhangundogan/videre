@@ -157,6 +157,21 @@ pub fn run(args: PruneArgs, ctx: &CommandContext) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The cleanup a removal owes, run by a caller that already holds the library
+/// exclusively (the gallery's Delete and Trash). A removed item leaves nothing
+/// behind: its marks, tags, faces, embeddings and thumbnails go with it, and
+/// an undo brings the files back for watch to process again. Recorded as a
+/// `prune` run. Returns the error count, as [`run_prune`] does.
+pub(crate) fn clean_up_after_removal(
+    library: &LibraryContext,
+    conn: &Connection,
+) -> anyhow::Result<usize> {
+    let guard = videre_core::library_locks::try_command(library, "prune")?;
+    videre_core::pipeline_runs::track_in(conn, library, &guard, "prune", || {
+        run_prune(&PruneArgs::for_watch_stage(true), library, conn)
+    })
+}
+
 /// The actual prune work, wrapped by `track()` above. Returns the error
 /// count so the caller can decide the exit code after tracking has already
 /// finalized the run. `pub(crate)` so `videre watch --prune` can reuse it

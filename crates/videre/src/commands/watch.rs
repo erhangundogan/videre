@@ -30,12 +30,16 @@ pub struct WatchArgs {
     /// says so and the files stay outstanding.
     #[arg(long)]
     embed: bool,
-    /// Sync stale rows/cache and clean orphans each cycle (same cleanup as
-    /// `videre prune`). Opt-in: unlike the other stages, it does not run
-    /// when no stage flags are given. Never deletes real files, only stale
-    /// db rows and cache entries for files already gone from disk.
-    #[arg(long)]
+    /// Sync stale rows/cache and clean orphans on the startup and maintenance
+    /// passes (same cleanup as `videre prune`). On by default with the other
+    /// stages; name it to pick it alongside explicit stages. Never deletes
+    /// real files, only stale db rows and cache entries for files already
+    /// gone from disk.
+    #[arg(long, conflicts_with = "no_prune")]
     prune: bool,
+    /// Leave out the prune stage that runs by default.
+    #[arg(long)]
+    no_prune: bool,
     /// Write XMP sidecars for updated labels each cycle (opt-in). Also enabled
     /// by `videre config set export-xmp-on-watch true`.
     #[arg(long)]
@@ -105,16 +109,19 @@ const FALLBACK_RESCAN_SECS: u64 = 300;
 const PENDING_RETRY_BACKOFF: Duration = Duration::from_secs(2);
 
 pub fn run(mut args: WatchArgs, ctx: &CommandContext) -> Result<()> {
-    // If NO stage flag at all was passed (including --prune), run the
-    // original all-four default: the common case is "just keep everything up
-    // to date". An explicit --prune is a stage selection and does not turn the
-    // others on.
+    // If NO stage flag at all was passed, run every stage: the common case is
+    // "just keep everything up to date", and that includes forgetting files
+    // deleted outside videre, or they linger until someone remembers a manual
+    // prune. Its guards make that safe unattended (a missing folder, an
+    // implausibly large share). An explicit stage list runs only what it
+    // names; `--no-prune` leaves prune out of the default.
     if !(args.scan || args.faces || args.heic || args.location || args.embed || args.prune) {
         args.scan = true;
         args.faces = true;
         args.heic = true;
         args.location = true;
         args.embed = true;
+        args.prune = !args.no_prune;
     }
 
     // The XMP export stage is opt-in: the flag, or the library config default.

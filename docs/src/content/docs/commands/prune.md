@@ -19,15 +19,13 @@ videre prune --force                   # allow an unusually large cleanup
 ## When to run it
 
 After a change made outside videre. videre's own commands clean up after
-themselves: [`dedupe trash`](/commands/dedupe/) and `dedupe delete` run this
-pass for the copies they remove, and [`fix-dates`](/commands/fix-dates/)
+themselves: [`dedupe trash`](/commands/dedupe/), `dedupe delete` and the
+gallery's Delete and Trash run this pass for what they remove, and [`fix-dates`](/commands/fix-dates/)
 deletes nothing and keeps each row's stored time in step with the file. Run it
 by hand when:
 
 - **you deleted files** in Finder, the Photos app or any other tool. The files
   are gone, but their rows stay;
-- **you deleted files in the gallery**. They leave the library at once, but
-  their marks, tags and faces stay until pruned;
 - **you moved, renamed or reorganised folders**. Rows are keyed by path, so a
   moved file looks like a deletion plus a new file: [`scan`](/commands/scan/)
   records the new path, and the old row lingers until pruned;
@@ -38,8 +36,10 @@ by hand when:
 Until then, `videre stats` still counts the files, and reports still list them
 (they are filtered out at generation time, but the rows remain).
 
-[`videre watch --prune`](/commands/watch/) does this as files disappear. It is
-off by default.
+[`videre watch`](/commands/watch/), and so the gallery, does this for you on
+its startup and hourly passes, unless started with `--no-prune`. Only a folder
+gone for good still needs you, since watch never passes
+`--prune-unreachable`.
 
 Always look first on a library you care about:
 
@@ -147,7 +147,7 @@ to one. See
 removed from the database. Cache for photos you still own grows without bound
 and is never touched here.
 
-**`videre watch --prune` can override neither guard.** It runs unattended and
+**Watch's prune pass can override neither guard.** It runs unattended and
 cannot ask, so bulk deletion and repeated failure remain active. That makes it
 safe to leave on, but it also means an unattended prune can quietly decline to
 do the thing you wanted; check `videre stats` if you expected space back.

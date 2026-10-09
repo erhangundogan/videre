@@ -184,26 +184,26 @@ fn watch_prune_uses_same_face_sweep() {
 }
 
 #[test]
-fn default_stages_do_not_include_prune() {
+fn default_stages_include_prune_and_no_prune_turns_it_off() {
+    let rows = |lib: &TestLibrary| -> i64 {
+        lib.conn()
+            .query_row(
+                "SELECT COUNT(*) FROM file_hashes WHERE hash = 'hgone'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+
     let lib = TestLibrary::new();
     seed(&lib, "hash, ext", "'hgone', 'jpg'"); // a.jpg does not exist on disk
+    watch_once(&lib, &["--no-prune"]);
+    assert_eq!(rows(&lib), 1, "--no-prune keeps the missing file's row");
 
-    // No stage flags: scan/faces/heic/location default on, but prune stays
-    // opt-in, so the missing file's row must survive a default pass.
+    // No stage flags: every stage, prune included, so a file deleted outside
+    // videre leaves the library without a manual prune.
     watch_once(&lib, &[]);
-
-    let count: i64 = lib
-        .conn()
-        .query_row(
-            "SELECT COUNT(*) FROM file_hashes WHERE hash = 'hgone'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(
-        count, 1,
-        "prune must not run unless --prune is passed explicitly"
-    );
+    assert_eq!(rows(&lib), 0, "a default pass prunes");
 }
 
 #[test]
