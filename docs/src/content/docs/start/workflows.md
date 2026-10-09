@@ -24,12 +24,8 @@ videre scan                         <- everything starts here
   ├── videre dedupe review          find duplicates and review via static HTML file
   │     │
   │     └── videre dedupe trash  move the duplicate copies to the trash
-  │           │
-  │           └── videre prune      synchronize the database after cleanup
   │
   ├── videre fix-dates              correct file dates
-  │     │
-  │     └── videre prune            synchronize the database after fixing dates
   │
   ├── videre status                 see videre pipeline status and next actions
   ├── videre stats                  what's in the library
@@ -91,14 +87,16 @@ empty until you have opened `videre gallery` and assigned some.
 
 | After you | Run |
 |---|---|
-| Delete files (`dedupe trash`) | [`prune`](/commands/prune/) |
+| Delete files outside videre (Finder, another app) | [`prune`](/commands/prune/) |
 | Move or reorganise folders | [`scan`](/commands/scan/), then [`prune`](/commands/prune/) |
 | Add new photos | [`scan`](/commands/scan/), then `embed` / `faces` / `classify` again |
 | Finish chunked `faces --limit` runs | [`faces --recluster`](/commands/faces/) |
 | Change `classify --margin` | [`classify --reprocess`](/commands/classify/) |
 
-`prune` is the one people forget. Until it runs, deleted files are still counted
-in `stats`, and their embeddings and cached thumbnails still occupy disk.
+`prune` is the one people forget. Until it runs, files deleted outside videre
+are still counted in `stats`, and their embeddings and cached thumbnails still
+occupy disk. `dedupe trash` and `fix-dates` need nothing after them: dedupe
+cleans up for the copies it removes, and fix-dates deletes nothing.
 
 ## Recipes
 
@@ -123,7 +121,6 @@ videre import ~/Takeout --dry-run   # see what it found
 videre import ~/Takeout             # fix the dates the exporter mangled
 videre --library ~/Takeout scan               # now record them
 videre dedupe trash               # collapse the copies albums created
-videre prune
 ```
 
 **Import comes before scan**, since dates must be corrected before `scan`
@@ -138,7 +135,6 @@ videre --library ~/Photos scan
 videre dedupe review                  # review groups with KEEP/REMOVE badges
 videre dedupe trash                 # move the copies to the trash, once you agree
 videre dedupe undo                  # changed your mind? put the last run back
-videre prune                          # reclaim database rows and derived data
 ```
 
 Use `dedupe --kind exact,similar` if you also want near-duplicates (it needs

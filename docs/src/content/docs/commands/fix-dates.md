@@ -145,10 +145,11 @@ changes nothing, and the prompt is skipped entirely when there is nothing to do.
 **No undo.** Take a backup first if the existing timestamps have any value to
 you. `--dry-run` costs nothing and shows the exact before and after.
 
-**Files missing on disk are skipped**, not treated as errors. Deleted duplicates
-still recorded in the database fall into this category, and appear in the
-summary as skipped. When there are any, fix-dates says so and points at
+**Files missing on disk are skipped**, not treated as errors. Files deleted or
+moved outside videre fall into this category, and appear in the summary as
+skipped. When there are any, fix-dates says so and points at
 [`videre prune`](/commands/prune/), which drops their rows from the library.
+Nothing is needed after fix-dates itself: it deletes nothing.
 
 **Exits nonzero if any file could not be updated**, for example on a read-only
 volume or a permissions error. Missing files do not count.
