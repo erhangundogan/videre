@@ -292,3 +292,68 @@ fn a_sidecar_dated_photo_gets_its_sidecar_time_once() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("0 updated"), "{stderr}");
 }
+
+/// The unix time of `path`'s modified time.
+fn mtime_secs(path: &std::path::Path) -> i64 {
+    std::fs::metadata(path)
+        .unwrap()
+        .modified()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+}
+
+#[test]
+fn a_photo_from_the_hour_the_clocks_change_gets_a_date() {
+    // In Berlin, 02:00-03:00 on 2012-10-28 happened twice (clocks went back)
+    // and 02:00-03:00 on 2012-03-25 never happened (clocks went forward).
+    // Both used to fail on every run as an "ambiguous local time".
+    let lib = TestLibrary::new();
+    let root = lib.context().paths.root.clone();
+    let geri = root.join("saat_geri.jpg");
+    let ileri = root.join("saat_ileri.jpg");
+    std::fs::write(&geri, b"img_geri").unwrap();
+    std::fs::write(&ileri, b"img_ileri").unwrap();
+    let conn = lib.init_db();
+    for (file, date, hash) in [
+        (&geri, "2012-10-28T02:36:23", "hgeri"),
+        (&ileri, "2012-03-25T02:30:00", "hileri"),
+    ] {
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash, exif_date) VALUES (?1, ?2, ?3)",
+            rusqlite::params![file.to_string_lossy(), hash, date],
+        )
+        .unwrap();
+    }
+    drop(conn);
+
+    let out = lib
+        .cmd()
+        .env("TZ", "Europe/Berlin")
+        .args(["fix-dates", "--yes"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // The repeated hour takes its first pass, summer time: 00:36:23 UTC.
+    assert_eq!(mtime_secs(&geri), 1_351_384_583);
+    // The skipped hour reads as the clock after the jump, 03:30 summer time:
+    // 01:30 UTC.
+    assert_eq!(mtime_secs(&ileri), 1_332_639_000);
+
+    let status = lib
+        .cmd()
+        .env("TZ", "Europe/Berlin")
+        .arg("status")
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&status.stdout);
+    assert!(
+        text.contains("fix-dates  up to date (2 of 2 done)"),
+        "{text}"
+    );
+}

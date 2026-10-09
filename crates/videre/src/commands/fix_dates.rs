@@ -121,13 +121,7 @@ fn run_fix_dates(
             let s = videre_core::fix_dates_target::target_modified_at(exif_date)?;
             chrono::DateTime::parse_from_rfc3339(&s).ok()
         })() else {
-            let ndt_ok =
-                chrono::NaiveDateTime::parse_from_str(exif_date, "%Y-%m-%dT%H:%M:%S").is_ok();
-            if ndt_ok {
-                tracing::error!("{path}: ambiguous local time for {exif_date}");
-            } else {
-                tracing::error!("{path}: bad exif_date {exif_date:?}");
-            }
+            tracing::error!("{path}: bad exif_date {exif_date:?}");
             errors += 1;
             continue;
         };

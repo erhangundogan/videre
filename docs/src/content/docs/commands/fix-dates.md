@@ -119,16 +119,14 @@ The consequence is that **running this on machines in different timezones
 produces different results** for the same photos. If that matters to you, run it
 consistently in one place.
 
-Times that are ambiguous or impossible in the local timezone, which happens
-during daylight-saving transitions, are reported as an error and skipped rather
-than guessed:
+The hours a daylight-saving change makes awkward are dated too. The hour the
+clocks go back happens twice, and a photo from it takes the first pass, before
+the change. The hour the clocks go forward never happens, so a camera that
+showed it had not been changed yet, and the photo is read as the clock after
+the jump, one hour later.
 
-```
-Error: /Photos/2021/IMG_2043.jpg: ambiguous local time for 2021-10-31T02:30:00
-```
-
-That is one hour a year, so it affects very few photos, and they keep their
-existing mtime.
+A date fix-dates cannot read at all is reported as an error and the file keeps
+its mtime; [`videre status`](/commands/status/) counts it as skipped.
 
 ## The confirmation prompt
 

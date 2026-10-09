@@ -604,6 +604,13 @@ nonzero while recording success. They exit through `Exit::skipped(n)`, which `pi
 counts as a finished stage with `n` files skipped, not a failed one: a few
 QuickLook timeouts once marked a whole night's faces stage as failed.
 
+:warning: **Watch's stages record through `track_cycle_in_as`, never
+`track_in_as`.** A cycle updates the latest row but is not kept in
+`pipeline_run_history`. Watch reruns a batch while a stage is busy and sees
+another command's file writes in waves: one fix-dates run of 6,339 date
+changes, through `track_in_as`, filled every stage's history with sub-second
+cycles a second apart and pushed out the long runs the history keeps.
+
 ### HEIC conversion uses `qlmanage`, never `sips`
 
 Some HEIC files (iPhone photos where rotation is encoded via the HEIF `irot`
