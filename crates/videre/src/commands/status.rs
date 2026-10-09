@@ -57,14 +57,15 @@ fn run_text(args: &StatusArgs, ctx: &CommandContext) -> anyhow::Result<()> {
     println!("Coverage (model {}):", report.embed_model);
     for c in &report.coverage {
         // total = done + outstanding + skipped, so done must subtract both;
-        // skipped files are undecodable, not done.
+        // skipped files are not done.
         let done = c.total - c.outstanding - c.skipped;
-        // Files the stage has given up decoding are not work it will do, so they
-        // are named separately rather than folded into outstanding.
-        let skipped_note = if c.skipped > 0 {
-            format!(", {} skipped as undecodable", c.skipped)
-        } else {
-            String::new()
+        // Files the stage cannot process (undecodable, or a date fix-dates
+        // cannot read) are not work it will do, so they are named separately
+        // rather than folded into outstanding.
+        let skipped_note = match (c.skipped, c.stage) {
+            (0, _) => String::new(),
+            (n, "fix-dates") => format!(", {n} skipped with an unreadable date"),
+            (n, _) => format!(", {n} skipped as undecodable"),
         };
         if c.stale {
             // Prune or dedupe shrank the data without leaving an unassigned row,
@@ -102,9 +103,28 @@ fn run_text(args: &StatusArgs, ctx: &CommandContext) -> anyhow::Result<()> {
 
     println!();
     println!("Pipeline status:");
+    // Wide enough for the longest name (location-names), so every row's
+    // columns line up.
+    let width = report
+        .pipelines
+        .iter()
+        .map(|p| p.command.len())
+        .max()
+        .unwrap_or(0)
+        .max(10);
     for p in &report.pipelines {
-        let last_run = p.last_run_at.as_deref().unwrap_or("never run");
-        let status = p.status.as_deref().unwrap_or("-");
+        let last_run = p
+            .last_run_at
+            .as_deref()
+            .map(run_time)
+            .unwrap_or_else(|| "never run".to_string());
+        // A run in progress reads as running, whatever its row last recorded
+        // (watch records each finished cycle as a success).
+        let status = if p.currently_running {
+            "running"
+        } else {
+            p.status.as_deref().unwrap_or("-")
+        };
         let duration = p
             .duration_ms
             .map(|d| videre_core::progress::human_duration_ms(d as u64))
@@ -115,7 +135,7 @@ fn run_text(args: &StatusArgs, ctx: &CommandContext) -> anyhow::Result<()> {
             skipped_note(p.summary.as_deref())
         };
         println!(
-            "  {:10} {:19} {:11} {:>10}{}",
+            "  {:width$} {:19} {:11} {:>10}{}",
             p.command, last_run, status, duration, flag
         );
         // The runs before the latest, kept per `run-history`: the long ones
@@ -127,8 +147,12 @@ fn run_text(args: &StatusArgs, ctx: &CommandContext) -> anyhow::Result<()> {
                 .unwrap_or_else(|| "-".to_string());
             let note = skipped_note(run.summary.as_deref());
             println!(
-                "  {:10} {:19} {:11} {:>10}{}",
-                "", run.started_at, run.status, duration, note
+                "  {:width$} {:19} {:11} {:>10}{}",
+                "",
+                run_time(&run.started_at),
+                run.status,
+                duration,
+                note
             );
         }
     }
@@ -238,6 +262,20 @@ fn print_recent_problems(logs: &[videre_core::error_log::CommandLogSummary]) {
     }
 }
 
+/// A run time as stored (`YYYY-MM-DD HH:MM:SS`, UTC, from SQLite's
+/// `datetime('now')`) in local time, the clock the log lines below it use, or
+/// as written when it does not parse.
+fn run_time(stored: &str) -> String {
+    chrono::NaiveDateTime::parse_from_str(stored, "%Y-%m-%d %H:%M:%S")
+        .map(|t| {
+            t.and_utc()
+                .with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string()
+        })
+        .unwrap_or_else(|_| stored.to_owned())
+}
+
 /// A log timestamp (UTC) in local time to the minute, or as written when it
 /// does not parse.
 fn local_time(ts: &str) -> String {
@@ -252,9 +290,9 @@ fn local_time(ts: &str) -> String {
 
 fn print_watch(watch: &videre_core::status_report::WatchLiveness) {
     match (watch.running, &watch.last_cycle_at) {
-        (true, Some(at)) => println!("Watch: running (last cycle {at})"),
+        (true, Some(at)) => println!("Watch: running (last cycle {})", run_time(at)),
         (true, None) => println!("Watch: running (first cycle in progress)"),
-        (false, Some(at)) => println!("Watch: not running (last cycle {at})"),
+        (false, Some(at)) => println!("Watch: not running (last cycle {})", run_time(at)),
         (false, None) => println!("Watch: never run"),
     }
 }

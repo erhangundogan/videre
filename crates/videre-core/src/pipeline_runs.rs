@@ -58,7 +58,26 @@ pub fn ensure_pipeline_runs_table(conn: &Connection) -> rusqlite::Result<()> {
         );
         CREATE INDEX IF NOT EXISTS pipeline_run_history_command
             ON pipeline_run_history (command, id);",
-    )
+    )?;
+    // Which history entry, if any, is the latest run itself, so status shows
+    // it once. Added in place to a table from before it, like the history.
+    let has_history_id = conn
+        .prepare("SELECT 1 FROM pragma_table_info('pipeline_runs') WHERE name = 'history_id'")?
+        .exists([])?;
+    if !has_history_id {
+        // A latest run already kept in the history (0.58) is linked to its
+        // entry, so it is not listed a second time under itself.
+        conn.execute_batch(
+            "ALTER TABLE pipeline_runs ADD COLUMN history_id INTEGER;
+             UPDATE pipeline_runs SET history_id = (
+                 SELECT h.id FROM pipeline_run_history h
+                  WHERE h.command = pipeline_runs.command
+                    AND h.started_at = pipeline_runs.started_at
+                  ORDER BY h.id DESC LIMIT 1)
+             WHERE status != 'running';",
+        )?;
+    }
+    Ok(())
 }
 
 /// Copies a command's run row into the history, as `status` when given
@@ -75,6 +94,14 @@ fn archive_run(conn: &Connection, command: &str, status: Option<&str>, keep: u64
            FROM pipeline_runs WHERE command = ?1",
         params![command, status],
     )?;
+    // A crashed run is archived as the next one starts, so it is never the
+    // latest; a finished one is.
+    if status.is_none() {
+        conn.execute(
+            "UPDATE pipeline_runs SET history_id = ?2 WHERE command = ?1",
+            params![command, conn.last_insert_rowid()],
+        )?;
+    }
     conn.execute(
         "DELETE FROM pipeline_run_history WHERE command = ?1 AND id NOT IN (
              SELECT id FROM pipeline_run_history WHERE command = ?1
@@ -95,7 +122,7 @@ pub fn note_skipped(conn: &Connection, command: &str, n: usize) -> Result<()> {
     )?;
     conn.execute(
         "UPDATE pipeline_run_history SET summary = ?2 WHERE id =
-             (SELECT MAX(id) FROM pipeline_run_history WHERE command = ?1)",
+             (SELECT history_id FROM pipeline_runs WHERE command = ?1)",
         params![command, summary],
     )?;
     Ok(())
@@ -110,13 +137,17 @@ pub struct RunRecord {
     pub summary: Option<String>,
 }
 
-/// A command's runs before its latest, newest first.
+/// A command's runs before its latest, newest first: every history entry
+/// but the one that is the latest run itself (a run in progress, or a watch
+/// cycle, which is never kept, has none).
 fn previous_runs(conn: &Connection, command: &str) -> Result<Vec<RunRecord>> {
     let mut stmt = conn.prepare(
         "SELECT started_at, status, duration_ms, summary FROM pipeline_run_history
-         WHERE command = ?1 ORDER BY id DESC",
+         WHERE command = ?1
+           AND id IS NOT (SELECT history_id FROM pipeline_runs WHERE command = ?1)
+         ORDER BY id DESC",
     )?;
-    let mut runs = stmt
+    let runs = stmt
         .query_map(params![command], |r| {
             Ok(RunRecord {
                 started_at: r.get(0)?,
@@ -126,20 +157,6 @@ fn previous_runs(conn: &Connection, command: &str) -> Result<Vec<RunRecord>> {
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    // The newest entry is the latest finished run, which the status line
-    // itself shows; a run in progress has no entry yet.
-    let current: Option<(String, String)> = conn
-        .query_row(
-            "SELECT started_at, status FROM pipeline_runs WHERE command = ?1",
-            params![command],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()?;
-    if let (Some((started, status)), Some(first)) = (current, runs.first()) {
-        if status != "running" && first.started_at == started {
-            runs.remove(0);
-        }
-    }
     Ok(runs)
 }
 
@@ -152,7 +169,8 @@ pub fn start_run(conn: &Connection, command: &str) -> rusqlite::Result<()> {
              status = 'running',
              finished_at = NULL,
              duration_ms = NULL,
-             summary = NULL",
+             summary = NULL,
+             history_id = NULL",
         params![command],
     )?;
     Ok(())
@@ -219,6 +237,43 @@ pub fn track_in_as<T, F>(
 where
     F: FnOnce() -> Result<T>,
 {
+    track(conn, ctx, guard, lock_command, label, true, f)
+}
+
+/// Like [`track_in_as`], for a stage `videre watch` runs on a batch of
+/// changed files. The run updates the command's latest row, so status shows
+/// when the stage last ran, but a finished one is not kept in the history.
+/// A watch batch is rerun while a stage is busy and arrives in waves while
+/// another command changes files: one fix-dates run of 6,339 date changes
+/// filled every stage's history with sub-second cycles one second apart,
+/// pushing out the long runs the history exists to keep. A cycle that died
+/// is still kept, as crashed.
+pub fn track_cycle_in_as<T, F>(
+    conn: &Connection,
+    ctx: &crate::library::LibraryContext,
+    guard: &crate::library_locks::CommandGuard,
+    lock_command: &str,
+    label: &str,
+    f: F,
+) -> Result<T>
+where
+    F: FnOnce() -> Result<T>,
+{
+    track(conn, ctx, guard, lock_command, label, false, f)
+}
+
+fn track<T, F>(
+    conn: &Connection,
+    ctx: &crate::library::LibraryContext,
+    guard: &crate::library_locks::CommandGuard,
+    lock_command: &str,
+    label: &str,
+    keep_in_history: bool,
+    f: F,
+) -> Result<T>
+where
+    F: FnOnce() -> Result<T>,
+{
     guard.ensure_matches(ctx, lock_command)?;
     // The guard's match is a wiring check on path strings; this rechecks that
     // the root still names the same library before any run row is written, so
@@ -247,7 +302,9 @@ where
     match result {
         Ok(value) => {
             finish_run(conn, label, "success", duration_ms, None)?;
-            archive_run(conn, label, None, keep)?;
+            if keep_in_history {
+                archive_run(conn, label, None, keep)?;
+            }
             Ok(value)
         }
         Err(error) => {
@@ -256,7 +313,13 @@ where
             if let Err(record_error) =
                 finish_run(conn, label, "failed", duration_ms, Some(&error.to_string()))
                     .map_err(anyhow::Error::from)
-                    .and_then(|()| archive_run(conn, label, None, keep))
+                    .and_then(|()| {
+                        if keep_in_history {
+                            archive_run(conn, label, None, keep)
+                        } else {
+                            Ok(())
+                        }
+                    })
             {
                 return Err(error.context(format!(
                     "also could not record the failed run: {record_error}"
@@ -654,6 +717,59 @@ mod tests {
         }
         assert_eq!(history_statuses(&conn, "faces"), ["failed", "success"]);
         assert_eq!(history_statuses(&conn, "scan"), ["success"], "per command");
+    }
+
+    #[test]
+    fn a_0_58_runs_table_links_its_latest_run_to_its_history_entry() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE pipeline_runs (command TEXT PRIMARY KEY, started_at TEXT NOT NULL,
+                 finished_at TEXT, status TEXT NOT NULL, duration_ms INTEGER, summary TEXT);
+             CREATE TABLE pipeline_run_history (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 command TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT,
+                 status TEXT NOT NULL, duration_ms INTEGER, summary TEXT);
+             INSERT INTO pipeline_run_history (command, started_at, status, duration_ms)
+                 VALUES ('faces', '2026-10-07 06:53:47', 'success', 10260000),
+                        ('faces', '2026-10-08 09:12:40', 'success', 242000);
+             INSERT INTO pipeline_runs (command, started_at, status, duration_ms)
+                 VALUES ('faces', '2026-10-08 09:12:40', 'success', 242000);",
+        )
+        .unwrap();
+        ensure_pipeline_runs_table(&conn).unwrap();
+        let earlier = previous_runs(&conn, "faces").unwrap();
+        assert_eq!(
+            earlier.len(),
+            1,
+            "the latest run is not listed under itself"
+        );
+        assert_eq!(earlier[0].started_at, "2026-10-07 06:53:47");
+    }
+
+    #[test]
+    fn watch_cycles_update_the_latest_run_but_keep_out_of_the_history() {
+        let (_t, ctx, conn) = in_library();
+        let guard = crate::library_locks::try_command(&ctx, "faces").unwrap();
+        track_in(&conn, &ctx, &guard, "faces", || Ok(())).unwrap();
+        for _ in 0..4 {
+            track_cycle_in_as(&conn, &ctx, &guard, "faces", "faces", || Ok(())).unwrap();
+        }
+        assert_eq!(
+            history_statuses(&conn, "faces"),
+            ["success"],
+            "only the run started by hand"
+        );
+        let faces = read_all_in(&conn, &ctx)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.command == "faces")
+            .unwrap();
+        assert_eq!(faces.status.as_deref(), Some("success"));
+        assert_eq!(faces.history.len(), 1, "the hand run shows under the cycle");
+
+        // A cycle that died is still kept, as crashed.
+        start_run(&conn, "faces").unwrap();
+        track_cycle_in_as(&conn, &ctx, &guard, "faces", "faces", || Ok(())).unwrap();
+        assert_eq!(history_statuses(&conn, "faces"), ["success", "crashed"]);
     }
 
     #[test]

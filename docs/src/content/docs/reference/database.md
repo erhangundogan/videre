@@ -241,9 +241,13 @@ CREATE TABLE pipeline_runs (
     finished_at  TEXT,
     status       TEXT NOT NULL,
     duration_ms  INTEGER,
-    summary      TEXT
+    summary      TEXT,
+    history_id   INTEGER
 );
 ```
+
+Times are UTC. `history_id` is the run's own entry in `pipeline_run_history`,
+when it was kept there, so status does not list it twice.
 
 `status` is stored as `running`, `success`, `failed` or `interrupted`. A fifth
 value, `crashed`, is never written: it is computed when reading, when a row says
@@ -252,7 +256,9 @@ value, `crashed`, is never written: it is computed when reading, when a row says
 ## pipeline_run_history
 
 The finished runs of each command, newest kept: every run is copied here when it
-ends, and only the newest `run_history` (default 3) per command remain. A
+ends, and only the newest `run_history` (default 3) per command remain. Runs of
+a stage by `videre watch` are not copied: watch reruns its stages whenever
+files change, and those runs would push out the long ones. A
 `running` row found when the next run starts belonged to a run that died, and is
 copied here as `crashed`. `summary` holds a failure's message or
 `13 file(s) skipped`.
