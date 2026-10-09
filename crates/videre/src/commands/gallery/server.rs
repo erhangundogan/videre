@@ -2244,6 +2244,99 @@ async fn handle_get_settings(
         .map_err(internal)
 }
 
+/// `GET /api/diagnostics/status`: the document `videre status --json` prints,
+/// for the Diagnostics page. Read-only, on its own connection.
+async fn handle_diagnostics_status(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<videre::types::StatusJson>, StatusCode> {
+    let library = state.context.library.clone();
+    tokio::task::spawn_blocking(move || {
+        let conn = videre_core::library_db::open_existing(&library)?;
+        crate::diagnostics::status_json(&conn, &library)
+    })
+    .await
+    .map_err(internal)?
+    .map(Json)
+    .map_err(internal)
+}
+
+/// `GET /api/diagnostics/stats`: the document `videre stats --json` prints,
+/// with the first ten mismatched files as it lists them.
+async fn handle_diagnostics_stats(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<videre::types::StatsJson>, StatusCode> {
+    let library = state.context.library.clone();
+    tokio::task::spawn_blocking(move || {
+        let conn = videre_core::library_db::open_existing(&library)?;
+        crate::diagnostics::stats_json(&conn, &library, Some(10))
+    })
+    .await
+    .map_err(internal)?
+    .map(Json)
+    .map_err(internal)
+}
+
+#[derive(serde::Deserialize)]
+struct LogsQuery {
+    command: Option<String>,
+    level: Option<String>,
+    since: Option<String>,
+    q: Option<String>,
+    before: Option<String>,
+}
+
+/// `GET /api/diagnostics/logs`: one page of the library's log lines, newest
+/// first (`error_log::read_lines`). `level` is `error`, `warn` (the default)
+/// or `info`; `since` and `before` are RFC 3339 instants.
+async fn handle_diagnostics_logs(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<LogsQuery>,
+) -> Response {
+    use videre_core::error_log::{LineLevel, LogQuery};
+    let empty = |s: Option<String>| s.filter(|s| !s.is_empty());
+    let min_level = match q.level.as_deref().unwrap_or("warn") {
+        "error" => LineLevel::Error,
+        "warn" | "" => LineLevel::Warn,
+        "info" => LineLevel::Info,
+        other => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("level must be error, warn or info, got {other:?}"),
+            )
+                .into_response()
+        }
+    };
+    let since = empty(q.since);
+    let before = empty(q.before);
+    for (name, value) in [("since", &since), ("before", &before)] {
+        if let Some(v) = value {
+            if chrono::DateTime::parse_from_rfc3339(v).is_err() {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    format!("{name} must be an RFC 3339 time, got {v:?}"),
+                )
+                    .into_response();
+            }
+        }
+    }
+    let query = LogQuery {
+        command: empty(q.command),
+        min_level,
+        since,
+        text: empty(q.q),
+        before,
+        ..LogQuery::default()
+    };
+    let library = state.context.library.clone();
+    match tokio::task::spawn_blocking(move || videre_core::error_log::read_lines(&library, &query))
+        .await
+    {
+        Ok(Ok(page)) => Json(page).into_response(),
+        Ok(Err(e)) => internal(e).into_response(),
+        Err(e) => internal(e).into_response(),
+    }
+}
+
 /// `GET /api/processing`: while `videre watch` runs, each of its stages with
 /// work still outstanding, for the nav's "still processing" note. Empty when
 /// no watcher runs: outstanding work nobody is doing is `videre status`'s to
@@ -5722,6 +5815,9 @@ async fn serve_faces_async(
         .route("/tiles/detail.pmtiles", get(handle_detail_tiles))
         .route("/fonts/{stack}/{range}", get(handle_fonts))
         .route("/api/processing", get(handle_processing))
+        .route("/api/diagnostics/status", get(handle_diagnostics_status))
+        .route("/api/diagnostics/stats", get(handle_diagnostics_stats))
+        .route("/api/diagnostics/logs", get(handle_diagnostics_logs))
         .route("/vendor/{version}/{asset}", get(handle_vendor_asset))
         // people
         .route(
