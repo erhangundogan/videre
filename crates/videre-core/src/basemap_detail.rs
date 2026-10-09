@@ -859,11 +859,12 @@ pub fn ensure(
     Ok(path)
 }
 
-/// Deletes the archive and its manifest; true when there was one. Called
-/// when `street_detail` is turned off, so the setting and the disk agree.
-pub fn remove(state_dir: &Path) -> Result<bool> {
+/// Deletes the archive and its manifest; the archive's size when there was
+/// one. Called when `street_detail` is turned off, so the setting and the
+/// disk agree.
+pub fn remove(state_dir: &Path) -> Result<Option<u64>> {
     let path = archive_path(state_dir);
-    let existed = path.exists();
+    let existed = std::fs::metadata(&path).ok().map(|m| m.len());
     for p in [
         path.clone(),
         path.with_extension("pmtiles.part"),
@@ -1222,8 +1223,8 @@ mod tests {
             DetailStatus::Ready { stale: true, .. }
         ));
 
-        assert!(remove(state).unwrap());
+        assert_eq!(remove(state).unwrap(), Some(bytes));
         assert_eq!(status(state, &berlin), DetailStatus::Absent);
-        assert!(!remove(state).unwrap());
+        assert_eq!(remove(state).unwrap(), None);
     }
 }

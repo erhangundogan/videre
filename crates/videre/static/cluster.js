@@ -160,8 +160,8 @@ const clusterId = window.CLUSTER_ID;
       // The teaching note is a learning update, shown only when the library
       // turned learning and its updates on in gallery.json.
       const showUpdates = typeof settingOneOf === 'function'
-        && settingOneOf('faces.learning', [true, false]) === true
-        && settingOneOf('faces.learningUpdates', [true, false]) === true;
+        && settingOneOf('faces.learning') === true
+        && settingOneOf('faces.learningUpdates') === true;
       const taught = showUpdates && ack && Array.isArray(ack.event_ids) && ack.event_ids.length;
       document.getElementById('status').textContent = 'Cluster dissolved'
         + (taught ? '; the negative example was recorded' : '');

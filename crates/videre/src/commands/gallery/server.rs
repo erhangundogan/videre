@@ -1986,9 +1986,20 @@ mod pages {
         /// The library's `gallery.json`, shown so hand editing is findable.
         pub path: String,
         pub nav: Option<super::Section>,
+        /// `config`, `gallery` or `manage`.
+        pub tab: &'static str,
+        /// The library's `config.toml`, shown on the config tab.
+        pub config_path: String,
+        /// The config form's keys and values (`config_form::page_json`), read
+        /// once when the page renders; `null` on the other tabs.
+        pub config_json: String,
     }
 
-    pub const SETTINGS_PAGE_JS: &str = include_str!("../../../static/settings-page.js");
+    pub const SETTINGS_PAGE_JS: &str = concat!(
+        include_str!("../../../static/settings-page.js"),
+        "\n",
+        include_str!("../../../static/settings-form.js"),
+    );
     pub const FACES_CSS: &str = include_str!("../../../static/faces.css");
     /// The People script, with the shared multi-select component ahead of it.
     pub const FACES_JS: &str = concat!(
@@ -2177,18 +2188,49 @@ fn settings_json(s: super::settings::Snapshot) -> Json<serde_json::Value> {
     }))
 }
 
-/// `/settings`: import, export and reset of the library's gallery settings,
-/// reached from the nav's `...` menu.
-async fn handle_settings_page(State(state): State<Arc<AppState>>) -> axum::response::Html<String> {
+/// `/settings`, reached from the nav's `...` menu, opens its first tab.
+async fn handle_settings_root() -> axum::response::Redirect {
+    axum::response::Redirect::to("/settings/config")
+}
+
+/// `/settings/config` (the `videre config` keys), `/settings/gallery` (the
+/// gallery settings) and `/settings/manage` (import, export and reset). The
+/// config is read here, once per render, and handed to the page.
+async fn handle_settings_page(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(tab): axum::extract::Path<String>,
+) -> Result<axum::response::Html<String>, StatusCode> {
     use askama::Template;
+    let tab: &'static str = match tab.as_str() {
+        "config" => "config",
+        "gallery" => "gallery",
+        "manage" => "manage",
+        _ => return Err(StatusCode::NOT_FOUND),
+    };
+    let config_json = if tab == "config" {
+        let paths = state.context.library.paths.clone();
+        let page = tokio::task::spawn_blocking(move || {
+            super::config_form::page_json(videre_core::library_config::load(&paths))
+        })
+        .await
+        .map_err(internal)?;
+        page.to_string().replace('<', "\\u003c")
+    } else {
+        "null".to_string()
+    };
     let page = pages::Settings {
         settings_script: page_settings(&state).await,
         chrome: CHROME_CSS,
         js: pages::SETTINGS_PAGE_JS,
         path: settings_file(&state).display().to_string(),
         nav: Some(Section::Settings),
+        tab,
+        config_path: state.context.library.paths.config.display().to_string(),
+        config_json,
     };
-    axum::response::Html(page.render().expect("settings template"))
+    Ok(axum::response::Html(
+        page.render().expect("settings template"),
+    ))
 }
 
 /// `GET /api/settings`: the effective settings, the stored overrides, and
@@ -2282,29 +2324,118 @@ async fn write_settings(
 async fn handle_patch_settings(
     State(state): State<Arc<AppState>>,
     AxumJson(patch): AxumJson<serde_json::Value>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+) -> Result<Json<serde_json::Value>, Refusal> {
     if !patch.is_object() {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(bare(StatusCode::BAD_REQUEST));
     }
-    write_settings(state, move |o| super::settings::merge_patch(o, &patch)).await
+    refuse_invalid(&patch)?;
+    write_settings(state, move |o| super::settings::merge_patch(o, &patch))
+        .await
+        .map_err(bare)
 }
 
-/// `PUT /api/settings`: import. Replaces `routes` wholesale and keeps the
-/// rest, so importing another library's settings never moves where this one
-/// resumes.
+/// `PATCH /api/config`: `{cli-name: value | null}`, the settings page's save
+/// of `videre config` keys. Every key is checked first and the file written
+/// once, so a save lands whole or not at all. A change the running gallery
+/// uses applies before this answers: street detail turned off deletes the
+/// street map, and the map's remembered flag follows.
+async fn handle_patch_config(
+    State(state): State<Arc<AppState>>,
+    AxumJson(body): AxumJson<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, Refusal> {
+    use videre_core::library_config::{self, ConfigKey};
+    let changes = super::config_form::parse(&body).map_err(|errors| {
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({ "errors": errors })),
+        )
+    })?;
+    tokio::task::spawn_blocking(move || {
+        let _guard = guard_operation(&state).map_err(bare)?;
+        let library = &state.context.library;
+        library_config::edit_many(library, &changes).map_err(|e| {
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({ "error": format!("{e:#}") })),
+            )
+        })?;
+        let config = library_config::load(&library.paths).map_err(|e| bare(internal(e)))?;
+        let mut deleted = None;
+        if changes.iter().any(|(k, _)| *k == ConfigKey::StreetDetail) {
+            if !config.street_detail {
+                deleted = videre_core::basemap_detail::remove(&library.paths.state)
+                    .map_err(|e| bare(internal(e)))?;
+            }
+            state
+                .street_detail
+                .store(config.street_detail, std::sync::atomic::Ordering::Relaxed);
+        }
+        Ok(Json(serde_json::json!({
+            "values": super::config_form::values_json(&config),
+            "deleted_street_map_bytes": deleted,
+        })))
+    })
+    .await
+    .map_err(|e| bare(internal(e)))?
+}
+
+/// 422 with each refused value's message by dotted path, before anything is
+/// written. Only the incoming values are checked: a value already on disk
+/// that is out of range (a hand edit) must not block every later save.
+fn refuse_invalid(incoming: &serde_json::Value) -> Result<(), Refusal> {
+    let errors = super::settings::validate(incoming);
+    if errors.is_empty() {
+        return Ok(());
+    }
+    Err((
+        StatusCode::UNPROCESSABLE_ENTITY,
+        Json(serde_json::json!({ "errors": errors })),
+    ))
+}
+
+/// A refused settings or config save: the status, and a body saying why
+/// (`null` when the status says it all).
+type Refusal = (StatusCode, Json<serde_json::Value>);
+
+fn bare(code: StatusCode) -> Refusal {
+    (code, Json(serde_json::Value::Null))
+}
+
+/// The sections an import or reset replaces: the page preferences and the
+/// face settings. `resume` is left out, so importing another library's
+/// settings never moves where this one reopens.
+const PORTABLE_SECTIONS: [&str; 2] = ["routes", "faces"];
+
+/// `PUT /api/settings`: import. Each of `routes` and `faces` the body holds
+/// replaces that section wholesale; a section it lacks is kept, so a file
+/// exported before faces were exported leaves the face settings alone.
 async fn handle_put_settings(
     State(state): State<Arc<AppState>>,
     AxumJson(body): AxumJson<serde_json::Value>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
-    let Some(routes) = body.get("routes").filter(|r| r.is_object()).cloned() else {
-        return Err(StatusCode::BAD_REQUEST);
-    };
+) -> Result<Json<serde_json::Value>, Refusal> {
+    let mut sections = serde_json::Map::new();
+    for name in PORTABLE_SECTIONS {
+        match body.get(name) {
+            None => {}
+            Some(v) if v.is_object() => {
+                sections.insert(name.into(), v.clone());
+            }
+            Some(_) => return Err(bare(StatusCode::BAD_REQUEST)),
+        }
+    }
+    if sections.is_empty() {
+        return Err(bare(StatusCode::BAD_REQUEST));
+    }
+    let sections = serde_json::Value::Object(sections);
+    refuse_invalid(&sections)?;
     write_settings(state, move |o| {
-        o.as_object_mut()
-            .expect("stored overrides are an object")
-            .insert("routes".into(), routes);
+        let stored = o.as_object_mut().expect("stored overrides are an object");
+        for (name, value) in sections.as_object().expect("built as an object") {
+            stored.insert(name.clone(), value.clone());
+        }
     })
     .await
+    .map_err(bare)
 }
 
 #[derive(Deserialize)]
@@ -5567,6 +5698,7 @@ async fn serve_faces_async(
                 .patch(handle_patch_settings)
                 .put(handle_put_settings),
         )
+        .route("/api/config", patch(handle_patch_config))
         .route("/api/events", get(handle_events_api))
         .route("/api/events/{key}/files", get(handle_events_files))
         .route("/api/search", get(handle_search))
@@ -5659,7 +5791,8 @@ async fn serve_faces_async(
         .route("/date", get(handle_gallery_date))
         .route("/map/location/{name}", get(handle_map_location))
         .route("/map", get(handle_map))
-        .route("/settings", get(handle_settings_page))
+        .route("/settings", get(handle_settings_root))
+        .route("/settings/{tab}", get(handle_settings_page))
         .route("/events/{key}", get(handle_events_key))
         .route("/events", get(handle_events))
         .route("/smart", get(handle_not_yet));
@@ -6139,7 +6272,84 @@ mod settings_api_tests {
                     .patch(handle_patch_settings)
                     .put(handle_put_settings),
             )
+            .route("/api/config", patch(handle_patch_config))
             .with_state(state)
+    }
+
+    async fn patch_config(app: &Router, body: Value) -> (StatusCode, Value) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri("/api/config")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_config_save_writes_every_key_or_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+        let config = state.context.library.paths.config.clone();
+        let app = app(state);
+
+        let (status, body) =
+            patch_config(&app, json!({"run-history": 5, "log-level": "info"})).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["values"]["run-history"], 5);
+        let before = std::fs::read(&config).unwrap();
+
+        let (status, body) = patch_config(&app, json!({"log-keep": 9, "run-history": 101})).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            body["errors"],
+            json!({"run-history": "Enter a whole number from 1 to 100"})
+        );
+        let (status, body) = patch_config(&app, json!({"kasaba": true})).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(body["errors"]["kasaba"], "Not a setting");
+        assert_eq!(std::fs::read(&config).unwrap(), before);
+
+        let (status, body) = patch_config(&app, json!({"run-history": null})).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body["values"]["run-history"], 3,
+            "unset is the default again"
+        );
+    }
+
+    #[tokio::test]
+    async fn turning_street_detail_off_deletes_the_street_map_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+        let paths = state.context.library.paths.clone();
+        std::fs::write(&paths.config, "street_detail = true\n").unwrap();
+        let archive = videre_core::basemap_detail::archive_path(&paths.state);
+        std::fs::create_dir_all(archive.parent().unwrap()).unwrap();
+        std::fs::write(&archive, vec![0u8; 1234]).unwrap();
+        state
+            .street_detail
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let app = app(state.clone());
+
+        let (status, body) = patch_config(&app, json!({"street-detail": false})).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["deleted_street_map_bytes"], 1234);
+        assert!(!archive.exists());
+        assert!(!state
+            .street_detail
+            .load(std::sync::atomic::Ordering::Relaxed));
     }
 
     async fn send(app: &Router, method: &str, ctype: &str, body: &str) -> (StatusCode, Value) {
@@ -6192,6 +6402,33 @@ mod settings_api_tests {
         assert_eq!(body["overrides"], json!({}));
         assert_eq!(body["ignored"], json!([]));
         assert_eq!(body["error"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn a_patch_with_one_bad_value_is_refused_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = app(gallery_state(dir.path()));
+        let (status, _) =
+            patch_settings(&app, json!({"routes": {"date": {"pageSize": 300}}})).await;
+        assert_eq!(status, StatusCode::OK);
+        let before = std::fs::read(file(dir.path())).unwrap();
+
+        let (status, body) = patch_settings(
+            &app,
+            json!({"routes": {"files": {"view": "list", "pageSize": 501}}}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            body["errors"],
+            json!({"routes.files.pageSize": "Enter a whole number from 1 to 500"})
+        );
+        assert_eq!(std::fs::read(file(dir.path())).unwrap(), before);
+        assert_eq!(
+            get_settings(&app).await["effective"]["routes"]["files"]["view"],
+            "tile",
+            "the good value in the same patch is not kept either"
+        );
     }
 
     #[tokio::test]
@@ -6259,14 +6496,20 @@ mod settings_api_tests {
     }
 
     #[tokio::test]
-    async fn a_wrong_type_is_stored_but_ignored_and_reported() {
+    async fn a_wrong_type_is_refused_by_a_save_and_ignored_in_a_hand_edit() {
         let dir = tempfile::tempdir().unwrap();
         let app = app(gallery_state(dir.path()));
-        let (status, body) =
+        let (status, _) =
             patch_settings(&app, json!({"routes": {"files": {"pageSize": "x"}}})).await;
-        assert_eq!(status, StatusCode::OK);
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+        std::fs::write(file(dir.path()), r#"{"routes":{"files":{"pageSize":"x"}}}"#).unwrap();
+        let body = get_settings(&app).await;
         assert_eq!(body["ignored"], json!(["routes.files.pageSize"]));
         assert_eq!(body["effective"]["routes"]["files"]["pageSize"], 200);
+        let (status, _) =
+            patch_settings(&app, json!({"routes": {"date": {"pageSize": 300}}})).await;
+        assert_eq!(status, StatusCode::OK, "a bad value on disk blocks no save");
     }
 
     #[tokio::test]
@@ -6312,10 +6555,64 @@ mod settings_api_tests {
     }
 
     #[tokio::test]
+    async fn import_carries_face_settings_and_a_file_without_them_keeps_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = app(gallery_state(dir.path()));
+        patch_settings(
+            &app,
+            json!({"faces": {"learning": true, "clustering": {"eps": 0.5}}}),
+        )
+        .await;
+
+        // An export made before faces were exported holds routes only.
+        let (status, body) = send(
+            &app,
+            "PUT",
+            "application/json",
+            r#"{"routes":{"date":{"pageSize":50}}}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["overrides"]["faces"]["learning"], true);
+
+        let (status, body) = send(
+            &app,
+            "PUT",
+            "application/json",
+            r#"{"routes":{},"faces":{"clustering":{"min_cluster_size":4}}}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body["overrides"],
+            json!({"faces": {"clustering": {"min_cluster_size": 4}}})
+        );
+
+        // Reset clears both.
+        let (_, body) = send(
+            &app,
+            "PUT",
+            "application/json",
+            r#"{"routes":{},"faces":{}}"#,
+        )
+        .await;
+        assert_eq!(body["overrides"], json!({}));
+
+        let (status, _) = send(
+            &app,
+            "PUT",
+            "application/json",
+            r#"{"faces":{"clustering":{"eps":9}}}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
     async fn malformed_bodies_are_refused() {
         let dir = tempfile::tempdir().unwrap();
         let app = app(gallery_state(dir.path()));
-        for body in [r#"{"routes":3}"#, "[]", "{}"] {
+        for body in [r#"{"routes":3}"#, r#"{"faces":[]}"#, "[]", "{}"] {
             let (status, _) = send(&app, "PUT", "application/json", body).await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
         }
@@ -6351,27 +6648,57 @@ mod settings_api_tests {
     }
 
     #[tokio::test]
-    async fn the_settings_page_offers_import_export_and_reset() {
+    async fn settings_has_three_tabs_and_opens_on_the_config() {
         let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+        std::fs::write(&state.context.library.paths.config, "run_history = 7\n").unwrap();
         let app = Router::new()
-            .route("/settings", get(handle_settings_page))
-            .with_state(gallery_state(dir.path()));
-        let html = page(&app, "/settings").await;
+            .route("/settings", get(handle_settings_root))
+            .route("/settings/{tab}", get(handle_settings_page))
+            .with_state(state);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/settings")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(response.status().is_redirection());
+        assert_eq!(response.headers()[header::LOCATION], "/settings/config");
+
+        let html = page(&app, "/settings/config").await;
+        assert!(html.contains("data-kind=\"config\""));
+        assert!(
+            html.contains("\"cli\":\"run-history\""),
+            "the config is in the page"
+        );
+        assert!(html.contains("\"value\":7"), "read when the page rendered");
+        assert!(html.contains("id=\"secnav-more\""), "carries the nav menu");
+
+        let html = page(&app, "/settings/gallery").await;
+        assert!(html.contains("data-kind=\"gallery\""));
+        assert!(html.contains(".videre/gallery.json"), "shows the file path");
+
+        let html = page(&app, "/settings/manage").await;
         for id in ["settings-export", "settings-import", "settings-reset"] {
             assert!(html.contains(&format!("id=\"{id}\"")), "{id}");
         }
-        assert!(html.contains(".videre/gallery.json"), "shows the file path");
-        assert!(html.contains("id=\"secnav-more\""), "carries the nav menu");
-        for (key, max) in [
-            ("routes.files.pageSize", 500),
-            ("routes.date.pageSize", 500),
-            ("routes.search.pageSize", 200),
-            ("routes.people.pageSize", 1000),
-            ("routes.duplicates.pageSize", 1000),
-        ] {
-            let input = format!("data-setting=\"{key}\" min=\"1\" max=\"{max}\"");
-            assert!(html.contains(&input), "{input}");
-        }
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/settings/kasaba")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

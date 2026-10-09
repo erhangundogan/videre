@@ -2,10 +2,11 @@
 //! with a library's sparse overrides from `<root>/.videre/gallery.json`
 //! merged on top.
 //!
-//! The defaults are the only declaration of a setting, and a setting's type
-//! is the JSON type of its default. The server never needs a setting's name:
-//! enumerations and ranges are checked by the client where the value is read
-//! (`static/settings.js`), falling back to the default.
+//! The defaults declare each setting's value, and `static/gallery-schema.json`
+//! what it is: its page, label, type, range or choices. A save is checked
+//! against the schema ([`validate`]); the views clamp with the same schema
+//! where they read a value (`static/settings.js`), so a hand-edited file out
+//! of range still falls back to the default there.
 //!
 //! The file holds only what differs from the defaults, so a default changed
 //! in a later release reaches every library that never touched that key.
@@ -104,10 +105,14 @@ pub(crate) fn page_script(s: &Snapshot, live: bool) -> String {
     let error = s.error.clone().map(Value::String).unwrap_or(Value::Null);
     format!(
         "<script>var VIDERE_SETTINGS={};var VIDERE_SETTINGS_DEFAULTS={};\
+         var VIDERE_SETTINGS_SCHEMA={};\
          var VIDERE_SETTINGS_LIVE={live};var VIDERE_SETTINGS_ERROR={};</script>\
          <script>{SETTINGS_JS}</script>",
         js(&s.effective),
         js(&defaults()),
+        // As written, not through `schema()`: its map sorts the keys, and the
+        // settings page lists them in the file's order.
+        SCHEMA_JSON.trim().replace('<', "\\u003c"),
         js(&error),
     )
 }
@@ -146,6 +151,89 @@ pub(crate) fn page_script_for(state_dir: &Path, live: bool) -> String {
 
 pub(crate) fn defaults() -> Value {
     serde_json::from_str(DEFAULTS_JSON).expect("gallery-defaults.json is valid JSON")
+}
+
+/// What each setting is: its page, label, type and limits, keyed by dotted
+/// path. The one place a range or a list of choices is written: the settings
+/// page draws its controls from it, the views clamp with it
+/// (`static/settings.js`), and a save is checked against it here.
+pub(crate) const SCHEMA_JSON: &str = include_str!("../../../static/gallery-schema.json");
+
+pub(crate) fn schema() -> Map<String, Value> {
+    serde_json::from_str(SCHEMA_JSON).expect("gallery-schema.json is a JSON object")
+}
+
+fn at<'a>(doc: &'a Value, path: &str) -> Option<&'a Value> {
+    path.split('.').try_fold(doc, |v, k| v.get(k))
+}
+
+/// Each overridden value the schema describes and refuses, by dotted path,
+/// with the message the settings page shows under it. A key the schema does
+/// not describe passes, as it always has: nothing reads it.
+pub(crate) fn validate(overrides: &Value) -> std::collections::BTreeMap<String, String> {
+    let mut errors = std::collections::BTreeMap::new();
+    for (path, spec) in schema() {
+        // `null` in a patch reverts a key to its default.
+        let Some(value) = at(overrides, &path).filter(|v| !v.is_null()) else {
+            continue;
+        };
+        if let Some(message) = refusal(&spec, value) {
+            errors.insert(path, message);
+        }
+    }
+    errors
+}
+
+fn refusal(spec: &Value, value: &Value) -> Option<String> {
+    let bound = |k: &str| spec.get(k).cloned().unwrap_or(Value::Null);
+    let in_range = |n: f64| {
+        spec["min"].as_f64().is_none_or(|m| n >= m) && spec["max"].as_f64().is_none_or(|m| n <= m)
+    };
+    let range = || match (spec.get("min"), spec.get("max")) {
+        (Some(_), Some(_)) => format!(" from {} to {}", bound("min"), bound("max")),
+        (Some(_), None) => format!(" of at least {}", bound("min")),
+        _ => String::new(),
+    };
+    let options = || {
+        spec["options"]
+            .as_array()
+            .map(|o| {
+                o.iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default()
+    };
+    let is_option = |v: &Value| spec["options"].as_array().is_some_and(|o| o.contains(v));
+    let ok = match spec["type"].as_str() {
+        Some("bool") => value.is_boolean(),
+        Some("string") => value.is_string(),
+        Some("int") => value
+            .as_f64()
+            .is_some_and(|n| n.fract() == 0.0 && in_range(n)),
+        Some("number") => value.as_f64().is_some_and(|n| n.is_finite() && in_range(n)),
+        Some("enum") => is_option(value),
+        Some("set") => value.as_array().is_some_and(|items| {
+            items.iter().all(is_option)
+                && items
+                    .iter()
+                    .enumerate()
+                    .all(|(i, v)| !items[..i].contains(v))
+        }),
+        _ => true,
+    };
+    if ok {
+        return None;
+    }
+    Some(match spec["type"].as_str() {
+        Some("bool") => "Choose on or off".into(),
+        Some("string") => "Enter text".into(),
+        Some("int") => format!("Enter a whole number{}", range()),
+        Some("number") => format!("Enter a number{}", range()),
+        Some("enum") => format!("Choose one of {}", options()),
+        _ => format!("Choose from {}", options()),
+    })
 }
 
 pub(crate) struct Merged {
@@ -251,7 +339,7 @@ fn same_value(a: &Value, b: &Value) -> bool {
 
 const RESUME_MAX: usize = 2048;
 
-/// Paths that are not pages. `/settings` is refused separately: it is a
+/// Paths that are not pages. `/settings` and its tabs are refused separately: it is a
 /// detour, not a place to come back to.
 const NOT_RESUMABLE: &[&str] = &["/api/", "/tiles/", "/vendor/"];
 
@@ -280,6 +368,7 @@ pub(crate) fn resume_route(effective: &Value) -> String {
         && !route.starts_with("//")
         && !route.contains('\\')
         && path != "/settings"
+        && !path.starts_with("/settings/")
         && !NOT_RESUMABLE.iter().any(|p| route.starts_with(p));
     if ok {
         route.to_string()
@@ -527,6 +616,7 @@ mod tests {
             "/tiles/basemap.pmtiles",
             "/vendor/1/x.js",
             "/settings",
+            "/settings/gallery",
             "/settings?x=1",
             "map",
             "/\\evil",
@@ -535,5 +625,77 @@ mod tests {
             assert_eq!(resume_route(&with(bad)), "/", "{bad}");
         }
         assert_eq!(resume_route(&with(&format!("/{}", "a".repeat(2048)))), "/");
+    }
+
+    /// Every dotted path to a leaf: an object is walked, anything else
+    /// (a list included) is one setting.
+    fn leaves(v: &Value, path: &str, out: &mut Vec<String>) {
+        match v {
+            Value::Object(m) => {
+                for (k, child) in m {
+                    let p = if path.is_empty() {
+                        k.clone()
+                    } else {
+                        format!("{path}.{k}")
+                    };
+                    leaves(child, &p, out);
+                }
+            }
+            _ => out.push(path.to_string()),
+        }
+    }
+
+    #[test]
+    fn the_schema_and_the_defaults_name_the_same_settings() {
+        let mut declared = Vec::new();
+        leaves(&defaults(), "", &mut declared);
+        declared.sort();
+        let mut described: Vec<String> = schema().keys().cloned().collect();
+        described.sort();
+        assert_eq!(declared, described);
+    }
+
+    #[test]
+    fn the_clustering_defaults_are_the_built_in_set() {
+        let saved: videre_ml::cluster_params::ClusteringParameters =
+            serde_json::from_value(defaults()["faces"]["clustering"].clone()).unwrap();
+        assert_eq!(
+            saved,
+            videre_ml::cluster_params::ClusteringParameters::default()
+        );
+    }
+
+    #[test]
+    fn validate_accepts_the_defaults_and_names_each_bad_value() {
+        assert!(validate(&defaults()).is_empty());
+        let bad = json!({
+            "routes": {
+                "files": {"pageSize": 501, "view": "grid", "tile": {"colGap": -1}},
+                "search": {"pageSize": 1.5},
+                "duplicates": {"kinds": ["exact", "benzer"]},
+                "people": {"align": "right"}
+            },
+            "faces": {"learning": "evet", "clustering": {"eps": 2.5}},
+            "kendi": {"anahtarı": true}
+        });
+        let errors = validate(&bad);
+        let mut paths: Vec<&str> = errors.keys().map(String::as_str).collect();
+        paths.sort();
+        assert_eq!(
+            paths,
+            [
+                "faces.clustering.eps",
+                "faces.learning",
+                "routes.duplicates.kinds",
+                "routes.files.pageSize",
+                "routes.files.tile.colGap",
+                "routes.files.view",
+                "routes.search.pageSize",
+            ]
+        );
+        assert_eq!(
+            errors["routes.files.pageSize"],
+            "Enter a whole number from 1 to 500"
+        );
     }
 }

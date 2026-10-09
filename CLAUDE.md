@@ -849,3 +849,9 @@ above.
 - Offline map basemap: one shared PMTiles archive per machine, downloaded once
   behind a cross-process flock; the map grid never gates on MapLibre's load
   (a WebGL probe can pass where the context still cannot render) -> `videre_core::basemap`, `commands::gallery::server` (`handle_basemap_*`), `static/map.js`
+- A setting's range or choices are written once: gallery settings in
+  `static/gallery-schema.json` (the views clamp with it, a save is checked
+  against it), config keys in `library_config::KEYS` (whose constants `edit`
+  and `load` enforce); the settings pages draw from both and a save lands
+  whole or not at all -> `gallery::settings::validate`, `library_config::edit_many`,
+  `gallery::config_form`, `static/settings-form.js`

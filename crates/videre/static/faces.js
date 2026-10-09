@@ -37,7 +37,7 @@ let facesData = { people: [], clusters: [], singletons: [], singles_total: 0, si
     // Singles come a page at a time: a library can hold tens of thousands, and
     // drawing them all made the page slow to open and slower after every
     // assignment. People and clusters always come whole; they are the targets.
-    const FPAGE = settingIntInRange('routes.people.pageSize', 1, 1000);
+    const FPAGE = settingIntInRange('routes.people.pageSize');
     function facesUrl(params) {
       const q = new URLSearchParams(params);
       if (QUERY) q.set('q', QUERY);
@@ -452,7 +452,7 @@ let facesData = { people: [], clusters: [], singletons: [], singles_total: 0, si
     // `setLayout` saves it, so a library that never chose picks up a changed
     // default immediately; a saved value is a deliberate choice and is kept.
     function applyLayout() {
-      const mode = settingOneOf('routes.people.align', ['right', 'top']);
+      const mode = settingOneOf('routes.people.align');
       document.body.classList.toggle('sidebar-mode', mode === 'right');
       const select = document.getElementById('layout-select');
       if (select) select.value = mode;
@@ -548,14 +548,14 @@ let facesData = { people: [], clusters: [], singletons: [], singles_total: 0, si
     // Face learning runs only when the library's gallery.json turns it on
     // (`faces.learning`); off, the page never asks the learning API anything.
     function learningOn() {
-      return settingOneOf('faces.learning', [true, false]) === true;
+      return settingOneOf('faces.learning') === true;
     }
 
     // Learning updates (the status strip and these toasts) are off unless the
     // library chose to show them (`faces.learningUpdates`): they describe the
     // process, and the result, a question card, shows either way.
     function learningUpdatesShown() {
-      return learningOn() && settingOneOf('faces.learningUpdates', [true, false]) === true;
+      return learningOn() && settingOneOf('faces.learningUpdates') === true;
     }
 
     function applyLearningUpdates() {

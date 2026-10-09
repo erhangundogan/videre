@@ -129,3 +129,52 @@ body.select-mode .card[data-hash].selected::after,body.select-mode .tile[data-ha
 .query-status{position:sticky;top:var(--toolbar-bottom,0px);z-index:44;background:#f4f4f5}
 .query-status code{background:#f4f4f5;border-radius:4px;padding:1px 5px;font-size:12px}
 .query-status.query-error{color:#b91c1c}
+/* The settings pages' form (static/settings-form.js): grouped panels of rows,
+   label and hint on the left and the control on the right. A row whose value
+   differs from its default is tinted with an inset bar and gets a round reset
+   button left of its control; other rows keep the slot empty so the controls
+   stay in line. */
+.set-form{display:flex;flex-direction:column;gap:12px}
+.set-group,.set-sub{background:#fff;border:1px solid #e4e4e7;border-radius:10px;overflow:hidden}
+.set-sub{border:0;border-top:1px solid #e4e4e7;border-radius:0}
+.set-group>summary,.set-sub>summary{display:flex;align-items:center;gap:8px;padding:9px 14px;font-weight:600;cursor:pointer;list-style:none}
+.set-sub>summary{font-weight:500;padding-left:28px;color:#3f3f46}
+.set-group>summary::-webkit-details-marker,.set-sub>summary::-webkit-details-marker{display:none}
+.set-group>summary::before,.set-sub>summary::before{content:"";width:6px;height:6px;border-right:1.5px solid #71717a;border-bottom:1.5px solid #71717a;transform:rotate(-45deg);transition:transform .12s;margin-right:4px}
+.set-group[open]>summary::before,.set-sub[open]>summary::before{transform:rotate(45deg)}
+.set-count{margin-left:auto;font-size:12px;font-weight:400;color:#2a6db5}
+.set-row{display:flex;align-items:center;gap:8px;padding:9px 14px;border-top:1px solid #f0f0f2}
+.set-sub .set-row{padding-left:42px}
+.set-row.ov{background:#eef4fb;box-shadow:inset 3px 0 0 #2a6db5}
+.set-row.bad{background:#fdf2f2;box-shadow:inset 3px 0 0 #b91c1c}
+.set-name{flex:1;min-width:0}
+.set-label{font-size:14px}
+.set-key{margin-left:6px;font:11px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#a1a1aa}
+.set-hint{font-size:12px;color:#71717a}
+.set-default{font-size:12px;color:#2a6db5}
+.set-default:empty,.set-error:empty{display:none}
+.set-error{font-size:12px;color:#b91c1c}
+.set-row select,.set-row input[type=number],.set-row input[type=text]{padding:5px 8px;border:1px solid #d4d4d8;border-radius:6px;background:#fff;font:inherit;width:140px}
+.set-row.bad input{border-color:#b91c1c}
+.set-row input:focus-visible,.set-row select:focus-visible{outline:2px solid #2a6db5;outline-offset:1px}
+.set-slider{display:inline-flex;align-items:center;gap:8px}
+.set-slider input{width:140px}
+.set-slider output{min-width:40px;text-align:right;font-variant-numeric:tabular-nums}
+.set-checks{display:flex;flex-wrap:wrap;gap:4px 12px;max-width:300px;justify-content:flex-end}
+.set-switch{position:relative;display:inline-block;width:36px;height:20px;flex-shrink:0}
+.set-switch input{position:absolute;opacity:0;width:100%;height:100%;margin:0;cursor:pointer;z-index:1}
+.set-switch-track{position:absolute;inset:0;border-radius:10px;background:#a1a1aa;transition:background .12s}
+.set-switch-track::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;transition:left .12s}
+.set-switch input:checked+.set-switch-track{background:#2a6db5}
+.set-switch input:checked+.set-switch-track::after{left:18px}
+.set-switch input:focus-visible+.set-switch-track{outline:2px solid #2a6db5;outline-offset:2px}
+.reset-button{width:24px;height:24px;flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;padding:0;border-radius:50%;border:1px solid transparent;background:none;color:#2a6db5;cursor:pointer}
+.reset-button:hover{border:1px solid #999}
+.reset-button:focus-visible{outline:2px solid #2a6db5;outline-offset:1px}
+.reset-button[hidden]{display:inline-flex;visibility:hidden}
+.set-savebar{position:sticky;bottom:0;display:flex;justify-content:flex-end;align-items:center;gap:10px;margin-top:12px;padding:10px 0;background:#f4f4f5;border-top:1px solid #e4e4e7}
+.set-savebar button{padding:6px 14px;border:1px solid #d4d4d8;border-radius:6px;background:#fff;font:inherit;cursor:pointer}
+.set-savebar button.primary{background:#2a6db5;border-color:#2a6db5;color:#fff}
+.set-savebar button:disabled{opacity:.5;cursor:default}
+.set-status{margin-right:auto;font-size:13px;color:#52525b}
+.set-status.bad{color:#b91c1c}

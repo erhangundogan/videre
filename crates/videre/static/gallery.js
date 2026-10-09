@@ -1,25 +1,24 @@
 
 // Duplicate groups per Show more: routes.duplicates.pageSize.
-var PAGE=settingIntInRange('routes.duplicates.pageSize',1,1000),sorted=GROUPS.slice(),shown=0;
+var PAGE=settingIntInRange('routes.duplicates.pageSize'),sorted=GROUPS.slice(),shown=0;
 
 // Sort state, kept in the library's gallery settings the same way the view
-// mode is, default date desc. File grids mirror the server whitelist (six
-// fields); Library, Date and an event's page share `routes.files.sort`, the
-// map keeps its own. The Events overview orders events, by its own fields.
-var FILE_SORT_FIELDS=['date','name','size','rating','liked','type'];
-var EVENT_SORT_FIELDS=['date','files','length','name'];
+// mode is, default date desc. The fields each sort accepts are in the
+// settings schema (file grids mirror the server whitelist); Library, Date and
+// an event's page share `routes.files.sort`, the map keeps its own. The
+// Events overview orders events, by its own fields.
 var SORT=(function(){
-  if(document.getElementById('map-plot'))return{key:'routes.map.sort',fields:FILE_SORT_FIELDS};
+  if(document.getElementById('map-plot'))return{key:'routes.map.sort'};
   if(typeof GVIEW!=='undefined'&&GVIEW==='events'&&!(typeof GEVENT==='object'&&GEVENT))
-    return{key:'routes.events.sort',fields:EVENT_SORT_FIELDS};
-  return{key:'routes.files.sort',fields:FILE_SORT_FIELDS};
+    return{key:'routes.events.sort'};
+  return{key:'routes.files.sort'};
 })();
 var rerunDateView=null;  // set by each date renderer, so a sort change re-runs the view on screen
 var allFilesSorted=null; // ALLFILES, re-sorted per sort choice (static export only)
 function sortState(){
   return{
-    field:settingOneOf(SORT.key+'.field',SORT.fields),
-    dir:settingOneOf(SORT.key+'.dir',['asc','desc'])
+    field:settingOneOf(SORT.key+'.field'),
+    dir:settingOneOf(SORT.key+'.dir')
   };
 }
 function storeSortState(s){ saveSetting(SORT.key,{field:s.field,dir:s.dir}); }
@@ -919,7 +918,7 @@ function buildDayGallery(day){
 // A large day (a wedding, a trip, a Takeout import) can hold thousands of
 // files, so a date loads a page at a time like the Library does, and the
 // period count is the server's total, not what is loaded.
-var DPAGE=settingIntInRange('routes.date.pageSize',1,500);
+var DPAGE=settingIntInRange('routes.date.pageSize');
 var dateParams=null,dateEmptyText='',dateTotal=0,dateRequest=0,dateLoading=false;
 // Every date view starts here: a reply still in flight for the previous view is
 // dropped, and the button belongs to no view until a date's files load.
@@ -1212,7 +1211,7 @@ document.getElementById('lb').addEventListener('click',function(e){
 // HASH_FILES stays for the inlined static export, whose rows carry no `copies`
 // field and so must be counted client-side.
 // GPAGE is capped at 500, the most /api/files returns per request.
-var GPAGE=settingIntInRange('routes.files.pageSize',1,500),gShown=0,HASH_FILES={},RESULT_ROWS={},galleryFiles=[];
+var GPAGE=settingIntInRange('routes.files.pageSize'),gShown=0,HASH_FILES={},RESULT_ROWS={},galleryFiles=[];
 var GLOCATION=null,gRequest=0;
 // The nav box's query, on the pages that honour one (templates/query-box.js):
 // its filters narrow what the page shows, and on the Files page its words, if
@@ -1329,7 +1328,7 @@ function similarBtn(hash){
 // and video handling and the decode-failure gate are unchanged, and positions
 // each tile with the vendored justified-layout over the items' aspect ratios.
 // No caption.
-function viewMode(){ return settingOneOf('routes.files.view',['list','tile']); }
+function viewMode(){ return settingOneOf('routes.files.view'); }
 function storeViewMode(m){ saveSetting('routes.files.view',m); }
 // Older scans carry no w/h, so fall back to square rather than dropping the item.
 function tileRatio(f){ return (f.w&&f.h) ? (f.w/f.h) : 1; }
@@ -1360,9 +1359,9 @@ function layoutTiles(container,files){
   // height, so tile mode lines up with the list grid and the strip above it.
   var geo=justifiedLayout(files.map(tileRatio),{
     containerWidth:width, containerPadding:{top:12,right:16,bottom:12,left:16},
-    boxSpacing:{horizontal:settingInRange('routes.files.tile.colGap',0,100),
-                vertical:settingInRange('routes.files.tile.rowGap',0,100)},
-    targetRowHeight:settingInRange('routes.files.tile.rowHeight',80,1000)
+    boxSpacing:{horizontal:settingInRange('routes.files.tile.colGap'),
+                vertical:settingInRange('routes.files.tile.rowGap')},
+    targetRowHeight:settingInRange('routes.files.tile.rowHeight')
   });
   var html='';
   for(var i=0;i<files.length;i++) html+=tileHtml(files[i],geo.boxes[i]);
@@ -1498,7 +1497,7 @@ function renderGallery(){
 // The Search page pages its ranking, not the library: while it has more, its
 // next page is what Show more loads. Cleared during a load, so a double click
 // cannot append one page twice.
-var SPAGE=settingIntInRange('routes.search.pageSize',1,200),searchMore=null;
+var SPAGE=settingIntInRange('routes.search.pageSize'),searchMore=null;
 function showMoreGallery(){
   if(searchMore){ var next=searchMore; searchMore=null; next(); return; }
   renderGallery();

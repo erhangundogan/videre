@@ -48,13 +48,13 @@ fn fish_config_set_lines() -> String {
     );
     out.push_str(&format!(
         "complete -c videre -n \"{set}; and test (count (__fish_videre_config_set_words)) -eq 0\" -f -a \"{}\"\n",
-        crate::commands::config::CONFIG_KEYS.join(" ")
+        crate::commands::config::config_keys().join(" ")
     ));
     // From the value on, nothing is a file: a number's value included.
     out.push_str(&format!(
         "complete -c videre -n \"{set}; and test (count (__fish_videre_config_set_words)) -ge 1\" -f\n"
     ));
-    for key in crate::commands::config::CONFIG_KEYS {
+    for key in crate::commands::config::config_keys() {
         let values = config_values_for(key, &[]);
         if values.is_empty() {
             continue;

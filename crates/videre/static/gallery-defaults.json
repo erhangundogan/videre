@@ -1,6 +1,19 @@
 {
   "resume": { "route": "/" },
-  "faces": { "learning": false, "learningUpdates": false },
+  "faces": {
+    "learning": false,
+    "learningUpdates": false,
+    "clustering": {
+      "eps": 0.6,
+      "min_cluster_size": 3,
+      "merge_sim": 0.35,
+      "min_face_size": 80,
+      "max_generic_sim": 0.4,
+      "max_landmark_error": 7,
+      "min_blur": 80,
+      "attach_sim": 0.4
+    }
+  },
   "routes": {
     "files": {
       "view": "tile",

@@ -3,26 +3,11 @@ use anyhow::{Context, Result};
 use clap::builder::PossibleValuesParser;
 use videre_core::library_config::{self, ConfigKey};
 
-pub(crate) const CONFIG_KEYS: &[&str] = &[
-    "model",
-    "read-rate",
-    "io-workers",
-    "xmp",
-    "export-xmp-on-watch",
-    "gallery-starts-watch",
-    "watch-debounce-ms",
-    "watch-bulk-threshold",
-    "watch-bulk-quiet-ms",
-    "log-level",
-    "log-format",
-    "log-max-size-mb",
-    "log-keep",
-    "log-max-age-days",
-    "search-min-match",
-    "similar-min-score",
-    "run-history",
-    "street-detail",
-];
+/// Every key `videre config` sets, from the one key table in
+/// `library_config`.
+pub(crate) fn config_keys() -> Vec<&'static str> {
+    library_config::KEYS.iter().map(|k| k.cli).collect()
+}
 
 #[derive(clap::Args)]
 pub struct ConfigArgs {
@@ -34,7 +19,7 @@ pub struct ConfigArgs {
 enum ConfigAction {
     /// Set a library config key
     Set {
-        #[arg(value_parser = PossibleValuesParser::new(CONFIG_KEYS))]
+        #[arg(value_parser = PossibleValuesParser::new(config_keys()))]
         key: String,
         #[arg(add = clap_complete::engine::ArgValueCompleter::new(
             crate::completions::config_value_candidates
@@ -43,7 +28,7 @@ enum ConfigAction {
     },
     /// Remove a library config key
     Unset {
-        #[arg(value_parser = PossibleValuesParser::new(CONFIG_KEYS))]
+        #[arg(value_parser = PossibleValuesParser::new(config_keys()))]
         key: String,
     },
 }
@@ -74,34 +59,19 @@ pub fn run(args: ConfigArgs, ctx: &CommandContext) -> Result<()> {
 /// Street detail off means no street map on disk: the download was the
 /// consent's only product, so withdrawing the consent deletes it.
 fn forget_street_detail(ctx: &CommandContext) -> Result<()> {
-    if videre_core::basemap_detail::remove(&ctx.library.paths.state)? {
-        eprintln!("street-detail off: deleted the downloaded street map");
+    if let Some(bytes) = videre_core::basemap_detail::remove(&ctx.library.paths.state)? {
+        eprintln!(
+            "street-detail off: deleted the downloaded street map ({:.0} MB)",
+            bytes as f64 / 1e6
+        );
     }
     Ok(())
 }
 
 fn config_key(key: &str) -> ConfigKey {
-    match key {
-        "model" => ConfigKey::Model,
-        "read-rate" => ConfigKey::ReadRate,
-        "io-workers" => ConfigKey::IoWorkers,
-        "xmp" => ConfigKey::Xmp,
-        "export-xmp-on-watch" => ConfigKey::ExportXmpOnWatch,
-        "gallery-starts-watch" => ConfigKey::GalleryStartsWatch,
-        "watch-debounce-ms" => ConfigKey::WatchDebounceMs,
-        "watch-bulk-threshold" => ConfigKey::WatchBulkThreshold,
-        "watch-bulk-quiet-ms" => ConfigKey::WatchBulkQuietMs,
-        "log-level" => ConfigKey::LogLevel,
-        "log-format" => ConfigKey::LogFormat,
-        "log-max-size-mb" => ConfigKey::LogMaxSizeMb,
-        "log-keep" => ConfigKey::LogKeep,
-        "log-max-age-days" => ConfigKey::LogMaxAgeDays,
-        "search-min-match" => ConfigKey::SearchMinMatch,
-        "similar-min-score" => ConfigKey::SimilarMinScore,
-        "run-history" => ConfigKey::RunHistory,
-        "street-detail" => ConfigKey::StreetDetail,
-        _ => unreachable!("clap restricts keys to CONFIG_KEYS"),
-    }
+    library_config::spec_for(key)
+        .expect("clap restricts keys to config_keys")
+        .key
 }
 
 /// Parse a whole-number CLI value; `unit` names what the number counts.
