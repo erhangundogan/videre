@@ -64,6 +64,11 @@ the lightbox when you click it. The poster is cached like the other previews. On
 other platforms, where videre has no video frame extraction, tiles remain the
 plain inline video, also badged.
 
+A browser plays only some video formats: older camera clips in Motion JPEG,
+and ProRes, do not play in any of them. For such a clip the lightbox says the
+browser cannot play it and offers to download the original, to play in another
+app.
+
 Once the lightbox is open, move through the items without closing it: the
 on-screen arrows at the left and right edges, or the **Left** and **Right**
 arrow keys, step to the previous and next item. Stepping past the last loaded

@@ -139,3 +139,28 @@ for (const view of ["tile", "list"] as const) {
     await expect(item("a_alpha.jpg").locator(".liked-badge")).toHaveCount(0);
   });
 }
+
+// A browser plays few video formats (no Motion JPEG or ProRes in a .mov), and
+// the player then sat dead. Served bytes no browser decodes, the lightbox says
+// so and offers the original; stepping to the next item clears it.
+test("a video the browser cannot play says so and offers the original", async ({ page, sortedGallery }) => {
+  await page.goto(sortedGallery.baseURL);
+  await expect(page.locator("#gallery [data-lb-url]")).toHaveCount(3);
+  // Only the lightbox's request gets the bad bytes; the grid is already drawn.
+  await page.route("**/raw**", (route) =>
+    route.fulfill({ status: 200, contentType: "video/quicktime", body: Buffer.from("not a video at all") })
+  );
+  await openFirst(page);
+  await expect(shownName(page)).toHaveText("c_clip.mp4");
+  const notice = page.locator("#lb-unplayable");
+  await expect(notice).toBeVisible();
+  await expect(notice).toContainText("cannot play");
+  const link = notice.locator("a");
+  await expect(link).toHaveAttribute("download", "c_clip.mp4");
+  await expect(link).toHaveAttribute("href", /\/raw/);
+  await expect(page.locator("#lb-vid")).toBeHidden();
+
+  await page.keyboard.press("ArrowRight");
+  await expect(shownName(page)).toHaveText("a_alpha.jpg");
+  await expect(notice).toBeHidden();
+});
