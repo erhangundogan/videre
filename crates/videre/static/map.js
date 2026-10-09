@@ -46,7 +46,7 @@
   // settings when positive, otherwise the place's own cluster radius. An
   // explicit `?radius=` in the URL still wins over both.
   function defaultRadius(cluster) {
-    var r = settingInRange('routes.map.radiusKm', 0, 20000);
+    var r = settingInRange('routes.map.radiusKm');
     return r > 0 ? r : cluster.radius_km;
   }
 

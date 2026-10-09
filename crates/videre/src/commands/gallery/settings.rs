@@ -105,10 +105,12 @@ pub(crate) fn page_script(s: &Snapshot, live: bool) -> String {
     let error = s.error.clone().map(Value::String).unwrap_or(Value::Null);
     format!(
         "<script>var VIDERE_SETTINGS={};var VIDERE_SETTINGS_DEFAULTS={};\
+         var VIDERE_SETTINGS_SCHEMA={};\
          var VIDERE_SETTINGS_LIVE={live};var VIDERE_SETTINGS_ERROR={};</script>\
          <script>{SETTINGS_JS}</script>",
         js(&s.effective),
         js(&defaults()),
+        js(&Value::Object(schema())),
         js(&error),
     )
 }

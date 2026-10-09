@@ -8,7 +8,7 @@ const personName = decodeURIComponent(window.location.pathname.split('/').pop())
       if (!section) return;
       // Off unless the library turned face learning on in gallery.json.
       if (typeof settingOneOf !== 'function'
-          || settingOneOf('faces.learning', [true, false]) !== true) return;
+          || settingOneOf('faces.learning') !== true) return;
       fetch('/api/face-learning/events?limit=200').then(function(r) {
         if (!r.ok) return [];
         return r.json();
@@ -45,7 +45,7 @@ const personName = decodeURIComponent(window.location.pathname.split('/').pop())
     // A person can have thousands of faces, so they come a page at a time,
     // primary first; `faceTotal` is all of them, `faceNext` where the next
     // page starts (null at the end).
-    const FPAGE = settingIntInRange('routes.people.pageSize', 1, 1000);
+    const FPAGE = settingIntInRange('routes.people.pageSize');
     let faceTotal = 0, faceNext = null, facesLoading = false, facesObserver = null;
     function personUrl(params) {
       return `/api/people/${encodeURIComponent(personName)}?` + new URLSearchParams(params).toString();

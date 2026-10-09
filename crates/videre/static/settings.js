@@ -1,9 +1,10 @@
 // Gallery settings runtime, inlined into every page by templates/nav.html
 // after the globals it reads: VIDERE_SETTINGS (the effective document),
-// VIDERE_SETTINGS_DEFAULTS, VIDERE_SETTINGS_LIVE and VIDERE_SETTINGS_ERROR.
-// See commands/gallery/settings.rs. Readers validate where they read and fall
-// back to the default, because the server does not know what any setting
-// means.
+// VIDERE_SETTINGS_DEFAULTS, VIDERE_SETTINGS_SCHEMA, VIDERE_SETTINGS_LIVE and
+// VIDERE_SETTINGS_ERROR. See commands/gallery/settings.rs. Readers validate
+// where they read and fall back to the default, because a hand-edited file
+// can hold anything; the range or choices come from the schema, the one place
+// they are written.
 function settingAt(doc,path){
   var parts=path.split('.');
   for(var i=0;i<parts.length;i++){
@@ -17,18 +18,24 @@ function setting(path){
   var v=settingAt(VIDERE_SETTINGS,path);
   return v===undefined?settingDefault(path):v;
 }
-function settingOneOf(path,values){
-  var v=setting(path);
+function settingSpec(path){
+  return (typeof VIDERE_SETTINGS_SCHEMA==='object'&&VIDERE_SETTINGS_SCHEMA[path])||{};
+}
+// The schema's choices; a boolean setting's are true and false.
+function settingOneOf(path){
+  var spec=settingSpec(path),v=setting(path);
+  var values=spec.type==='bool'?[true,false]:(spec.options||[]);
   return values.indexOf(v)>=0?v:settingDefault(path);
 }
-function settingInRange(path,min,max){
-  var v=setting(path);
+function settingInRange(path){
+  var spec=settingSpec(path),v=setting(path);
+  var min=spec.min===undefined?-Infinity:spec.min,max=spec.max===undefined?Infinity:spec.max;
   return (typeof v==='number'&&isFinite(v)&&v>=min&&v<=max)?v:settingDefault(path);
 }
 // For a count that goes to the server as an integer (a page size): 1.5 is a
 // valid JSON number but not a valid `limit`, and sent as one it empties the grid.
-function settingIntInRange(path,min,max){
-  var v=settingInRange(path,min,max);
+function settingIntInRange(path){
+  var v=settingInRange(path);
   return Number.isInteger(v)?v:settingDefault(path);
 }
 var settingsPatch=null,settingsTimer=null;
