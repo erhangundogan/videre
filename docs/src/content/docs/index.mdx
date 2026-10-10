@@ -7,7 +7,7 @@ description: Find any photo by describing it, by who is in it, or where it was t
 template: splash
 hero:
   title: videre
-  tagline: Photos you can actually find again. Search hundreds of thousands of files by what is in the picture, who is in it, and where it was taken, without a byte leaving your machine.
+  tagline: Not an alternative to anything. A new kind of media library, built for the age of AI. Search hundreds of thousands of photos and videos by what is in them, who is in them, and where they were taken, without a byte leaving your machine.
   image:
     dark: ../../assets/logo-animated-dark.svg
     light: ../../assets/logo-animated-light.svg
@@ -74,6 +74,19 @@ own storage, index it somewhere only they can read, then nudge you toward their
 cloud. videre is a lens over a folder you already own: point it at a directory
 and you get one SQLite file describing what is there. Stop using it and your
 photos are exactly as they were.
+
+**Original by design.** videre is not a clone of a photo app. It is a library
+you can query, script and automate from the terminal, and the gallery is one
+view of it.
+
+**A foundation that lasts.** One Rust binary and one SQLite file inside your
+library. Every long job [resumes where it stopped](/start/workflows/), and every
+operation leaves the library consistent on its own.
+
+**Easy to use with AI.** [`videre mcp`](/commands/mcp/) lets an assistant search
+your photos and review duplicates; `search`, `dedupe`, `status` and the other
+reporting commands answer in `--json`; and every failure carries a documented
+[error kind](/guides/logging-and-errors/#error-kinds) an agent can act on.
 
 **Nothing to keyword first.** Find a photo by describing it, by who is in it, by
 where it was taken, by an example image, or by category, across files you never
