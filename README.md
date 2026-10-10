@@ -8,6 +8,9 @@
 
 # videre
 
+**Not an alternative to anything. A new kind of media library, built for the
+age of AI.**
+
 A local-first tool for making sense of a folder full of photos and videos.
 
 - find and remove duplicates (identical *and* near-identical)
@@ -37,6 +40,17 @@ own storage, index it in a database only they can read, then nudge you toward
 their cloud. videre works the other way round: it's a lens over a folder you
 already own. Point it at a directory and you get a single SQLite file describing
 what's there. Stop using it and your photos are exactly as they were.
+
+- **Original by design.** videre is not a clone of a photo app. It is a library
+  you can query, script and automate from the terminal, and the gallery is one
+  view of it.
+- **A foundation that lasts.** One Rust binary and one SQLite file inside your
+  library. Every long job resumes where it stopped, and every operation leaves
+  the library consistent on its own.
+- **Easy to use with AI.** `videre mcp` lets an assistant search your photos and
+  review duplicates, `search`, `dedupe`, `status` and the other reporting
+  commands answer in `--json`, and every failure carries a documented error
+  kind an agent can act on.
 
 - **Ask for the photo you remember, the way you remember it.** "Elena on a
   beach near Lisbon, summer 2023" is one query: a description, a person, a place
